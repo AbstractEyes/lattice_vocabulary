@@ -51,10 +51,7 @@ pip install -r requirements.txt
 python crystallizer.py --out lattice.pt
 
 ## 💎 Related Projects
-
-- Crystal-Beeper: https://huggingface.co/AbstractPhil/beeper-rose-v4
 - Nikola: https://github.com/AbstractEyes/nikola — resonance field AI
-- Beeper-Classifiers: https://github.com/AbstractEyes/ai-notebooks
 
 ## 📖 License
 
