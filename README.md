@@ -21,17 +21,6 @@ Each word in the vocabulary becomes a **pentachoron**: a 5-vertex simplex mapped
 - Semantic embeddings (optional)
 - Relationship topologies
 
-## 🧱 Project Structure
-
-| File | Purpose |
-|------|---------|
-| `crystallizer.py` | Generates the initial lattice using WordNet, ConceptNet, and etymology |
-| `cm_validator.py` | Verifies geometric validity using Cayley-Menger determinant |
-| `cardinal_design.py` | Assigns cardinality levels (ℵ₀–ℵ₃) based on structural properties |
-| `seed_words.txt` | List of base dictionary entries used as crystal seeds |
-| `lattice.pt` | (optional) Serialized tensor of all word crystals |
-| `scripts/` | Tools for inspection, visualization, export to HF dataset |
-
 ## 📦 Dataset Specifications
 
 - **Shape**: (1.5M words, 5 vertices, 512 dimensions)
