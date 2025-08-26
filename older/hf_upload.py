@@ -31,7 +31,7 @@ def upload_lattice_to_hf(
         folder_path=local_dir,
         repo_id=repo_id,
         repo_type="dataset",
-        path_in_repo=".",
+        path_in_repo="..",
         allow_patterns=["*.safetensors", "*.jsonl"],
         ignore_patterns=["*.npy", "*.json"],
         revision=branch if branch else None,
