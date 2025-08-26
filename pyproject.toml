@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geometricvocab"
+version = "0.2.0"
+description = "Deterministic geometric vocabulary: pentachora crystals, Unicode cobbling, and rose-aware utilities."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "AbstractPhil", email = "you@example.com" }]
+keywords = ["vocabulary", "geometry", "nlp", "symbolic", "embeddings", "pentachoron", "deterministic"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Typing :: Typed",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+
+dependencies = [
+  "numpy>=1.23",
+  "datasets>=2.15",  # for HF parquet access
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.1"]  # optional; only needed when using .cache()
+
+[project.urls]
+Homepage = "https://huggingface.co/AbstractPowered"
+Repository = "https://github.com/AbstractEyes/lattice_vocabulary"
+Issues = "https://github.com/AbstractEyes/lattice_vocabulary/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]

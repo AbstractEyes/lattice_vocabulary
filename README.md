@@ -52,7 +52,6 @@ This is not just datasets; it is a **cognitive architecture** and a founding pri
 git clone https://github.com/AbstractEyes/lattice_vocabulary
 cd lattice_vocabulary
 pip install -r requirements.txt
-python crystallizer.py --out lattice.pt
 
 
 ## 📖 License
