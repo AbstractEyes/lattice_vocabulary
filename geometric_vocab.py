@@ -65,45 +65,73 @@ class GeometricVocab(ABC):
         X = self.embedding(token_or_id)
         if X is None:
             return None
-        if method == "mean": return X.mean(axis=0)
-        if method == "first": return X[0]
-        if method == "sum": return X.sum(axis=0)
+        if method == "mean":
+            return X.mean(axis=0)
+        if method == "first":
+            return X[0]
+        if method == "sum":
+            return X.sum(axis=0)
         raise ValueError(f"Invalid pooling method: {method}")
 
     # --------------------------- rose similarity ---------------------
     def similarity(self, token_a: Union[str, int], token_b: Union[str, int]) -> float:
-        a = self.pooled(token_a); b = self.pooled(token_b)
-        if a is None or b is None: return -1.0
-        a /= (np.linalg.norm(a) + 1e-8); b /= (np.linalg.norm(b) + 1e-8)
+        """
+        Directional similarity with L1 normalization (no L2).
+        """
+        a = self.pooled(token_a)
+        b = self.pooled(token_b)
+        if a is None or b is None:
+            return -1.0
+        a = a / (np.abs(a).sum() + 1e-8)
+        b = b / (np.abs(b).sum() + 1e-8)
         return float(np.dot(a, b))
 
     def similarity_magnitude(self, token_a: Union[str, int], token_b: Union[str, int]) -> float:
-        a = self.pooled(token_a); b = self.pooled(token_b)
-        if a is None or b is None: return -1.0
+        """
+        Raw dot-product (magnitude-sensitive). Keep as-is unless you want an L1-variant.
+        """
+        a = self.pooled(token_a)
+        b = self.pooled(token_b)
+        if a is None or b is None:
+            return -1.0
         return float(np.dot(a, b))
 
     # --------------------------- trajectory band ---------------------
     def extract_band(self, trajectory: np.ndarray, max_angle: float = 0.3, method: str = "pooled") -> Dict[str, np.ndarray]:
-        if trajectory.ndim == 2: direction = trajectory.mean(0)
-        else: direction = trajectory
-        direction /= (np.linalg.norm(direction) + 1e-8)
+        """
+        L1-normalized directional gate. Tokens whose L1-normalized dot with
+        trajectory >= (1 - max_angle) are returned.
+        """
+        if trajectory.ndim == 2:
+            direction = trajectory.mean(0)
+        else:
+            direction = trajectory
+        direction = direction / (np.abs(direction).sum() + 1e-8)
 
         out: Dict[str, np.ndarray] = {}
         for tok, tid in self._token_to_id.items():
             v = self.pooled(tid, method=method)
-            if v is None: continue
-            v /= (np.linalg.norm(v) + 1e-8)
+            if v is None:
+                continue
+            v = v / (np.abs(v).sum() + 1e-8)
             if float(np.dot(v, direction)) >= 1.0 - max_angle:
                 out[tok] = self._id_to_vec[tid]
         return out
 
     # --------------------------- helpers exposed to callbacks --------
     def _helpers(self) -> Dict[str, Callable[..., np.ndarray]]:
-        return {
-            "embedding": lambda x: np.asarray(self.embedding(x), np.float32) if self.embedding(x) is not None else None,
-            "pooled": lambda x: np.asarray(self.pooled(x),    np.float32) if self.pooled(x)    is not None else None,
-            "chars_pooled": lambda s: [self.pooled(c) for c in s] if isinstance(s, str) else None,
-        }
+        def _emb(x):
+            e = self.embedding(x)
+            return None if e is None else np.asarray(e, np.float32)
+
+        def _poo(x):
+            p = self.pooled(x)
+            return None if p is None else np.asarray(p, np.float32)
+
+        def _chars(s):
+            return [self.pooled(c) for c in s] if isinstance(s, str) else None
+
+        return {"embedding": _emb, "pooled": _poo, "chars_pooled": _chars}
 
     # --------------------------- DEFAULT create_crystal (unicode path) ----
     def _default_create_crystal(self, config: dict, callback: Callable[..., np.ndarray]) -> np.ndarray:
@@ -129,43 +157,101 @@ class GeometricVocab(ABC):
         else:  # unicode / mean / abs / dot handled in builders; fall back to unicode
             c = c_uni if c_uni is not None else np.zeros(d, np.float32)
 
-        c /= (np.linalg.norm(c) + 1e-8)
+        # L1 normalization only
+        l1 = float(np.abs(c).sum()) + 1e-8
+        c = c / l1
         return self._deterministic_pentachoron(c)
 
     def _default_unicode_callback(self, name: str, **kwargs) -> np.ndarray:
         raise NotImplementedError("Default callback is not invoked directly.")
 
     # --------------------------- universal builders (overrideable) ---
-    def _compose_unicode_center(self, token_plain: str, H, pool_type: str, dim: int) -> Optional[np.ndarray]:
+    def _compose_unicode_center(
+        self, token_plain: str, H, pool_type: Optional[str], dim: int
+    ) -> Optional[np.ndarray]:
+        """
+        Build a center vector from the token's Unicode characters.
+        Supports multiple pool_type modes:
+          • None / "unicode" / "mean" : average character pooled vectors
+          • "abs"        : average of absolute values
+          • "dot"        : direction only, normalized by L1
+          • "mse"        : elementwise mean squared
+          • "max"        : elementwise maximum
+        """
         vecs: List[np.ndarray] = []
         for ch in token_plain:
             v = H["pooled"](ch)
-            if v is None: continue
+            if v is None:
+                continue
             v = np.asarray(v, np.float32)
-            if pool_type == "abs": v = np.abs(v)
+            if v.shape[0] != dim:
+                raise ValueError(f"Unicode pooled dim mismatch for '{ch}': got {v.shape[0]}, expected {dim}")
             vecs.append(v)
-        if not vecs: return None
-        c = np.mean(np.stack(vecs, 0), 0)
-        if pool_type == "dot": c /= (np.linalg.norm(c) + 1e-8)
-        return c
 
-    def _compose_wordnet_center(self, definitions: List[str], H, pool_type: str, dim: int) -> Optional[np.ndarray]:
+        if not vecs:
+            return None
+
+        stacked = np.stack(vecs, 0)
+
+        if pool_type in (None, "unicode", "mean"):
+            c = stacked.mean(axis=0)
+        elif pool_type == "abs":
+            c = np.abs(stacked).mean(axis=0)
+        elif pool_type == "dot":
+            c = stacked.mean(axis=0)
+            c = c / (np.abs(c).sum() + 1e-8)  # L1 normalize
+        elif pool_type == "mse":
+            c = (stacked ** 2).mean(axis=0)
+        elif pool_type == "max":
+            c = stacked.max(axis=0)
+        else:
+            raise ValueError(f"Unsupported pool_type '{pool_type}'")
+
+        return c.astype(np.float32, copy=False)
+
+    def _compose_wordnet_center(
+        self, definitions: List[str], H, pool_type: Optional[str], dim: int
+    ) -> Optional[np.ndarray]:
+        """
+        Build a center vector from definition text characters.
+        Pool types identical to _compose_unicode_center.
+        """
         vecs: List[np.ndarray] = []
         for text in definitions:
             for ch in str(text):
                 v = H["pooled"](ch)
-                if v is None: continue
+                if v is None:
+                    continue
                 v = np.asarray(v, np.float32)
-                if pool_type == "abs": v = np.abs(v)
+                if v.shape[0] != dim:
+                    raise ValueError(f"Definition pooled dim mismatch for '{ch}': got {v.shape[0]}, expected {dim}")
                 vecs.append(v)
-        if not vecs: return None
-        c = np.mean(np.stack(vecs, 0), 0)
-        if pool_type == "dot": c /= (np.linalg.norm(c) + 1e-8)
-        return c
+
+        if not vecs:
+            return None
+
+        stacked = np.stack(vecs, 0)
+
+        if pool_type in (None, "unicode", "mean"):
+            c = stacked.mean(axis=0)
+        elif pool_type == "abs":
+            c = np.abs(stacked).mean(axis=0)
+        elif pool_type == "dot":
+            c = stacked.mean(axis=0)
+            c = c / (np.abs(c).sum() + 1e-8)  # L1 normalize
+        elif pool_type == "mse":
+            c = (stacked ** 2).mean(axis=0)
+        elif pool_type == "max":
+            c = stacked.max(axis=0)
+        else:
+            raise ValueError(f"Unsupported pool_type '{pool_type}'")
+
+        return c.astype(np.float32, copy=False)
 
     def _deterministic_pentachoron(self, center_vec: np.ndarray) -> np.ndarray:
         """
         Universal pentachoron inflation (deterministic; overrideable).
+        Uses L1 row norms for amplitude control; GS projections remain Euclidean.
         """
         d = center_vec.shape[0]
         proposals = np.stack([
@@ -176,16 +262,20 @@ class GeometricVocab(ABC):
             np.roll(center_vec, 11) + center_vec,
         ], 0).astype(np.float32)
 
-        norms = np.linalg.norm(proposals, 1, keepdims=True) + 1e-8
+        # L1 row norms
+        norms = np.sum(np.abs(proposals), axis=1, keepdims=True) + 1e-8
         Q = proposals / norms
+
+        # GS orthogonalization with L1 row renorm at each step
         for i in range(5):
             for j in range(i):
                 Q[i] -= np.dot(Q[i], Q[j]) * Q[j]
-            Q[i] /= (np.linalg.norm(Q[i]) + 1e-8)
+            Q[i] /= (np.sum(np.abs(Q[i])) + 1e-8)
 
         gamma = np.array([1.0, 0.9, -0.8, 1.1, 1.2], np.float32)
         X = np.zeros((5, d), np.float32)
-        for i in range(5): X[i] = center_vec + gamma[i] * Q[i]
+        for i in range(5):
+            X[i] = center_vec + gamma[i] * Q[i]
         return X - X.mean(0, keepdims=True)
 
     # --------------------------- finalize + provenance (overrideable) ----
@@ -232,16 +322,19 @@ class GeometricVocab(ABC):
                 X *= float(op.get("k", 1.0))
             elif name == "translate":
                 t = np.asarray(op.get("t"), np.float32)
-                if t.shape != (self.dim,): raise ValueError(f"translate.t must be shape ({self.dim},)")
+                if t.shape != (self.dim,):
+                    raise ValueError(f"translate.t must be shape ({self.dim},)")
                 X = X + t[None, :]
             elif name == "normalize_rows":
-                n = np.linalg.norm(X, 1, keepdims=True) + 1e-8
+                n = np.sum(np.abs(X), axis=1, keepdims=True) + 1e-8  # L1 row norm
                 X = X / n
             elif name == "align_to":
                 v = np.asarray(op.get("v"), np.float32)
-                if v.shape != (self.dim,): raise ValueError(f"align_to.v must be shape ({self.dim},)")
-                v = v / (np.linalg.norm(v) + 1e-8)
-                p = X.mean(0); p = p / (np.linalg.norm(p) + 1e-8)
+                if v.shape != (self.dim,):
+                    raise ValueError(f"align_to.v must be shape ({self.dim},)")
+                v = v / (np.abs(v).sum() + 1e-8)  # L1
+                p = X.mean(0)
+                p = p / (np.abs(p).sum() + 1e-8)  # L1
                 alpha = float(op.get("alpha", 1.0))
                 X = X + alpha * (v - p)[None, :]
             else:
@@ -285,9 +378,8 @@ class GeometricVocab(ABC):
             # Default path if user left create_crystal/callback None:
             if create_crystal is None:
                 create_crystal = self._default_create_crystal
-            # Note: default callback is not used directly; helpers suffice.
 
-            product = create_crystal(cfg, callback) if callback is not None else create_crystal(cfg, self._default_unicode_callback)  # callback may be None
+            product = create_crystal(cfg, callback) if callback is not None else create_crystal(cfg, self._default_unicode_callback)
             X, prov = self._finalize_crystal_and_provenance(product, cfg)
 
             # Register
@@ -333,6 +425,11 @@ class GeometricVocab(ABC):
                             self._id_to_volume.setdefault(anti_id, 1.0)
 
     # --------------------------- basics -------------------------------
-    def vocab_size(self) -> int: return len(self._token_to_id)
-    def token_to_id(self, token: str) -> Optional[int]: return self._token_to_id.get(token)
-    def id_to_token(self, token_id: int) -> Optional[str]: return self._id_to_token.get(token_id)
+    def vocab_size(self) -> int:
+        return len(self._token_to_id)
+
+    def token_to_id(self, token: str) -> Optional[int]:
+        return self._token_to_id.get(token)
+
+    def id_to_token(self, token_id: int) -> Optional[str]:
+        return self._id_to_token.get(token_id)

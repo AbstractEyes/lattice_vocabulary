@@ -79,12 +79,15 @@ class PretrainedGeometricVocab(GeometricVocab):
         tok_list = list(tokens.keys()) if isinstance(tokens, dict) else list(tokens)
         mats, pooled, keep = [], [], []
         for t in tok_list:
-            X = self.embedding(t); v = self.pooled(t)
-            if X is None or v is None: continue
+            X = self.embedding(t)
+            v = self.pooled(t)
+            if X is None or v is None:
+                continue
             mats.append(torch.tensor(X, dtype=dtype))
             pooled.append(torch.tensor(v, dtype=dtype))
             keep.append(t)
-        if not mats: raise ValueError("No valid tokens found in input.")
+        if not mats:
+            raise ValueError("No valid tokens found in input.")
         return {
             "tokens": keep,
             "crystals": torch.stack(mats, 0).to(device),
