@@ -45,8 +45,7 @@ This is not just datasets; it is a **cognitive architecture** and a founding pri
 ## 🧬 Compatibility
 
 - Compatible with symbolic loss functions: Cayley-Menger, route invariance, Rose score
-- Optional FP64 version for H100 synthesis
-- Hugging Face compatible export planned
+- Hugging Face vocabularies fully supported in their current implementations.
 
 ## 🛠️ Getting Started
 
