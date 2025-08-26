@@ -47,13 +47,21 @@ Given vertices P_0...P_4 ∈ ℝ^D:
 1. Compute squared pairwise distances D_ij = ||P_i − P_j||²
 2. Construct matrix M ∈ ℝ^{6×6}:
 
-    M =
-    [  0   1    1    1    1    1
+    M = [
+    
+       0   1    1    1    1    1
+
        1   0   D_01 D_02 D_03 D_04
+
        1  D_10  0   D_12 D_13 D_14
+
        1  D_20 D_21  0   D_23 D_24
+
        1  D_30 D_31 D_32  0   D_34
-       1  D_40 D_41 D_42 D_43  0 ]
+
+       1  D_40 D_41 D_42 D_43  0
+    ]
+
 
 3. Then:
 
