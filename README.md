@@ -24,10 +24,8 @@ Each word in the vocabulary becomes a **pentachoron**: a 5-vertex simplex mapped
 
 ## 📦 Dataset Specifications
 
-- **Shape**: (1.5M words, 5 vertices, 512 dimensions)
 - **Type**: float32 (integers encoded in mantissa)
 - **Relationships**: Sparse COO matrix (10–30 per word)
-- **Total Memory**: ~16–20 GB for full structure
 
 ## 🔭 Why?
 
