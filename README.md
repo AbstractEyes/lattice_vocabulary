@@ -20,6 +20,7 @@ Each word in the vocabulary becomes a **pentachoron**: a 5-vertex simplex mapped
 - Morphological derivatives
 - Semantic embeddings (optional)
 - Relationship topologies
+- Deterministic and symbolic transformations
 
 ## 📦 Dataset Specifications
 
@@ -34,11 +35,15 @@ Where standard embeddings collapse meaning into latent vectors, Lattice Vocabula
 
 - It is **deterministic**.
 - It is **resonance-compatible**.
-- It aligns with **cardinal logic**, enabling models like *Beeper* to navigate cognition geometrically—not probabilistically.
+- It is **symbolically transformable**.
+- It is **lossless**.
+- It is **navigable**.
+- It is **infinitely extensible**.
+
+This is not just datasets; it is a **cognitive architecture** and a founding principle for future development.
 
 ## 🧬 Compatibility
 
-- Can be used to pretrain models like **Crystal-Beeper** (20M param symbolic LLM)
 - Compatible with symbolic loss functions: Cayley-Menger, route invariance, Rose score
 - Optional FP64 version for H100 synthesis
 - Hugging Face compatible export planned
@@ -50,8 +55,6 @@ cd lattice_vocabulary
 pip install -r requirements.txt
 python crystallizer.py --out lattice.pt
 
-## 💎 Related Projects
-- Nikola: https://github.com/AbstractEyes/nikola — resonance field AI
 
 ## 📖 License
 
