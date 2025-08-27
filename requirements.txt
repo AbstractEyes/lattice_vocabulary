@@ -2,3 +2,4 @@ torch
 huggingface_hub
 datasets
 numpy
+safetensors
