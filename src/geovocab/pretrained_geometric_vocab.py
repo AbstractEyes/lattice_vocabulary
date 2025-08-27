@@ -23,6 +23,7 @@ class PretrainedGeometricVocab(GeometricVocab):
         repo_id: str,
         dim: int,
         *,
+        split: str = "wordnet_eng",
         base_set: Optional[Dict[str, int]] = None,
         create_config: Optional[Dict[str, Any]] = None,
         create_crystal: Optional[Callable[[dict, Callable[..., np.ndarray]], Union[np.ndarray, Dict[str, Any]]]] = None,
@@ -33,7 +34,7 @@ class PretrainedGeometricVocab(GeometricVocab):
         self.repo_id = str(repo_id)
 
         # Load deterministic parquet
-        ds = load_dataset(self.repo_id, split="train")
+        ds = load_dataset(self.repo_id, split=split)
 
         for rec in ds:
             tid = int(rec["token_id"])
