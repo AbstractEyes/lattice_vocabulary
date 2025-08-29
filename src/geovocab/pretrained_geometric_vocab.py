@@ -1,14 +1,32 @@
+from __future__ import annotations
+
 import numpy as np
 import torch
 from datasets import load_dataset
 from typing import List, Dict, Union, Optional, Tuple, Callable, Any
+
 from .geometric_vocab import GeometricVocab
+
 
 class PretrainedGeometricVocab(GeometricVocab):
     """
     Parquet-backed deterministic vocab with columnar load, duplicate-mean aggregation,
     pooled caching, and fast path for flat crystals.
+
+    Optimizations:
+      - Columnar dataset load + column pruning.
+      - Fast path for uniform 'crystal' rows → vectorized reshape/reduce.
+      - Batch pooled computation over (K,V,D) blocks.
+      - Batch finalize (mean-center) over (K,V,D) blocks when storing 'full'/'both'.
+      - Lean commit loop (dict writes only).
+      - Zero-copy Torch cache path via from_numpy.
+
+    Semantics preserved:
+      - 'store' in {"full","pooled","both"}.
+      - 'finalize_mode' in {"none","post_mean"} (post_mean == center rows).
+      - 'cache_pooled' stores pre-finalize pooled vectors.
     """
+
     def __init__(
         self,
         repo_id: str,
@@ -44,13 +62,14 @@ class PretrainedGeometricVocab(GeometricVocab):
             ds = ds.remove_columns(drop)
         ds = ds.with_format("numpy", columns=keep)
 
-        ids = ds["token_id"] if "token_id" in keep else np.array([], dtype=np.int64)
+        ids  = ds["token_id"] if "token_id" in keep else np.array([], dtype=np.int64)
         toks = ds["token"]    if "token"    in keep else np.array([], dtype=object)
         cryst= ds["crystal"]  if "crystal"  in keep else np.array([], dtype=object)
         vols = ds["volume"]   if "volume"   in keep else None
 
-        ids = np.asarray(ids).astype(np.int64, copy=False)
+        ids  = np.asarray(ids).astype(np.int64, copy=False)
         toks = np.asarray(toks)
+        vols_f = np.asarray(vols, dtype=np.float32) if vols is not None else None
 
         # --------- shape helpers ----------
         def _coerce(raw: Any) -> np.ndarray:
@@ -60,33 +79,49 @@ class PretrainedGeometricVocab(GeometricVocab):
                 if V != vertex_count:
                     raise ValueError(f"Crystal has {V} vertices, expected {vertex_count}.")
                 if D != self.dim:
-                    if infer_dim: self.dim = D
-                    else: raise ValueError(f"Dim mismatch: got {D}, expected {self.dim}.")
+                    if infer_dim and not strict_shapes:
+                        self.dim = D
+                    else:
+                        raise ValueError(f"Dim mismatch: got {D}, expected {self.dim}.")
                 return X
+
             if X.ndim == 1:
                 n = int(X.size)
                 if n == vertex_count * self.dim:
                     return np.reshape(X, (vertex_count, self.dim), order=reshape_order)
-                if infer_dim and n % vertex_count == 0:
+                if infer_dim and not strict_shapes and n % vertex_count == 0:
                     self.dim = n // vertex_count
                     return np.reshape(X, (vertex_count, self.dim), order=reshape_order)
                 if n == self.dim:
+                    if strict_shapes:
+                        raise ValueError(
+                            f"Strict mode: refusing to inflate pooled vector length {n} "
+                            f"into crystal [{vertex_count},{self.dim}]"
+                        )
                     c = X / (np.abs(X).sum() + 1e-8)
                     return self._deterministic_pentachoron(c)
-            raise ValueError(f"Unsupported crystal shape {X.shape if isinstance(X, np.ndarray) else type(X)}.")
 
-        def _finalize_if_needed(X: np.ndarray) -> np.ndarray:
-            if finalize_mode == "none":
-                return np.asarray(X, np.float32, order="C")
-            elif finalize_mode == "post_mean":
-                return self._finalize_crystal(X)
-            else:
-                raise ValueError(f"finalize_mode must be 'none' or 'post_mean', got {finalize_mode!r}")
+            raise ValueError(
+                f"Unsupported crystal shape {X.shape if isinstance(X, np.ndarray) else type(X)} "
+                f"(ndim={X.ndim})."
+            )
 
-        vols_f = np.asarray(vols, dtype=np.float32) if vols is not None else None
+        def _finalize_if_needed_block(X_block: np.ndarray) -> np.ndarray:
+            """
+            X_block: (K,V,D) float32
+            finalize_mode == 'post_mean' → mean-center rows per token.
+            """
+            if store in ("full", "both"):
+                if finalize_mode == "none":
+                    return np.ascontiguousarray(X_block, dtype=np.float32)
+                elif finalize_mode == "post_mean":
+                    return np.ascontiguousarray(X_block - X_block.mean(axis=1, keepdims=True), dtype=np.float32)
+                else:
+                    raise ValueError(f"finalize_mode must be 'none' or 'post_mean', got {finalize_mode!r}")
+            # if store == 'pooled', caller should not request finalize
+            return np.ascontiguousarray(X_block, dtype=np.float32)
 
         # ---------- FAST PATH: flat uniform crystals ----------
-        # Try to stack into (N, L); succeeds when each row is the same length.
         fastpath_ok = False
         A = None  # (N, L) float32
         try:
@@ -95,7 +130,6 @@ class PretrainedGeometricVocab(GeometricVocab):
                 A = A.astype(np.float32, copy=False)
                 L = A.shape[1]
                 if L % vertex_count == 0:
-                    # infer or validate D
                     D = L // vertex_count
                     if self.dim != D:
                         if infer_dim:
@@ -119,8 +153,8 @@ class PretrainedGeometricVocab(GeometricVocab):
             vols_sorted = vols_f[order] if vols_f is not None else None
 
             uniq_ids, idx, counts = np.unique(ids_sorted, return_index=True, return_counts=True)
-            sums = np.add.reduceat(A_sorted, idx, axis=0)              # (K, V, D)
-            means = sums / counts[:, None, None]                        # (K, V, D)
+            sums = np.add.reduceat(A_sorted, idx, axis=0)                 # (K, V, D)
+            means = sums / counts[:, None, None]                           # (K, V, D)
 
             if vols_sorted is not None:
                 v_sums = np.add.reduceat(vols_sorted, idx)
@@ -128,44 +162,67 @@ class PretrainedGeometricVocab(GeometricVocab):
             else:
                 v_means = np.ones_like(uniq_ids, dtype=np.float32)
 
-            # commit maps
+            # clear and prepare maps
             self._token_to_id.clear(); self._id_to_token.clear()
-            self._id_to_vec.clear();   self._id_to_volume.clear(); self._valid_token_ids.clear()
+            self._id_to_vec.clear();   self._id_to_volume.clear()
+            self._valid_token_ids.clear()
             self._id_to_pooled.clear()
 
-            # pick a representative token per id: first occurrence in sorted block
+            # batch pooled over vertices (K,D)
+            if cache_pooled or store == "pooled":
+                pooled_all = means.mean(axis=1).astype(np.float32, copy=False)  # (K,D)
+
+            # batch finalize if storing full/both
+            if store in ("full", "both"):
+                X_store_block = _finalize_if_needed_block(means)  # (K,V,D)
+            else:
+                X_store_block = None
+
+            # pick a representative token per id: first occurrence in block
             toks_sorted = toks[order]
             rep_toks = toks_sorted[idx]
 
-            for tid, tok, X_mean, v_m in zip(uniq_ids.tolist(), rep_toks.tolist(), means, v_means.tolist()):
-                # cache pooled BEFORE finalize to preserve signal
-                if cache_pooled:
-                    self._id_to_pooled[tid] = X_mean.mean(axis=0).astype(np.float32, copy=False)
-                X_store = _finalize_if_needed(X_mean)
+            # locals for speed
+            t2i = self._token_to_id; i2t = self._id_to_token
+            i2v = self._id_to_vec;    i2vol = self._id_to_volume
+            valid = self._valid_token_ids
+            i2p = self._id_to_pooled
 
-                self._token_to_id[str(tok)] = tid
-                self._id_to_token[tid] = str(tok)
+            uniq_ids_l = uniq_ids.tolist()
+            rep_toks_l = rep_toks.tolist()
+            v_means_l  = v_means.tolist()
+            K = len(uniq_ids_l)
+
+            for k in range(K):
+                tid = int(uniq_ids_l[k])
+                tok = str(rep_toks_l[k])
+
+                if cache_pooled:
+                    i2p[tid] = pooled_all[k]  # (D,)
+
+                t2i[tok] = tid
+                i2t[tid] = tok
+
                 if store in ("full", "both"):
-                    self._id_to_vec[tid] = np.asarray(X_store, np.float32, order="C")
+                    i2v[tid] = X_store_block[k]  # (V,D)
                 elif store == "pooled":
-                    # store pooled as embedding if desired
-                    self._id_to_vec[tid] = (self._id_to_pooled[tid] if cache_pooled
-                                            else X_mean.mean(axis=0).astype(np.float32, copy=False))
-                self._id_to_volume[tid] = float(v_m)
-                self._valid_token_ids.add(tid)
+                    i2v[tid] = (i2p[tid] if cache_pooled else pooled_all[k])
+
+                i2vol[tid] = float(v_means_l[k])
+                valid.add(tid)
 
         else:
             # ---------- FALLBACK: per-row coerce + dict mean ----------
             ids_int  = ids.tolist()
             toks_str = [str(x) for x in toks.tolist()]
-            vols_f   = (vols_f.tolist() if vols_f is not None else [1.0] * len(ids_int))
+            vols_list = (vols_f.tolist() if vols_f is not None else [1.0] * len(ids_int))
 
             x_sum: Dict[int, np.ndarray] = {}
             v_sum: Dict[int, float]      = {}
             n_cnt: Dict[int, int]        = {}
             tok_pref: Dict[int, str]     = {}
 
-            for tid, tok, raw, vol in zip(ids_int, toks_str, cryst, vols_f):
+            for tid, tok, raw, vol in zip(ids_int, toks_str, cryst, vols_list):
                 X = _coerce(raw)  # [V,D] float32
                 if tid not in x_sum:
                     x_sum[tid]  = X.astype(np.float32, copy=True)
@@ -177,28 +234,61 @@ class PretrainedGeometricVocab(GeometricVocab):
                     v_sum[tid] += float(vol)
                     n_cnt[tid] += 1
 
+            # clear and prepare maps
             self._token_to_id.clear(); self._id_to_token.clear()
-            self._id_to_vec.clear();   self._id_to_volume.clear(); self._valid_token_ids.clear()
+            self._id_to_vec.clear();   self._id_to_volume.clear()
+            self._valid_token_ids.clear()
             self._id_to_pooled.clear()
 
-            for tid in x_sum.keys():  # order not critical; add sorted(tids) if you need determinism
-                X_mean = x_sum[tid] / float(n_cnt[tid])
+            # consolidate to arrays for batch ops
+            tids_uniq = np.fromiter(x_sum.keys(), dtype=np.int64, count=len(x_sum))
+
+            # (K,V,D) means
+            X_means_arr = np.stack(
+                [x_sum[int(tid)] / float(n_cnt[int(tid)]) for tid in tids_uniq],
+                axis=0
+            ).astype(np.float32, copy=False)
+
+            vols_arr = np.array(
+                [v_sum[int(tid)] / float(n_cnt[int(tid)]) for tid in tids_uniq],
+                dtype=np.float32
+            )
+            toks_arr = [tok_pref[int(tid)] for tid in tids_uniq]
+
+            # pooled for all tokens (K,D)
+            if cache_pooled or store == "pooled":
+                pooled_all = X_means_arr.mean(axis=1).astype(np.float32, copy=False)
+
+            # finalize block if storing full/both
+            if store in ("full", "both"):
+                X_store_block = _finalize_if_needed_block(X_means_arr)  # (K,V,D)
+            else:
+                X_store_block = None
+
+            # locals for speed
+            t2i = self._token_to_id; i2t = self._id_to_token
+            i2v = self._id_to_vec;    i2vol = self._id_to_volume
+            valid = self._valid_token_ids
+            i2p = self._id_to_pooled
+
+            K = tids_uniq.shape[0]
+            for k in range(K):
+                tid = int(tids_uniq[k])
+                tok = str(toks_arr[k])
+
                 if cache_pooled:
-                    self._id_to_pooled[tid] = X_mean.mean(axis=0).astype(np.float32, copy=False)
-                X_store = _finalize_if_needed(X_mean)
+                    i2p[tid] = pooled_all[k]
 
-                tok    = tok_pref[tid]
-                vol_m  = v_sum[tid] / float(n_cnt[tid])
+                t2i[tok] = tid
+                i2t[tid] = tok
 
-                self._token_to_id[tok] = tid
-                self._id_to_token[tid] = tok
                 if store in ("full", "both"):
-                    self._id_to_vec[tid] = np.asarray(X_store, np.float32, order="C")
+                    i2v[tid] = X_store_block[k]
                 elif store == "pooled":
-                    self._id_to_vec[tid] = (self._id_to_pooled[tid] if cache_pooled
-                                            else X_mean.mean(axis=0).astype(np.float32, copy=False))
-                self._id_to_volume[tid] = float(vol_m)
-                self._valid_token_ids.add(tid)
+                    i2v[tid] = (i2p[tid] if cache_pooled else pooled_all[k])
+
+                i2vol[tid] = float(vols_arr[k])
+                valid.add(tid)
 
         # ---------- specials ----------
         if manifest_specials and base_set:
@@ -236,22 +326,39 @@ class PretrainedGeometricVocab(GeometricVocab):
         vol = self._id_to_volume.get(tid, 1.0)
         return float(np.clip(vol / 10.0, 0.01, 1.0))
 
-    # -------- Torch cache ----------
+    # -------- Torch cache (zero-copy CPU, one transfer to device) ----------
     def cache(self, tokens: Union[List[str], Dict[str, int]], device: str = "cpu", dtype: torch.dtype = torch.float32):
         tok_list = list(tokens.keys()) if isinstance(tokens, dict) else list(tokens)
-        mats, pooled, keep = [], [], []
+        crystals_np: List[np.ndarray] = []
+        pooled_np:   List[np.ndarray] = []
+        keep:        List[str]        = []
+
+        emb = self.embedding
+        poo = self.pooled
+
         for t in tok_list:
-            X = self.embedding(t)
-            v = self.pooled(t)
+            X = emb(t)
+            v = poo(t)
             if X is None or v is None:
                 continue
-            mats.append(torch.as_tensor(X, dtype=dtype))
-            pooled.append(torch.as_tensor(v, dtype=dtype))
+            crystals_np.append(np.asarray(X, dtype=np.float32, order="C"))
+            pooled_np.append(np.asarray(v, dtype=np.float32, order="C"))
             keep.append(t)
-        if not mats:
+
+        if not crystals_np:
             raise ValueError("No valid tokens found in input.")
-        return {
-            "tokens": keep,
-            "crystals": torch.stack(mats, 0).to(device),
-            "pooled":   torch.stack(pooled, 0).to(device),
-        }
+
+        crystals = torch.from_numpy(np.stack(crystals_np, 0)).to(dtype=dtype)
+        pooled   = torch.from_numpy(np.stack(pooled_np,   0)).to(dtype=dtype)
+
+        if device != "cpu":
+            crystals = crystals.to(device, non_blocking=True)
+            pooled   = pooled.to(device, non_blocking=True)
+
+        return {"tokens": keep, "crystals": crystals, "pooled": pooled}
+
+    # -------- Introspection --------
+    def describe(self) -> Dict[str, Union[str, int]]:
+        return {"repo": self.repo_id, "dimension": self.dim, "vocab_size": self.vocab_size()}
+
+

@@ -112,12 +112,20 @@ class GeometricVocab(ABC):
         self._spatial_index: Optional[SpatialIndex] = None
         self._index_dirty = False
 
+        self._dense_ids: Optional[np.ndarray] = None            # shape [M]
+        self._dense_tokens: Optional[List[str]] = None          # len M
+        self._dense_pooled: Optional[np.ndarray] = None         # [M, D] float32
+        self._dense_l1norm: Optional[np.ndarray] = None         # [M, D] float32
+        self._dense_dirty: bool = True
+        self._similarity_mode: str = "l1dot"  # "l1dot" | "cosine"
+
     def _invalidate_caches(self):
         """Invalidate caches when vocabulary changes."""
         self._normalized_cache.clear()
         self._pooled_cache.clear()
         self._spatial_index = None
         self._index_dirty = True
+
 
     def _ensure_spatial_index(self):
         """Build spatial index if needed."""
@@ -656,3 +664,169 @@ class GeometricVocab(ABC):
     def clear_caches(self):
         """Clear all caches to free memory."""
         self._invalidate_caches()
+
+    def set_similarity_mode(self, mode: str = "l1dot"):
+        """
+        Set similarity space used by vector ops:
+          - "l1dot": uses L1-normalized vectors + dot (current default behavior)
+          - "cosine": uses L2-normalized vectors + dot == cosine
+        """
+        if mode not in ("l1dot", "cosine"):
+            raise ValueError("mode must be 'l1dot' or 'cosine'")
+        if mode != self._similarity_mode:
+            self._similarity_mode = mode
+            # normalization basis changed → recompute dense views
+            self._dense_dirty = True
+            self._normalized_cache.clear()
+
+    def _ensure_dense_views(self):
+        """Build contiguous [M,D] matrices for pooled + normalized; M = number of valid tokens."""
+        if not self._dense_dirty and self._dense_ids is not None:
+            return
+
+        if not self._valid_token_ids:
+            self._dense_ids = np.empty((0,), np.int64)
+            self._dense_tokens = []
+            self._dense_pooled = np.empty((0, self.dim), np.float32)
+            self._dense_l1norm = np.empty((0, self.dim), np.float32)
+            self._dense_dirty = False
+            return
+
+        tids = np.fromiter(sorted(self._valid_token_ids), dtype=np.int64)
+        toks = [self._id_to_token.get(int(tid), f"<id:{int(tid)}>") for tid in tids]
+
+        pooled_list = []
+        for tid in tids:
+            pv = self._get_cached_pooled(int(tid))
+            if pv is None:
+                # Should not happen for valid ids, but guard
+                pv = np.zeros(self.dim, np.float32)
+            pooled_list.append(pv.astype(np.float32, copy=False))
+        P = np.stack(pooled_list, axis=0)  # [M,D] float32
+
+        if self._similarity_mode == "l1dot":
+            denom = np.sum(np.abs(P), axis=1, keepdims=True) + 1e-8
+            N = P / denom
+        else:  # cosine
+            denom = np.sqrt(np.sum(P * P, axis=1, keepdims=True)) + 1e-9
+            N = P / denom
+
+        self._dense_ids = tids
+        self._dense_tokens = toks
+        self._dense_pooled = P
+        self._dense_l1norm = N
+        self._dense_dirty = False
+
+    # --- exact vectorized similarity (dense) ---
+    def _dense_topk_by_vector(self, q_vec: np.ndarray, k: int, exclude_tid: Optional[int] = None):
+        """
+        Returns (topk_indices_in_dense, topk_scores) using the current similarity_mode.
+        q_vec must already be normalized according to mode.
+        """
+        self._ensure_dense_views()
+        if self._dense_l1norm is None or self._dense_l1norm.shape[0] == 0:
+            return np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.float32)
+
+        # dot with [M,D]
+        scores = self._dense_l1norm @ q_vec.astype(np.float32)
+        if exclude_tid is not None and self._dense_ids is not None:
+            mask = (self._dense_ids == int(exclude_tid))
+            if mask.any():
+                scores[mask] = -np.inf
+
+        m = scores.shape[0]
+        kk = min(k, m)
+        if kk <= 0:
+            return np.empty((0,), np.int64), np.empty((0,), np.float32)
+
+        # partial top-k
+        idx_part = np.argpartition(scores, -(kk))[-kk:]
+        idx_sorted = idx_part[np.argsort(scores[idx_part])[::-1]]
+        return idx_sorted, scores[idx_sorted].astype(np.float32, copy=False)
+
+    # --- public: exact cosine-angle / l1dot band extraction ---
+    def extract_band_fast(
+        self,
+        trajectory: np.ndarray,
+        *,
+        max_angle: float = 0.3,
+        k_cap: int = 4096
+    ) -> Dict[str, np.ndarray]:
+        """
+        Exact, dense, vectorized band extraction.
+
+        If similarity_mode == "cosine": interprets `max_angle` literally (radians)
+          and keeps tokens with cos(theta) >= cos(max_angle).
+        If similarity_mode == "l1dot": interprets `max_angle` as a dot threshold
+          via: dot >= 1 - max_angle  (legacy semantics, kept for continuity).
+        """
+        # Build direction
+        direction = trajectory.mean(0) if trajectory.ndim == 2 else trajectory
+        direction = direction.astype(np.float32)
+
+        # Normalize according to mode
+        if self._similarity_mode == "cosine":
+            denom = np.sqrt((direction * direction).sum()) + 1e-9
+            q = direction / denom
+            thr = float(np.cos(max_angle))
+        else:
+            denom = np.abs(direction).sum() + 1e-8
+            q = direction / denom
+            thr = 1.0 - float(max_angle)
+
+        self._ensure_dense_views()
+        if self._dense_l1norm is None or self._dense_l1norm.shape[0] == 0:
+            return {}
+
+        scores = (self._dense_l1norm @ q)  # [M]
+        # keep mask by threshold
+        keep = scores >= thr
+        if not np.any(keep):
+            return {}
+
+        # cap results (optional)
+        keep_idx = np.nonzero(keep)[0]
+        if keep_idx.size > k_cap:
+            # take highest scores among those above threshold
+            part = np.argpartition(scores[keep_idx], -(k_cap))[-k_cap:]
+            keep_idx = keep_idx[part[np.argsort(scores[keep_idx][part])[::-1]]]
+
+        out: Dict[str, np.ndarray] = {}
+        for idx in keep_idx.tolist():
+            tid = int(self._dense_ids[idx])
+            tok = self._id_to_token.get(tid)
+            if tok is None:
+                continue
+            out[tok] = self._id_to_vec[tid]
+        return out
+
+    def find_similar_tokens_fast(
+        self, token: Union[str, int], k: int = 10, min_similarity: float = 0.5
+    ) -> List[Tuple[str, float]]:
+        """
+        Exact, dense, vectorized nearest-neighbor by dot in the current mode.
+        """
+        tid = token if isinstance(token, int) else self._token_to_id.get(token)
+        if tid is None:
+            return []
+
+        # query vector normalized per mode
+        if self._similarity_mode == "cosine":
+            v = self._get_cached_pooled(tid)
+            if v is None:
+                return []
+            q = v / (np.linalg.norm(v) + 1e-9)
+        else:
+            q = self._get_cached_normalized(tid)
+            if q is None:
+                return []
+
+        idxs, scores = self._dense_topk_by_vector(q, k=k+32, exclude_tid=int(tid))  # overfetch slightly
+        out: List[Tuple[str, float]] = []
+        for i, s in zip(idxs.tolist(), scores.tolist()):
+            tok = self._dense_tokens[i]
+            if s >= min_similarity:
+                out.append((tok, float(s)))
+            if len(out) >= k:
+                break
+        return out
