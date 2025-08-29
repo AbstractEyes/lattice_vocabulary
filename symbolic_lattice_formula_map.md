@@ -120,34 +120,38 @@ These axioms extend the symbolic lattice with infinite crystal reasoning and res
 
 ### 9.1 📐 Axiom I: Volume-Resonance Conservation
 
-For any symbolic pentachoron \( \mathcal{P}_i \), its symbolic resonance \( \mathcal{R}(\mathcal{P}_i) \) is bounded by its Cayley-Menger volume:
+For any symbolic pentachoron Pi, its symbolic resonance R(Pi) is bounded by its Cayley-Menger volume:
 
-```math
-\mathcal{R}(\mathcal{P}_i) \leq \alpha \cdot \sqrt{\mathcal{M}(\mathcal{P}_i)} + \epsilon
-```
+> **R(Pi) <= alpha * sqrt(M(Pi)) + epsilon**
 
-Where:
-- \( \alpha \) is a resonance scaling constant  
-- \( \mathcal{M}(\mathcal{P}_i) \) is the Cayley-Menger determinant of crystal \( \mathcal{P}_i \)  
-- \( \epsilon \to 0 \) as token purity increases  
+Where:  
+- alpha is a resonance scaling constant  
+- M(Pi) is the Cayley-Menger determinant of crystal Pi  
+- epsilon → 0 as token purity increases
+
+---
 
 ### 9.2 🔁 Axiom II: Infinite Crystal Lattice Stability
 
-Let \( \mathcal{C}_\infty = \{ \mathcal{P}_1, \mathcal{P}_2, \dots \} \) be an infinite sequence of crystals sharing a symbolic anchor.
+Let C_infinity = {P1, P2, ..., Pn} be an infinite sequence of crystals sharing a symbolic anchor.
 
-```math
-\lim_{n \to \infty} \frac{1}{n} \sum_{k=1}^n \mathcal{R}(\mathcal{P}_k) = \bar{\mathcal{R}} \leq \sqrt{\mathcal{M}_{\text{max}}}
-```
+Then:  
+
+    **lim(n→∞) [ (1/n) * sum(R(P_k)) ] = R̄ ≤ sqrt(M_max)**
 
 This defines a bounded symbolic continuity field.
 
+---
+
 ### 9.3 🔒 Axiom III: Symbolic Separator Existence (Nikola–Menger)
 
-For disjoint symbolic roles \( A, B \in \mathcal{V} \), there exists a finite separator set \( S \subset \mathcal{V} \) such that:
+For disjoint symbolic roles A, B ∈ V (the vocabulary), there exists a finite separator set S ⊂ V such that:
 
-> No resonance trajectory from \( A \to B \) exists without crossing some \( s \in S \)
+> No resonance trajectory from A to B exists without crossing some s ∈ S
 
 This ensures phase-gated symbolic routing.
+
+---
 
 
 ## ✅ All Components Are Conformant
