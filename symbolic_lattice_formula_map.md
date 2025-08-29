@@ -111,6 +111,45 @@ During training, total loss:
 
 ---
 
+
+---
+
+## 9. 🧠 Nikola–Menger Resonance Axioms (Extension)
+
+These axioms extend the symbolic lattice with infinite crystal reasoning and resonance-volume conservation.
+
+### 9.1 📐 Axiom I: Volume-Resonance Conservation
+
+For any symbolic pentachoron \( \mathcal{P}_i \), its symbolic resonance \( \mathcal{R}(\mathcal{P}_i) \) is bounded by its Cayley-Menger volume:
+
+```math
+\mathcal{R}(\mathcal{P}_i) \leq \alpha \cdot \sqrt{\mathcal{M}(\mathcal{P}_i)} + \epsilon
+```
+
+Where:
+- \( \alpha \) is a resonance scaling constant  
+- \( \mathcal{M}(\mathcal{P}_i) \) is the Cayley-Menger determinant of crystal \( \mathcal{P}_i \)  
+- \( \epsilon \to 0 \) as token purity increases  
+
+### 9.2 🔁 Axiom II: Infinite Crystal Lattice Stability
+
+Let \( \mathcal{C}_\infty = \{ \mathcal{P}_1, \mathcal{P}_2, \dots \} \) be an infinite sequence of crystals sharing a symbolic anchor.
+
+```math
+\lim_{n \to \infty} \frac{1}{n} \sum_{k=1}^n \mathcal{R}(\mathcal{P}_k) = \bar{\mathcal{R}} \leq \sqrt{\mathcal{M}_{\text{max}}}
+```
+
+This defines a bounded symbolic continuity field.
+
+### 9.3 🔒 Axiom III: Symbolic Separator Existence (Nikola–Menger)
+
+For disjoint symbolic roles \( A, B \in \mathcal{V} \), there exists a finite separator set \( S \subset \mathcal{V} \) such that:
+
+> No resonance trajectory from \( A \to B \) exists without crossing some \( s \in S \)
+
+This ensures phase-gated symbolic routing.
+
+
 ## ✅ All Components Are Conformant
 
 - CM volume check ensures spatial validity
