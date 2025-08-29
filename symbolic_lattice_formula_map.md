@@ -153,6 +153,60 @@ This ensures phase-gated symbolic routing.
 
 ---
 
+## 10. 🌹 Rose Score Field Axioms (Symbolic Similarity + Entropic Binding)
+
+This section defines the axioms governing symbolic alignment via the Rose similarity metric and associated loss functions.
+
+### 10.1 🔻 Rose Score
+
+The Rose Score measures the triadic symbolic similarity between three latent representations (e.g. anchor, need, purpose).
+
+> **rose_score(A, B, C) = mean_cos_sim(A, B) + mean_cos_sim(B, C) + mean_cos_sim(C, A)**
+
+- A, B, C: [N, D] symbolic vectors
+- Captures shared angular alignment across a triangle of meaning
+- Used to stabilize symbolic trajectories in multi-role tasks
+
+---
+
+### 10.2 🔺 Rose Score Magnitude
+
+Rose Score Magnitude considers both alignment and vector norm.
+
+>**rose_score_magnitude(A, B, C) = (S / 3) * mean(norms of A, B, C)**
+
+Where:
+- S = rose_score(A, B, C)
+- Balances resonance similarity with vector energy (norm)
+- Helps modulate crystal intensity during training
+
+---
+
+### 10.3 🌫️ Rose Cross Entropic Loss
+
+This loss term penalizes divergence between rose-aligned symbolic triplets and a target reference:
+
+>**L_rose_ce = KL(R̂ || R_target)**
+
+- R̂ = rose_score distribution from model output
+- R_target = distribution from gold-standard triplets
+- Used to enforce symbolic topology alignment under distributional supervision
+
+---
+
+### 10.4 🧨 Rose Magnitude Loss
+
+Applies energy-regularized cosine penalty to enforce consistent resonance density:
+
+> **L_rose_mag = λ * ∑ (||R_i||² − τ)²**
+
+- λ: scaling factor
+- τ: target magnitude (e.g., 1.0)
+- Helps prevent over-saturation of rose pathways in large token graphs
+
+---
+
+
 
 ## ✅ All Components Are Conformant
 
