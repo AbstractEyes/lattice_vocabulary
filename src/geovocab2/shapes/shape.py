@@ -8,6 +8,7 @@
 
     License: Apache License 2.0
 
+    Currently unused but will have a wrappered hierarchy when the system is more stable and tested.
 """
 import numpy as np
 

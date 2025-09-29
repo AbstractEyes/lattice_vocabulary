@@ -18,6 +18,15 @@ Design decisions:
 - If `torch_builder` exists we call it (preferred: avoids host copies).
 - If `torch_builder` is missing we generate numpy and move with pin_memory() + non_blocking=True.
 - Minimal dtype coercion: accepts numpy dtypes or torch dtypes for torch backend.
+
+It's currently expensive, so don't call make() in inner loops.
+Expectation is to call once per shape and produce a yielding structure. This is a prototype so don't expect it to be done yet.
+
+It needs logistics tests, benchmarking, and time profiling to be considered stable and efficient.
+
+Lambda processes are inherently slow and can dive to deep depths, so be cautious when tinkering.
+
+License: Apache License 2.0
 """
 
 from typing import Callable, Optional, Dict, Tuple, Any
