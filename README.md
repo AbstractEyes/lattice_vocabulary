@@ -109,7 +109,8 @@ The Nikola-Graham formula and the infinite lattice synthesis will be applied spe
 The preliminary version has multiple built-in formulas for generating and manipulating symbolic lattices, including:
 - Cayley-Menger determinants for volume and resonance calculations
 - Triplet alignment rules for routing consistency
-- Rose score calculations for emotional and semantic alignment
+- RoSE score calculations for relational and semantic alignment similarity
+  - Missing the theta controllers
 - Direct Graham [MASKED] Infinity mappings for infinite crystal structures
 - Direct Graham finite mappings for bounded structures and transformations
 - Trajectory and magnitude-based transformations for dynamic relationships
@@ -122,16 +123,43 @@ The preliminary version has multiple built-in formulas for generating and manipu
 - Basic caching mechanisms (in-memory and disk-based)
 
 ## V2 Todo
-- Synthesize and test Nikola-Menger resonance axioms with finite and infinite lattice structures
+- Implement the missing formulas and transformations
+  - Synthesize and test Nikola-Menger resonance axioms with finite and infinite lattice structures
+  - Chaos theory controllers for dynamic adjustments
+  - Chaos-Menger transformations for dynamic structural adjustments
+  - Implement the Rose score magnitude and trajectory-based loss functions
+  - Integrate with existing symbolic loss functions for NLP tasks
+  - Implement Graham infinite and finite transformations with masking capabilities
+  - RoPE-like theta controllers and rotational adjustments for dynamic synthesis pre and post-processing
+  - RoSE controllers for advanced resonance and alignment tuning
+    - Multi-structural adjustments for targeting specific resonance patterns and alignments
+    - Multi-dimensional adjustments for cross-contrastive synthesis and transformations
+- Advanced lexical controllers for fine-tuning synthesis parameters
+  - Currently they are rigid and nonconformant to datasets and vocabularies
+- Implement more control over sparse and enriched content types
+  - Currently they are either bound to single word/character or omitted word/character and only definition.
+- Implement more normalization strategies and options
+  - Currently limited to L1, L2, L∞, and none - this needs to be more flexible and adaptable to different use cases.
 - Implement the corpus trainer module for advanced symbolic lattice operations with gpu gradient and loss functions
+  - There are MANY formulas and variant forms of useful losses to be implemented here, so this will take some time - likely spanning days to weeks to complete.
 - Expand and refine the dataset with more comprehensive vocabularies and relationships based on key linguistic resources, medical resources, technical corpus, and domain-specific datasets.
+  - They are currently limited to only my format due to ease of setup and testing for myself.
+  - This will be expanded to include WordNet, ConceptNet, Wiktionary, and other linguistic resources.
+  - I have a full library of books and texts that can be used to expand the vocabulary and relationships.
+    - Books and texts will be omitted if they are copyrighted or restricted. The full corpus listed for tuning and transparent.
 - Integrate with Hugging Face datasets and tokenizers for seamless usage with existing NLP pipelines.
-- Add support for multilingual vocabularies and cross-lingual mappings.
+  - Should seamlessly integrate with common tokenizers for direct usage in existing NLP pipelines with a few tweaks.
 - Develop multiple visualization tools for exploring and analyzing the geometric structures of the vocabulary.
+  - This push will include some tests but nothing visual.
 - Implement advanced device control caching and storage solutions for handling large-scale vocabularies efficiently.
+  - Currently it will be hit or miss with numpy to torch while the other is quite streamlined in comparison. This will be fixed.
 - Add more unit tests and validation checks to ensure the integrity and correctness of the geometric structures.
 - Expand the synthesis options to include more linguistic features and relationships.
+  - Direct symbolic, linguistic, relational, morphological, and semantic relationships.
+  - Including code, ordinal, and other non-linguistic symbols with custom behavioral synthesis options.
 - Refine higher-dimensional simplex handling (6-simplex and beyond to the infinite axiom)
+  - Currently they are hit or miss and the formulas are not fully tested or validated.
+  - BASICALLY everything after simplex 4 is imperfect and requires refinement, but there are solid foundations for building complex symbolic vocabularies.
 - Optimize performance for large-scale vocabularies with flags for preloading, caching, batching, workers, devices, and compression methods.
 
 I plan to knock most of these pieces out over the next few days, so look forward to the updates.
