@@ -115,7 +115,7 @@ The preliminary version has multiple built-in formulas for generating and manipu
 - Direct Graham finite mappings for bounded structures and transformations
 - Trajectory and magnitude-based transformations for dynamic relationships
 - Hybrid formulas combining multiple approaches for enhanced flexibility
-- Support for various dimensionalities (1D to 6D+)
+- Support for various dimensionality (1D to 6D+)
 - Support for different content types (sparse, enriched, trajectory-based, magnitude-based, hybrid)
 - Normalization strategies (L1, L2, L∞, none)
 - Configurable synthesis options (definitions, character composition, dataset preference)
