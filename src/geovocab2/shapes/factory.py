@@ -9,7 +9,7 @@ For prototyping and rapid experimentation, registering simple shape builders is 
 shapes on either NumPy or PyTorch backends.
 
 This provides a simple interface to allow larger structural synthesis systems to request shapes without needing to
-know the details of how to build them. Simply register builders and call make().
+know the details of how to build them. Register builders and call make().
 
 The yielded shapes are best formatted in yield factory consumption formats rather than individual shapes.
 
