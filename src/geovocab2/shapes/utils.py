@@ -15,6 +15,12 @@ except ImportError:
     HAS_TF = False
 
 
+def torch_available() -> bool:
+    return HAS_TORCH
+
+def tf_available() -> bool:
+    return HAS_TF
+
 
 # --- Converters ---
 def to_numpy(array: np.ndarray, dtype=np.float32) -> np.ndarray:
