@@ -200,13 +200,112 @@ def _regular_simplex_torch(dim: int, device: str = "cuda:0", dtype: Optional["to
     S = E - centroid
     return S / (S[0] - S[1]).norm()
 
+# --------------------------
+# Generic tensor fallback (NumPy + Torch)
+# --------------------------
+def _tensor_numpy(*, dim, batch: Optional[int] = None, seed: Optional[int] = None, dtype=np.float32) -> np.ndarray:
+    """
+    Generic NumPy tensor:
+      - dim: int or tuple[int,...]
+      - batch: optional int to prefix the shape
+      - seed: if None -> zeros; else -> standard normal with that seed
+    """
+    print("Using numpy tensor builder")
+    # resolve shape
+    if isinstance(dim, int):
+        shape = (batch, dim) if batch is not None else (dim,)
+    else:
+        shape = (batch, *tuple(dim)) if batch is not None else tuple(dim)
 
-# create a default factory singleton and register common shapes
-default_factory = ShapeFactory()
-default_factory.register("simplex", _regular_simplex_numpy, _regular_simplex_torch, aliases=["regular_simplex"])
-default_factory.register(
-    "pentachoron",
-    lambda dtype=np.float32: _regular_simplex_numpy(5, dtype=dtype),
-    lambda device="cuda:0", dtype=None: _regular_simplex_torch(5, device=device, dtype=dtype),
-    aliases=["4-simplex"],
-)
+    if seed is None:
+        return np.zeros(shape, dtype=dtype)
+
+    rng = np.random.default_rng(int(seed))
+    return rng.standard_normal(shape).astype(dtype, copy=False)
+
+
+def _tensor_torch(
+    *,
+    dim,
+    batch: Optional[int] = None,
+    seed: Optional[int] = None,
+    device: str = "cpu",
+    dtype: Optional["torch.dtype"] = None,
+):
+    """
+    Generic Torch tensor on the requested device/dtype:
+      - dim: int or tuple[int,...]
+      - batch: optional int to prefix the shape
+      - seed: if None -> zeros; else -> standard normal with that seed (per-call generator)
+    """
+    if not HAS_TORCH:
+        raise RuntimeError("PyTorch not available")
+
+    # resolve shape
+    print("Using torch tensor builder")
+    if isinstance(dim, int):
+        shape = (batch, dim) if batch is not None else (dim,)
+    else:
+        shape = (batch, *tuple(dim)) if batch is not None else tuple(dim)
+
+    dev = torch.device(device)
+    tdtype = dtype or torch.float32
+
+    if seed is None:
+        return torch.zeros(shape, device=dev, dtype=tdtype)
+
+    # use a local generator to avoid contaminating global RNG state
+    gen = torch.Generator()  # CPU generator is fine for CUDA sampling
+    gen.manual_seed(int(seed))
+    return torch.randn(shape, device=dev, dtype=tdtype, generator=gen)
+
+
+if __name__ == "__main__":
+    # create a default factory singleton and register common shapes
+    default_factory = ShapeFactory()
+    default_factory.register("simplex", _regular_simplex_numpy, _regular_simplex_torch, aliases=["regular_simplex"])
+    default_factory.register(
+        name="pentachoron",
+        numpy_builder=lambda dtype=np.float64: _regular_simplex_numpy(5, dtype=dtype),
+        torch_builder=lambda device="cuda:0", dtype=None: _regular_simplex_torch(5, device=device, dtype=dtype),
+        aliases=["4-simplex"],
+    )
+
+
+    # Register the generic fallback (aliases optional)
+    default_factory.register(
+        "tensor",
+        _tensor_numpy,
+        # torch builder accepts device/dtype; factory will pass them
+        torch_builder=lambda *, dim, batch=None, seed=None, device="cpu", dtype=None: _tensor_torch(
+            dim=dim, batch=batch, seed=seed, device=device, dtype=dtype
+        ),
+        aliases=["generic", "any"],
+        doc="Generic tensor creator: (dim[, batch], seed)-> zeros or randn on NumPy/Torch",
+    )
+    # keep your factory and registrations as-is
+
+    # Build NumPy and Torch versions
+    tensor_np = default_factory.make("tensor", dim=(3, 4), batch=2,
+                                     seed=42, backend="numpy", dtype=np.float64)
+    tensor_torch = default_factory.make("tensor", dim=(3, 4), batch=2,
+                                        seed=42, backend="torch", device="cpu", dtype=torch.float64)
+
+    print("tensor numpy:", type(tensor_np), tensor_np.shape)
+    print("tensor torch:", type(tensor_torch), tensor_torch.shape)
+
+    # ---- Option A: compare identical data -> cosine should be 1.0
+    t1 = torch.from_numpy(tensor_np).to(dtype=torch.float64)  # same values as NumPy
+    t2 = torch.from_numpy(tensor_np).to(dtype=torch.float64)  # identical copy
+
+    cos = torch.nn.CosineSimilarity(dim=-1)
+    sim_identical = cos(t1.reshape(-1, 12), t2.reshape(-1, 12))
+    print("cosine (identical data) should be 1.0:", sim_identical)
+
+    # ---- Option B: compare NumPy RNG vs Torch RNG -> not identical, cosine != 1.0
+    # Convert NumPy to torch for the op (don't convert torch -> numpy)
+    t_np = torch.from_numpy(tensor_np).to(dtype=torch.float64)
+    t_th = tensor_torch  # already torch.float64
+
+    sim_mismatch = cos(t_np.reshape(-1, 12), t_th.reshape(-1, 12))
+    print("cosine (numpy RNG vs torch RNG) ~!= 1.0:", sim_mismatch)
