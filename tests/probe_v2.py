@@ -5,12 +5,8 @@ Tests all formulas, dimensions, content types, mathematical properties, and bug 
 
 import numpy as np
 import time
-from typing import Dict, List, Tuple, Optional, Any
-from collections import defaultdict
-import warnings
-from dataclasses import replace
 
-from ..src.geovocab2.pretrained_vocab import (
+from src.geovocab2 import (
     create_unified_vocabulary,
     DimensionType,
     ContentType,
