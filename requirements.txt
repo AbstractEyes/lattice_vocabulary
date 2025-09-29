@@ -1,5 +1,5 @@
 torch
 huggingface_hub
 datasets
-numpy
+numpy>=1.26,<2.0
 safetensors
