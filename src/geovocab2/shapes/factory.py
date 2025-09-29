@@ -26,6 +26,9 @@ It needs logistics tests, benchmarking, and time profiling to be considered stab
 
 Lambda processes are inherently slow and can dive to deep depths, so be cautious when tinkering.
 
+Inner structural synthesis will require a caching substructure and multiple conjoined forms of larger shapes for optimization.
+This can be further sped up with profile tests and compilation, but the diminishing returns will hit fast.
+
 License: Apache License 2.0
 """
 
