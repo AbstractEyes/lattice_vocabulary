@@ -5,6 +5,16 @@ ShapeFactory
 
 Stateless, functional shape factory.
 
+For prototyping and rapid experimentation, registering simple shape builders is a highly efficient way to generate
+shapes on either NumPy or PyTorch backends.
+
+This provides a simple interface to allow larger structural synthesis systems to request shapes without needing to
+know the details of how to build them. Simply register builders and call make().
+
+The yielded shapes are best formatted in yield factory consumption formats rather than individual shapes.
+
+The first prototype has a single shape synthesizer, so beware of deep lambda chains and slowdowns.
+
 - register(name, numpy_builder, torch_builder=None, *, aliases=None, doc=None)
     Register a shape generator (numpy_builder returns a np.ndarray).
     Optionally provide a torch_builder that constructs the shape directly on-device.
