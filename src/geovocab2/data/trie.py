@@ -107,13 +107,13 @@ class LexicalTrie:
                 break
             self._collect_terminals(child, current + char, results, max_results)
 
-    def fuzzy_search(self, token: str, max_distance: int = 2) -> List[Tuple[str, TrieNode, int]]:
+    def fuzzy_search(self, token: str, max_distance: int = 2, max_returned: int = 20) -> List[Tuple[str, TrieNode, int]]:
         """Fuzzy search using edit distance with bounded search"""
         results = []
         with self._lock:
             max_depth = len(token) + max_distance
             self._fuzzy_dfs_bounded(self.root, "", token, max_distance, results, max_depth, 0)
-        return sorted(results, key=lambda x: x[2])[:20]
+        return sorted(results, key=lambda x: x[2])[:max_returned]
 
     def _fuzzy_dfs_bounded(self, node, current: str, target: str, max_dist: int,
                            results: List, max_depth: int, depth: int):

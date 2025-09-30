@@ -108,6 +108,7 @@ The Nikola-Graham formula and the infinite lattice synthesis will be applied spe
 
 The preliminary version has multiple built-in formulas for generating and manipulating symbolic lattices, including:
 - Cayley-Menger determinants for volume and resonance calculations
+- Cantor and Cantor-Graham mappings for masked infinite structures and control
 - Triplet alignment rules for routing consistency
 - RoSE score calculations for relational and semantic alignment similarity
   - Missing the theta controllers
@@ -154,6 +155,7 @@ The preliminary version has multiple built-in formulas for generating and manipu
 - Implement advanced device control caching and storage solutions for handling large-scale vocabularies efficiently.
   - Currently it will be hit or miss with numpy to torch while the other is quite streamlined in comparison. This will be fixed.
 - Add more unit tests and validation checks to ensure the integrity and correctness of the geometric structures.
+  X Still needs more but I added some.
 - Expand the synthesis options to include more linguistic features and relationships.
   - Direct symbolic, linguistic, relational, morphological, and semantic relationships.
   - Including code, ordinal, and other non-linguistic symbols with custom behavioral synthesis options.
