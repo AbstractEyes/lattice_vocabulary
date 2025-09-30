@@ -98,33 +98,33 @@ class CrystalFactory:
     def _initialize_handlers(self):
         """Initialize handler mappings"""
         self.dimension_handlers = {
-            DimensionType.D1: self._build_1d,
-            DimensionType.D2: self._build_2d,
-            DimensionType.D3: self._build_3d,
-            DimensionType.D4: self._build_4d,
-            DimensionType.D5: self._build_5d,
-            DimensionType.D6_PLUS: self._build_nd,
+            DimensionType.D1.value: self._build_1d,
+            DimensionType.D2.value: self._build_2d,
+            DimensionType.D3.value: self._build_3d,
+            DimensionType.D4.value: self._build_4d,
+            DimensionType.D5.value: self._build_5d,
+            DimensionType.D6_PLUS.value: self._build_nd,
         }
 
         self.formula_handlers = {
-            FormulaType.ROSE_CAYLEY: self._apply_rose_cayley,
-            FormulaType.CAYLEY_MENGER: self._apply_cayley_menger,
-            FormulaType.CAYLEY: self._apply_cayley,
-            FormulaType.MENGER: self._apply_menger,
-            FormulaType.EULER: self._apply_euler,
-            FormulaType.GRAHAM_INFINITE: self._apply_graham_infinite,
-            FormulaType.GRAHAM_FINITE: self._apply_graham_finite,
-            FormulaType.GRAHAM_MASKED: self._apply_graham_masked,
-            FormulaType.HYBRID_V1V2: self._apply_hybrid_v1v2,
+            FormulaType.ROSE_CAYLEY.value: self._apply_rose_cayley,
+            FormulaType.CAYLEY_MENGER.value: self._apply_cayley_menger,
+            FormulaType.CAYLEY.value: self._apply_cayley,
+            FormulaType.MENGER.value: self._apply_menger,
+            FormulaType.EULER.value: self._apply_euler,
+            FormulaType.GRAHAM_INFINITE.value: self._apply_graham_infinite,
+            FormulaType.GRAHAM_FINITE.value: self._apply_graham_finite,
+            FormulaType.GRAHAM_MASKED.value: self._apply_graham_masked,
+            FormulaType.HYBRID_V1V2.value: self._apply_hybrid_v1v2,
         }
 
         self.content_handlers = {
-            ContentType.SPARSE: self._content_sparse,
-            ContentType.ENRICHED: self._content_enriched,
-            ContentType.TRAJECTORY: self._content_trajectory,
-            ContentType.MAGNITUDE: self._content_magnitude,
-            ContentType.VOLUME: self._content_volume,
-            ContentType.HYBRID: self._content_hybrid,
+            ContentType.SPARSE.value: self._content_sparse,
+            ContentType.ENRICHED.value: self._content_enriched,
+            ContentType.TRAJECTORY.value: self._content_trajectory,
+            ContentType.MAGNITUDE.value: self._content_magnitude,
+            ContentType.VOLUME.value: self._content_volume,
+            ContentType.HYBRID.value: self._content_hybrid,
         }
 
     def create_crystal(self, token: str, definition: Optional[str] = None,
@@ -149,8 +149,8 @@ class CrystalFactory:
                     base_crystal = self._reshape_crystal(base_crystal, config.dimension_type)
 
                 # Apply transformations
-                formula_crystal = self.formula_handlers[config.formula_type](base_crystal, token, definition)
-                content_crystal = self.content_handlers[config.content_type](formula_crystal, token, definition)
+                formula_crystal = self.formula_handlers[config.formula_type.value](base_crystal, token, definition)
+                content_crystal = self.content_handlers[config.content_type.value](formula_crystal, token, definition)
 
                 # Smart normalization based on content type
                 if config.content_type == ContentType.VOLUME:
@@ -184,11 +184,11 @@ class CrystalFactory:
         print(f"Synthesizing crystal for token: {token}")
         print(config)
         print(self.dimension_handlers.keys())
-        base_crystal = self.dimension_handlers[config.dimension_type](token, definition)
+        base_crystal = self.dimension_handlers[config.dimension_type.value](token, definition)
         base_crystal = base_crystal - base_crystal.mean(axis=0, keepdims=True)
 
-        formula_crystal = self.formula_handlers[config.formula_type](base_crystal, token, definition)
-        content_crystal = self.content_handlers[config.content_type](formula_crystal, token, definition)
+        formula_crystal = self.formula_handlers[config.formula_type.value](base_crystal, token, definition)
+        content_crystal = self.content_handlers[config.content_type.value](formula_crystal, token, definition)
 
         # Smart normalization
         if config.content_type == ContentType.VOLUME:
