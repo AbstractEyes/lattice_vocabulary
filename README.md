@@ -122,10 +122,18 @@ The preliminary version has multiple built-in formulas for generating and manipu
 - Configurable synthesis options (definitions, character composition, dataset preference)
 - Specific graham levels and masks for targeted synthesis
 - Basic caching mechanisms (in-memory and disk-based)
+- Testing variation of a formula bank to house variant formulas for experimentation and development.
+  - Currently tasked with just WORKING, will house all the formulas from the directories as they are implemented for a bank of access.
+
+
+## V2 Blockers
+- X Formula bank incompatible requires refitting
+- Trainer module not yet implemented
 
 ## V2 Todo
 - Implement the missing formulas and transformations
-  - Synthesize and test Nikola-Menger resonance axioms with finite and infinite lattice structures
+  - X Formula bank established for housing the formulas as they are implemented.
+  - Synthesize and test Nikola-Menger resonance axiom formula structures with finite and infinite lattice structures
   - Chaos theory controllers for dynamic adjustments
   - Chaos-Menger transformations for dynamic structural adjustments
   - Implement the Rose score magnitude and trajectory-based loss functions
