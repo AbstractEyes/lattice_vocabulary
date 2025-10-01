@@ -50,17 +50,17 @@ class FormulaBase(torch.nn.Module, ABC):
         info(): Formula metadata for introspection
 
     Example:
-        >>> class MyFormula(FormulaBase):
-        ...     def __init__(self):
-        ...         super().__init__("my_formula", "f.my.formula")
-        ...
-        ...     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        ...         return {"result": x ** 2}
-        ...
-        >>> formula = MyFormula()
-        >>> result = formula.evaluate(torch.tensor([1.0, 2.0, 3.0]))
-        >>> print(result["result"])
-        tensor([1., 4., 9.])
+        #>>> class MyFormula(FormulaBase):
+        #...     def __init__(self):
+        #...         super().__init__("my_formula", "f.my.formula")
+        #...
+        #...     def forward(self, x: Tensor) -> Dict[str, Tensor]:
+        #...         return {"result": x ** 2}
+        #...
+        #>>> formula = MyFormula()
+        #>>> result = formula.evaluate(torch.tensor([1.0, 2.0, 3.0]))
+        #>>> print(result["result"])
+        #tensor([1., 4., 9.])
     """
 
     def __init__(self, name: str, uid: str):
