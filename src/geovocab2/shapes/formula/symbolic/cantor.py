@@ -467,18 +467,38 @@ class CantorFunction(FormulaBase):
         # Initialize output
         values = torch.zeros_like(t)
 
-        # For each Cantor interval at final iteration, assign value
+        # Vectorized: create mask for all intervals at once
         n_intervals = self.cantor_intervals.shape[0]
 
-        for i, interval in enumerate(self.cantor_intervals):
-            a, b = interval[0], interval[1]
+        # Reshape for broadcasting: intervals [n_intervals, 2], t [..., n_points]
+        # We need intervals [n_intervals, 1, ..., 1, 2] to broadcast with t [..., n_points]
+        intervals = self.cantor_intervals  # [n_intervals, 2]
 
-            # Points in this interval get value i / (n_intervals - 1)
-            mask = (t >= a) & (t <= b)
-            values[mask] = i / (n_intervals - 1.0)
+        # Expand t for comparison: [..., n_points, 1]
+        t_expanded = t.unsqueeze(-1)  # [..., n_points, 1]
 
-        # Handle removed middle thirds (linear interpolation)
-        # This is approximate; exact construction is more complex
+        # Check which interval each t belongs to
+        # intervals shape [n_intervals, 2], we need [1, ..., 1, n_intervals, 2]
+        n_batch_dims = t.ndim
+        for _ in range(n_batch_dims):
+            intervals = intervals.unsqueeze(0)  # [1, ..., 1, n_intervals, 2]
+
+        a = intervals[..., 0]  # [1, ..., 1, n_intervals]
+        b = intervals[..., 1]  # [1, ..., 1, n_intervals]
+
+        # Check if t in [a, b]: [..., n_points, 1] vs [1, ..., 1, n_intervals]
+        in_interval = (t_expanded >= a) & (t_expanded <= b)  # [..., n_points, n_intervals]
+
+        # Find first matching interval (lowest index)
+        # Use argmax to find first True value
+        interval_indices = torch.argmax(in_interval.long(), dim=-1)  # [..., n_points]
+
+        # Compute values: i / (n_intervals - 1)
+        values = interval_indices.float() / (n_intervals - 1.0)
+
+        # Handle points not in any interval (shouldn't happen, but for safety)
+        has_match = in_interval.any(dim=-1)  # [..., n_points]
+        values = torch.where(has_match, values, torch.zeros_like(values))
 
         # Derivative is zero almost everywhere (on Cantor set)
         derivative = torch.zeros_like(t)
@@ -658,28 +678,25 @@ class MultiScaleEncoding(FormulaBase):
             encodings: Multi-scale features [..., dim * num_scales * 2]
             scales: Scale factors used
         """
-        encodings = []
-        scales = []
+        # Vectorized: compute all scales at once
+        # scales[k] = base_frequency * 2^k for k in [0, num_scales)
+        scale_indices = torch.arange(self.num_scales, dtype=positions.dtype, device=positions.device)
+        scales = self.base_frequency * (2.0 ** scale_indices)  # [num_scales]
 
-        for scale_idx in range(self.num_scales):
-            # Cantor-like frequency scaling: f_k = f_0 * 2^k
-            frequency = self.base_frequency * (2.0 ** scale_idx)
-            scales.append(frequency)
+        # Broadcast: positions[..., dim] * scales[num_scales] -> [..., dim, num_scales]
+        angles = 2.0 * math.pi * positions.unsqueeze(-1) * scales  # [..., dim, num_scales]
 
-            # Sinusoidal encoding at this scale
-            angle = 2.0 * math.pi * frequency * positions
-            sin_enc = torch.sin(angle)
-            cos_enc = torch.cos(angle)
+        # Compute sin and cos
+        sin_enc = torch.sin(angles)  # [..., dim, num_scales]
+        cos_enc = torch.cos(angles)  # [..., dim, num_scales]
 
-            encodings.append(sin_enc)
-            encodings.append(cos_enc)
-
-        # Concatenate all scales
-        encodings = torch.cat(encodings, dim=-1)
+        # Interleave sin/cos and flatten: [..., dim, num_scales, 2] -> [..., dim * num_scales * 2]
+        encodings = torch.stack([sin_enc, cos_enc], dim=-1)  # [..., dim, num_scales, 2]
+        encodings = encodings.flatten(start_dim=-3)  # [..., dim * num_scales * 2]
 
         return {
             "encodings": encodings,
-            "scales": torch.tensor(scales),
+            "scales": scales,
             "num_scales": self.num_scales
         }
 
@@ -723,16 +740,13 @@ class FractalComplexity(FormulaBase):
         if torch.isnan(dimension):
             dimension = torch.tensor(float(points.shape[-1]))  # Use ambient dimension as fallback
 
-        # Scale entropy: measure information at each scale
-        scale_entropies = []
-        for scale_idx in range(self.num_scales):
-            box_size = 2.0 ** (-(scale_idx + 1))
+        # Scale entropy: measure information at each scale (vectorized)
+        scale_indices = torch.arange(self.num_scales, dtype=torch.float32)
+        box_sizes = 2.0 ** (-(scale_indices + 1))  # [num_scales]
 
-            # Count points in boxes (simplified)
-            # This is a proxy for information content
-            scale_entropies.append(box_size * torch.log(torch.tensor(points.shape[0] + 1.0)))
-
-        scale_entropies = torch.tensor(scale_entropies)
+        # Information proxy: log(n_points + 1) scaled by box size
+        n_points = torch.tensor(points.shape[0] + 1.0)
+        scale_entropies = box_sizes * torch.log(n_points)  # [num_scales]
 
         # Overall complexity: weighted combination
         complexity = dimension + 0.1 * scale_entropies.mean()
@@ -1352,8 +1366,8 @@ class CantorSampler(FormulaBase):
 
             # Create grid
             axes = []
-            for dim in range(n_dims):
-                axis = torch.linspace(domain[dim, 0], domain[dim, 1], points_per_dim)
+            for dim_idx in range(n_dims):
+                axis = torch.linspace(domain[dim_idx, 0], domain[dim_idx, 1], points_per_dim)
                 axes.append(axis)
 
             # Meshgrid
@@ -1366,8 +1380,9 @@ class CantorSampler(FormulaBase):
             else:
                 # Simplified for higher dims
                 samples = torch.rand(num_samples, n_dims)
-                for dim in range(n_dims):
-                    samples[:, dim] = samples[:, dim] * (domain[dim, 1] - domain[dim, 0]) + domain[dim, 0]
+                # Vectorized scaling
+                range_size = domain[:, 1] - domain[:, 0]  # [n_dims]
+                samples = samples * range_size + domain[:, 0]  # Broadcasting
 
             # Truncate to requested size
             samples = samples[:num_samples]
@@ -1377,9 +1392,9 @@ class CantorSampler(FormulaBase):
             # Dense sampling: random uniform (represents continuum)
             samples = torch.rand(num_samples, n_dims)
 
-            # Scale to domain
-            for dim in range(n_dims):
-                samples[:, dim] = samples[:, dim] * (domain[dim, 1] - domain[dim, 0]) + domain[dim, 0]
+            # Vectorized scaling: scale to domain
+            range_size = domain[:, 1] - domain[:, 0]  # [n_dims]
+            samples = samples * range_size + domain[:, 0]  # Broadcasting
 
             method = "uniform_dense"
 
