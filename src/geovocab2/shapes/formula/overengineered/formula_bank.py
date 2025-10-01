@@ -1,17 +1,14 @@
 # geo_formula_enhanced.py - Extended library with 50+ formulas
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Callable, Tuple, Set, Union, Any
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any
 from enum import Enum, auto
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 import time
-import json
-from pathlib import Path
-import numpy as np
 
-from shapes.formula.geo_tensor import Tier, GeoTensor
+from shapes.tensor.geo_tensor import Tier, GeoTensor
 
 
 # ========= FORMULA CATEGORIES =========

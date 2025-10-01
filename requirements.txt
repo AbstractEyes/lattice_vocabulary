@@ -1,5 +1,6 @@
+--find-links https://download.pytorch.org/whl/torch_stable.html
 torch
 huggingface_hub
 datasets
-numpy>=1.26,<2.0
+numpy
 safetensors

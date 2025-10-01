@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple, Any, Iterator
 from pathlib import Path
 from huggingface_hub import login
 
-from shapes.legacy_shape_factory import CrystalFactory
+from shapes.tensor.legacy_shape_factory import CrystalFactory
 from src.geovocab2.defaults import (
     DimensionType,
     ContentType,
@@ -156,8 +156,6 @@ class UnifiedGeometricVocabulary:
                             method: str = "geometric_centroid", synthesize: bool = True) -> Optional[np.ndarray]:
         """Get pooled vector with advanced methods"""
         return self.get_pooled(token, definition, method, synthesize)
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def encode_batch(self, tokens: List[str],
                      definitions: Optional[List[Optional[str]]] = None,

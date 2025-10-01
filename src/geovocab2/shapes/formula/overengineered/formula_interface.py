@@ -7,10 +7,6 @@ Usage:
 """
 
 import torch
-from functools import lru_cache
-
-from shapes.formula.geo_tensor import GeoTensor
-
 
 from formula_bank import LIB, GeoTensor  # Assume LIB is pre-loaded global
 
