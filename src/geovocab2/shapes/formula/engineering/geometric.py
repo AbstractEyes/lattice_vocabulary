@@ -1,788 +1,814 @@
 """
-QUADRATIC & SIMPLEX OPERATIONS
--------------------------------
-Quadratic equations, conic sections, and k-dimensional simplex operations.
+GEOMETRIC OPERATIONS
+-------------------
+Intersections, containment tests, closest points, and geometric transforms.
 
 This module provides operations for:
-  - Quadratic equations and roots
-  - Parabolic and conic section properties
-  - k-Simplex operations for arbitrary dimensions
-  - Barycentric coordinates and conversions
-  - Simplex volume, edges, faces
-  - Geometric quality metrics
-  - High-dimensional polytope operations
+  - Ray-geometry intersections (triangles, planes, spheres, boxes)
+  - Containment and overlap tests
+  - Closest point queries on geometric primitives
+  - Rotation matrices and transformations
+  - Bounding volume computations
+  - Geometric predicates
 
 Mathematical Foundation:
 
-    Quadratic Equation:
-        ax² + bx + c = 0
-        x = (-b ± √(b² - 4ac))/(2a)
-        Discriminant: Δ = b² - 4ac
+    Ray-Triangle Intersection (Möller-Trumbore):
+        Ray: r(t) = O + tD
+        Triangle: P = (1-u-v)V₀ + uV₁ + vV₂
+        Intersection when u,v ≥ 0, u+v ≤ 1, t ≥ 0
 
-    k-Simplex:
-        - k-simplex has (k+1) vertices in k-dimensional space
-        - Examples: 0-simplex=point, 1-simplex=edge, 2-simplex=triangle,
-                   3-simplex=tetrahedron, 4-simplex=pentachoron
-        - Edges: C(k+1, 2)
-        - Faces: C(k+1, i+1) for i-faces
+    Ray-Sphere Intersection:
+        |O + tD - C|² = r²
+        Quadratic: at² + bt + c = 0
 
-    Barycentric Coordinates:
-        p = Σᵢ wᵢ vᵢ where Σwᵢ = 1, wᵢ ≥ 0 (inside simplex)
+    Point-in-Triangle (Barycentric):
+        λ₀ + λ₁ + λ₂ = 1, all λᵢ ≥ 0
 
-    Simplex Volume (Cayley-Menger):
-        V² = (-1)^(k+1) / (2^k (k!)²) × det(CM)
-        where CM is distance matrix augmented with 1s
+    Rotation Matrix (3D):
+        R_x(θ) = [1    0       0   ]
+                 [0  cos(θ) -sin(θ)]
+                 [0  sin(θ)  cos(θ)]
 
-    Quality Metrics:
-        - Aspect ratio: r_in / r_out (inscribed/circumscribed radius ratio)
-        - Regularity: measure of deviation from regular simplex
-        - Degeneracy: near-zero volume
+    Quaternion to Matrix:
+        R = I + 2s[q×] + 2[q×]²
+        where q = [x,y,z], s = w
+
+    AABB:
+        min_x = min(all x coordinates)
+        max_x = max(all x coordinates)
+
+    Sphere from Points:
+        Center = mean(points)
+        Radius = max(||p - center||)
 
 Author: AbstractPhil + Claude Sonnet 4.5
 License: MIT
 """
 
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, Literal
 import torch
 from torch import Tensor
 import math
-from itertools import combinations
 
 from shapes.formula.formula_base import FormulaBase
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# QUADRATIC EQUATIONS
+# RAY INTERSECTIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class QuadraticSolver(FormulaBase):
-    """Solve quadratic equations ax² + bx + c = 0.
+class RayTriangleIntersection(FormulaBase):
+    """Ray-triangle intersection using Möller-Trumbore algorithm.
+
+    Computes intersection point, barycentric coordinates, and hit parameters.
     """
 
     def __init__(self):
-        super().__init__("quadratic_solver", "f.quadratic.solve")
+        super().__init__("ray_triangle_intersection", "f.geometric.ray_tri")
 
-    def forward(self, a: Tensor, b: Tensor, c: Tensor) -> Dict[str, Tensor]:
-        """Solve quadratic equation.
+    def forward(self, ray_origin: Tensor, ray_direction: Tensor,
+                triangle_vertices: Tensor) -> Dict[str, Tensor]:
+        """Test ray-triangle intersection.
 
         Args:
-            a: Coefficient of x² [...]
-            b: Coefficient of x [...]
-            c: Constant term [...]
+            ray_origin: Ray origins [..., 3]
+            ray_direction: Ray directions [..., 3] (should be normalized)
+            triangle_vertices: Triangle vertices [..., 3, 3]
 
         Returns:
-            discriminant: Δ = b² - 4ac [...]
-            root1: First root (real or real part) [...]
-            root2: Second root (real or real part) [...]
-            has_real_roots: Δ ≥ 0 [...]
-            is_degenerate: a ≈ 0 (linear equation) [...]
+            hit: Whether ray hits triangle [...]
+            t: Distance along ray [...]
+            u: Barycentric coordinate [...]
+            v: Barycentric coordinate [...]
+            hit_point: Intersection point [..., 3]
+            normal: Triangle normal [..., 3]
         """
+        # Handle broadcasting: add batch dimensions in one operation
+        target_ndim = triangle_vertices.ndim - 1  # Target ray batch dims
+        diff = target_ndim - ray_origin.ndim
+        if diff > 0:
+            new_shape = (1,) * diff + ray_origin.shape
+            ray_origin = ray_origin.view(new_shape)
+            ray_direction = ray_direction.view(new_shape)
+
+        # Extract vertices
+        v0 = triangle_vertices[..., 0, :]  # [..., 3]
+        v1 = triangle_vertices[..., 1, :]
+        v2 = triangle_vertices[..., 2, :]
+
+        # Edges
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+
+        # Möller-Trumbore algorithm
+        h = torch.cross(ray_direction, edge2, dim=-1)
+        a = torch.sum(edge1 * h, dim=-1)
+
+        # Parallel test
+        epsilon = 1e-8
+        parallel = torch.abs(a) < epsilon
+
+        f = 1.0 / (a + epsilon)
+        s = ray_origin - v0
+        u = f * torch.sum(s * h, dim=-1)
+
+        # Check bounds
+        hit = ~parallel & (u >= 0.0) & (u <= 1.0)
+
+        q = torch.cross(s, edge1, dim=-1)
+        v = f * torch.sum(ray_direction * q, dim=-1)
+
+        hit = hit & (v >= 0.0) & (u + v <= 1.0)
+
+        # Compute t
+        t = f * torch.sum(edge2 * q, dim=-1)
+        hit = hit & (t > epsilon)
+
+        # Hit point
+        hit_point = ray_origin + t.unsqueeze(-1) * ray_direction
+
+        # Triangle normal
+        normal = torch.cross(edge1, edge2, dim=-1)
+        normal = normal / (torch.norm(normal, dim=-1, keepdim=True) + epsilon)
+
+        return {
+            "hit": hit,
+            "t": t,
+            "u": u,
+            "v": v,
+            "hit_point": hit_point,
+            "normal": normal,
+            "backface": a < 0  # Ray hits from behind
+        }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class RayPlaneIntersection(FormulaBase):
+    """Ray-plane intersection test.
+
+    Plane defined by point and normal.
+    """
+
+    def __init__(self):
+        super().__init__("ray_plane_intersection", "f.geometric.ray_plane")
+
+    def forward(self, ray_origin: Tensor, ray_direction: Tensor,
+                plane_point: Tensor, plane_normal: Tensor) -> Dict[str, Tensor]:
+        """Test ray-plane intersection.
+
+        Args:
+            ray_origin: Ray origins [..., dim]
+            ray_direction: Ray directions [..., dim]
+            plane_point: Point on plane [..., dim]
+            plane_normal: Plane normal [..., dim]
+
+        Returns:
+            hit: Whether ray hits plane [...]
+            t: Distance along ray [...]
+            hit_point: Intersection point [..., dim]
+            is_parallel: Ray parallel to plane [...]
+        """
+        # Handle broadcasting: add batch dimensions in one operation
+        target_ndim = plane_point.ndim
+        diff = target_ndim - ray_origin.ndim
+        if diff > 0:
+            new_shape = (1,) * diff + ray_origin.shape
+            ray_origin = ray_origin.view(new_shape)
+            ray_direction = ray_direction.view(new_shape)
+
+        # Normalize plane normal
+        n = plane_normal / (torch.norm(plane_normal, dim=-1, keepdim=True) + 1e-10)
+
+        # Ray-plane intersection: t = ((p - o) · n) / (d · n)
+        denom = torch.sum(ray_direction * n, dim=-1)
+
+        # Parallel test
+        epsilon = 1e-8
+        is_parallel = torch.abs(denom) < epsilon
+
+        # Compute t
+        numerator = torch.sum((plane_point - ray_origin) * n, dim=-1)
+        t = numerator / (denom + epsilon)
+
+        # Hit if not parallel and t > 0
+        hit = ~is_parallel & (t > 0)
+
+        # Hit point
+        hit_point = ray_origin + t.unsqueeze(-1) * ray_direction
+
+        return {
+            "hit": hit,
+            "t": t,
+            "hit_point": hit_point,
+            "is_parallel": is_parallel
+        }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class RaySphereIntersection(FormulaBase):
+    """Ray-sphere intersection using quadratic formula.
+
+    Returns both near and far intersection points.
+    """
+
+    def __init__(self):
+        super().__init__("ray_sphere_intersection", "f.geometric.ray_sphere")
+
+    def forward(self, ray_origin: Tensor, ray_direction: Tensor,
+                sphere_center: Tensor, sphere_radius: Tensor) -> Dict[str, Tensor]:
+        """Test ray-sphere intersection.
+
+        Args:
+            ray_origin: Ray origins [..., 3]
+            ray_direction: Ray directions [..., 3]
+            sphere_center: Sphere centers [..., 3]
+            sphere_radius: Sphere radii [...]
+
+        Returns:
+            hit: Whether ray hits sphere [...]
+            t_near: Distance to near intersection [...]
+            t_far: Distance to far intersection [...]
+            hit_point_near: Near intersection point [..., 3]
+            hit_point_far: Far intersection point [..., 3]
+            normal_near: Normal at near point [..., 3]
+        """
+        # Handle broadcasting: add batch dimensions in one operation
+        target_ndim = sphere_center.ndim
+        diff = target_ndim - ray_origin.ndim
+        if diff > 0:
+            new_shape = (1,) * diff + ray_origin.shape
+            ray_origin = ray_origin.view(new_shape)
+            ray_direction = ray_direction.view(new_shape)
+
+        # Ensure radius has compatible shape for broadcasting
+        if sphere_radius.ndim < sphere_center.ndim - 1:
+            radius_diff = sphere_center.ndim - 1 - sphere_radius.ndim
+            sphere_radius = sphere_radius.view((1,) * radius_diff + sphere_radius.shape)
+
+        # Vector from ray origin to sphere center
+        oc = ray_origin - sphere_center
+
+        # Quadratic coefficients: at² + bt + c = 0
+        a = torch.sum(ray_direction * ray_direction, dim=-1)
+        b = 2.0 * torch.sum(oc * ray_direction, dim=-1)
+        c = torch.sum(oc * oc, dim=-1) - sphere_radius ** 2
+
         # Discriminant
-        discriminant = b**2 - 4*a*c
+        discriminant = b ** 2 - 4 * a * c
 
-        # Check for degenerate case
-        is_degenerate = torch.abs(a) < 1e-10
+        # Hit if discriminant >= 0
+        hit = discriminant >= 0
 
-        # Real roots when discriminant >= 0
-        has_real_roots = discriminant >= 0
+        # Compute t values
+        sqrt_disc = torch.sqrt(torch.clamp(discriminant, min=0.0))
+        t_near = (-b - sqrt_disc) / (2.0 * a + 1e-10)
+        t_far = (-b + sqrt_disc) / (2.0 * a + 1e-10)
 
-        # Compute roots using stable formula
-        # For numerical stability: if b > 0, use -b - √Δ for one root
-        sqrt_discriminant = torch.sqrt(torch.clamp(discriminant, min=0.0))
+        # Hit points
+        hit_point_near = ray_origin + t_near.unsqueeze(-1) * ray_direction
+        hit_point_far = ray_origin + t_far.unsqueeze(-1) * ray_direction
 
-        # Standard formula
-        root1 = (-b + sqrt_discriminant) / (2*a + 1e-10)
-        root2 = (-b - sqrt_discriminant) / (2*a + 1e-10)
+        # Normals (pointing outward)
+        normal_near = (hit_point_near - sphere_center) / sphere_radius.unsqueeze(-1)
 
         return {
-            "discriminant": discriminant,
-            "root1": root1,
-            "root2": root2,
-            "has_real_roots": has_real_roots,
-            "is_degenerate": is_degenerate,
-            "vertex_x": -b / (2*a + 1e-10)
+            "hit": hit,
+            "t_near": t_near,
+            "t_far": t_far,
+            "hit_point_near": hit_point_near,
+            "hit_point_far": hit_point_far,
+            "normal_near": normal_near,
+            "inside": t_near < 0  # Ray origin inside sphere
         }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class ParabolaProperties(FormulaBase):
-    """Compute parabola properties from quadratic y = ax² + bx + c.
+class RayAABBIntersection(FormulaBase):
+    """Ray-AABB (Axis-Aligned Bounding Box) intersection.
+
+    Uses slab method for efficient intersection testing.
     """
 
     def __init__(self):
-        super().__init__("parabola_properties", "f.quadratic.parabola")
+        super().__init__("ray_aabb_intersection", "f.geometric.ray_aabb")
 
-    def forward(self, a: Tensor, b: Tensor, c: Tensor) -> Dict[str, Tensor]:
-        """Compute parabola properties.
+    def forward(self, ray_origin: Tensor, ray_direction: Tensor,
+                box_min: Tensor, box_max: Tensor) -> Dict[str, Tensor]:
+        """Test ray-AABB intersection.
 
         Args:
-            a: Coefficient of x² [...]
-            b: Coefficient of x [...]
-            c: Constant term [...]
+            ray_origin: Ray origins [..., 3]
+            ray_direction: Ray directions [..., 3]
+            box_min: Box minimum corner [..., 3]
+            box_max: Box maximum corner [..., 3]
 
         Returns:
-            vertex: (h, k) coordinates [..., 2]
-            focus: Focus point [..., 2]
-            directrix_y: y-coordinate of directrix [...]
-            axis_of_symmetry: x = h [...]
-            opens_upward: a > 0 [...]
+            hit: Whether ray hits box [...]
+            t_near: Entry distance [...]
+            t_far: Exit distance [...]
+            hit_point: Entry point [..., 3]
         """
-        # Vertex: (h, k) = (-b/2a, c - b²/4a)
-        h = -b / (2*a + 1e-10)
-        k = c - b**2 / (4*a + 1e-10)
-        vertex = torch.stack([h, k], dim=-1)
+        # Handle broadcasting: add batch dimensions in one operation
+        target_ndim = box_min.ndim
+        diff = target_ndim - ray_origin.ndim
+        if diff > 0:
+            new_shape = (1,) * diff + ray_origin.shape
+            ray_origin = ray_origin.view(new_shape)
+            ray_direction = ray_direction.view(new_shape)
 
-        # Distance from vertex to focus: p = 1/(4a)
-        p = 1.0 / (4*a + 1e-10)
+        epsilon = 1e-8
+        inv_dir = 1.0 / (ray_direction + epsilon)
 
-        # Focus: (h, k + p)
-        focus = torch.stack([h, k + p], dim=-1)
+        # Compute intersections with all slabs
+        t0 = (box_min - ray_origin) * inv_dir
+        t1 = (box_max - ray_origin) * inv_dir
 
-        # Directrix: y = k - p
-        directrix_y = k - p
+        # Ensure t0 < t1
+        t_min = torch.minimum(t0, t1)
+        t_max = torch.maximum(t0, t1)
 
-        # Opening direction
-        opens_upward = a > 0
+        # Find largest t_min and smallest t_max
+        t_near = t_min.max(dim=-1)[0]
+        t_far = t_max.min(dim=-1)[0]
+
+        # Hit if t_near <= t_far and t_far >= 0
+        hit = (t_near <= t_far) & (t_far >= 0)
+
+        # Entry point
+        hit_point = ray_origin + t_near.unsqueeze(-1) * ray_direction
 
         return {
-            "vertex": vertex,
-            "focus": focus,
-            "directrix_y": directrix_y,
-            "axis_of_symmetry": h,
-            "opens_upward": opens_upward,
-            "focal_parameter": p
+            "hit": hit,
+            "t_near": t_near,
+            "t_far": t_far,
+            "hit_point": hit_point,
+            "inside": t_near < 0
         }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# K-SIMPLEX OPERATIONS
+# CONTAINMENT TESTS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class SimplexDimension(FormulaBase):
-    """Determine simplex dimension and validate structure.
+class PointInTriangle(FormulaBase):
+    """Test if points are inside triangles using barycentric coordinates.
 
-    A k-simplex has (k+1) vertices and lives in k-dimensional space.
+    Works for both 2D and 3D triangles.
     """
 
     def __init__(self):
-        super().__init__("simplex_dimension", "f.quadratic.simplex_dim")
+        super().__init__("point_in_triangle", "f.geometric.point_in_tri")
 
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Analyze simplex dimension.
-
-        Args:
-            vertices: Simplex vertices [..., n_vertices, embedding_dim]
-
-        Returns:
-            k: Simplex dimension (k-simplex) [...]
-            n_vertices: Number of vertices [...]
-            embedding_dim: Embedding space dimension [...]
-            n_edges: Number of edges C(k+1, 2) [...]
-            n_faces: Number of 2-faces C(k+1, 3) [...]
-            is_valid: n_vertices >= 1 [...]
-        """
-        n_vertices = vertices.shape[-2]
-        embedding_dim = vertices.shape[-1]
-
-        # k-simplex has k+1 vertices
-        k = n_vertices - 1
-
-        # Number of i-dimensional faces: C(k+1, i+1)
-        n_edges = (n_vertices * (n_vertices - 1)) // 2 if n_vertices >= 2 else 0
-        n_faces = (n_vertices * (n_vertices - 1) * (n_vertices - 2)) // 6 if n_vertices >= 3 else 0
-
-        is_valid = n_vertices >= 1
-
-        return {
-            "k": torch.tensor(k),
-            "n_vertices": torch.tensor(n_vertices),
-            "embedding_dim": torch.tensor(embedding_dim),
-            "n_edges": torch.tensor(n_edges),
-            "n_faces": torch.tensor(n_faces),
-            "is_valid": torch.tensor(is_valid)
-        }
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class BarycentricCoordinates(FormulaBase):
-    """Compute barycentric coordinates for points relative to simplices.
-
-    For a k-simplex with vertices v₀, ..., vₖ, any point p can be expressed as:
-        p = Σᵢ wᵢ vᵢ where Σwᵢ = 1
-    Point is inside simplex if all wᵢ ≥ 0.
-    """
-
-    def __init__(self):
-        super().__init__("barycentric_coords", "f.quadratic.barycentric")
-
-    def forward(self, points: Tensor, simplex_vertices: Tensor) -> Dict[str, Tensor]:
-        """Compute barycentric coordinates.
+    def forward(self, point: Tensor, triangle_vertices: Tensor) -> Dict[str, Tensor]:
+        """Test point containment.
 
         Args:
-            points: Query points [..., n_points, dim]
-            simplex_vertices: Simplex vertices [..., k+1, dim]
+            point: Query points [..., dim]
+            triangle_vertices: Triangle vertices [..., 3, dim]
 
         Returns:
-            weights: Barycentric weights [..., n_points, k+1]
-            is_inside: All weights ≥ 0 [..., n_points]
-            weights_sum: Σwᵢ (should be 1) [..., n_points]
-            closest_vertex: Index of vertex with max weight [..., n_points]
+            inside: Point is inside triangle [...]
+            barycentric: Barycentric coordinates [..., 3]
+            closest_vertex: Index of nearest vertex [...]
         """
-        # For k-simplex in d-dimensional space (d ≥ k):
-        # Solve linear system: [v₁-v₀, v₂-v₀, ..., vₖ-v₀]ᵀ λ = p - v₀
-        # Then w₀ = 1 - Σλᵢ, wᵢ = λᵢ for i > 0
+        # Handle broadcasting: add batch dimensions in one operation
+        target_ndim = triangle_vertices.ndim - 1
+        diff = target_ndim - point.ndim
+        if diff > 0:
+            new_shape = (1,) * diff + point.shape
+            point = point.view(new_shape)
 
-        v0 = simplex_vertices[..., 0:1, :]  # [..., 1, dim]
-        v_rest = simplex_vertices[..., 1:, :]  # [..., k, dim]
+        v0 = triangle_vertices[..., 0, :]
+        v1 = triangle_vertices[..., 1, :]
+        v2 = triangle_vertices[..., 2, :]
 
-        # Edge vectors from v0
-        edges = v_rest - v0  # [..., k, dim]
+        # Vectors
+        v0v1 = v1 - v0
+        v0v2 = v2 - v0
+        v0p = point - v0
 
-        # Vector from v0 to points
-        p_rel = points.unsqueeze(-2) - v0  # [..., n_points, 1, dim]
+        # Dot products
+        dot00 = torch.sum(v0v1 * v0v1, dim=-1)
+        dot01 = torch.sum(v0v1 * v0v2, dim=-1)
+        dot02 = torch.sum(v0v1 * v0p, dim=-1)
+        dot11 = torch.sum(v0v2 * v0v2, dim=-1)
+        dot12 = torch.sum(v0v2 * v0p, dim=-1)
 
-        # Solve least squares: edges^T @ lambda = p_rel
-        # Using pseudo-inverse for general case
-        edges_t = edges.transpose(-2, -1)  # [..., dim, k]
+        # Barycentric coordinates
+        inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01 + 1e-10)
+        u = (dot11 * dot02 - dot01 * dot12) * inv_denom
+        v = (dot00 * dot12 - dot01 * dot02) * inv_denom
+        w = 1.0 - u - v
 
-        # Compute (edges^T edges)^(-1) edges^T
-        gram = torch.matmul(edges_t, edges)  # [..., k, k]
-        gram_inv = torch.linalg.pinv(gram)  # [..., k, k]
+        barycentric = torch.stack([w, u, v], dim=-1)
 
-        # Lambda = gram_inv @ edges^T @ p_rel
-        lambda_vals = torch.matmul(
-            torch.matmul(gram_inv, edges_t),
-            p_rel.squeeze(-2).unsqueeze(-1)
-        ).squeeze(-1)  # [..., n_points, k]
-
-        # Compute all weights
-        w0 = 1.0 - lambda_vals.sum(dim=-1, keepdim=True)  # [..., n_points, 1]
-        weights = torch.cat([w0, lambda_vals], dim=-1)  # [..., n_points, k+1]
-
-        # Check if inside (all weights ≥ 0)
-        is_inside = (weights >= -1e-6).all(dim=-1)
-
-        # Sum of weights (should be 1)
-        weights_sum = weights.sum(dim=-1)
+        # Inside if all coords >= 0
+        inside = (u >= -1e-6) & (v >= -1e-6) & (w >= -1e-6)
 
         # Closest vertex
-        closest_vertex = torch.argmax(weights, dim=-1)
+        closest_vertex = torch.argmax(barycentric, dim=-1)
 
         return {
-            "weights": weights,
-            "is_inside": is_inside,
-            "weights_sum": weights_sum,
+            "inside": inside,
+            "barycentric": barycentric,
             "closest_vertex": closest_vertex
         }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class SimplexVolume(FormulaBase):
-    """Compute k-simplex volume using Cayley-Menger determinant.
-
-    Works for arbitrary k-dimensional simplices in d-dimensional space (d ≥ k).
+class SphereSphereOverlap(FormulaBase):
+    """Test if two spheres overlap or contain each other.
     """
 
     def __init__(self):
-        super().__init__("simplex_volume", "f.quadratic.volume")
+        super().__init__("sphere_sphere_overlap", "f.geometric.sphere_overlap")
 
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Compute simplex volume.
+    def forward(self, center_a: Tensor, radius_a: Tensor,
+                center_b: Tensor, radius_b: Tensor) -> Dict[str, Tensor]:
+        """Test sphere overlap.
 
         Args:
-            vertices: Simplex vertices [..., k+1, dim]
+            center_a: First sphere centers [..., dim]
+            radius_a: First sphere radii [...]
+            center_b: Second sphere centers [..., dim]
+            radius_b: Second sphere radii [...]
 
         Returns:
-            volume: k-dimensional volume [...]
-            volume_squared: V² (from determinant) [...]
-            is_degenerate: Volume ≈ 0 [...]
-            quality: Volume relative to ideal [...]
+            overlaps: Spheres overlap [...]
+            contains: One sphere contains the other [...]
+            distance: Distance between centers [...]
+            penetration: Overlap depth [...]
         """
-        k_plus_1 = vertices.shape[-2]
-        k = k_plus_1 - 1
+        # Distance between centers
+        distance = torch.norm(center_b - center_a, dim=-1)
 
-        if k == 0:
-            # Point: volume = 0
-            volume = torch.zeros(vertices.shape[:-2])
-            return {
-                "volume": volume,
-                "volume_squared": volume,
-                "is_degenerate": torch.ones_like(volume, dtype=torch.bool),
-                "quality": torch.zeros_like(volume)
-            }
+        # Overlap if distance < r_a + r_b
+        overlaps = distance < (radius_a + radius_b)
 
-        # Compute pairwise distances
-        distances = torch.cdist(vertices, vertices, p=2)  # [..., k+1, k+1]
+        # Containment if distance + r_smaller < r_larger
+        contains = ((distance + radius_b) < radius_a) | ((distance + radius_a) < radius_b)
 
-        # Build Cayley-Menger matrix
-        # CM = [ 0   1   1  ...  1  ]
-        #      [ 1  d²₀₁ d²₀₂ ... d²₀ₖ]
-        #      [ 1  d²₁₀ d²₁₂ ... d²₁ₖ]
-        #      [ :   :    :       :  ]
-
-        dist_squared = distances ** 2
-
-        # Create augmented matrix
-        batch_shape = dist_squared.shape[:-2]
-        cm = torch.zeros(*batch_shape, k_plus_1 + 1, k_plus_1 + 1,
-                        device=vertices.device, dtype=vertices.dtype)
-
-        # Fill with distances squared
-        cm[..., 1:, 1:] = dist_squared
-
-        # Fill first row and column with 1s (except [0,0])
-        cm[..., 0, 1:] = 1.0
-        cm[..., 1:, 0] = 1.0
-        cm[..., 0, 0] = 0.0
-
-        # Compute determinant
-        det = torch.linalg.det(cm)
-
-        # Volume formula: V² = (-1)^(k+1) / (2^k (k!)²) × det
-        sign = (-1) ** (k + 1)
-        factorial_k = math.factorial(k)
-        denominator = (2 ** k) * (factorial_k ** 2)
-
-        volume_squared = sign * det / denominator
-        volume_squared = torch.clamp(volume_squared, min=0.0)  # Numerical safety
-
-        volume = torch.sqrt(volume_squared)
-
-        # Check degeneracy
-        is_degenerate = volume < 1e-10
-
-        # Quality: compare to regular simplex of same edge length
-        mean_edge = distances[..., torch.triu_indices(k_plus_1, k_plus_1, offset=1)[0],
-                              torch.triu_indices(k_plus_1, k_plus_1, offset=1)[1]].mean(dim=-1)
-
-        # Regular k-simplex volume with edge length a:
-        # V_regular = (a^k / k!) × √((k+1)/(2^k))
-        if k > 0:
-            regular_volume = ((mean_edge ** k) / factorial_k) * math.sqrt((k + 1) / (2 ** k))
-            quality = volume / (regular_volume + 1e-10)
-        else:
-            quality = torch.ones_like(volume)
+        # Penetration depth
+        penetration = (radius_a + radius_b) - distance
+        penetration = torch.clamp(penetration, min=0.0)
 
         return {
-            "volume": volume,
-            "volume_squared": volume_squared,
-            "is_degenerate": is_degenerate,
-            "quality": quality
+            "overlaps": overlaps,
+            "contains": contains,
+            "distance": distance,
+            "penetration": penetration,
+            "separated": distance >= (radius_a + radius_b)
         }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class SimplexEdges(FormulaBase):
-    """Extract edges from k-simplex.
+# CLOSEST POINT QUERIES
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    A k-simplex has C(k+1, 2) edges.
+class ClosestPointOnTriangle(FormulaBase):
+    """Find closest point on triangle to query point.
+
+    Handles points inside, on edges, and outside triangle.
     """
 
     def __init__(self):
-        super().__init__("simplex_edges", "f.quadratic.edges")
+        super().__init__("closest_point_triangle", "f.geometric.closest_tri")
 
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Extract edges.
+    def forward(self, point: Tensor, triangle_vertices: Tensor) -> Dict[str, Tensor]:
+        """Find closest point on triangle.
 
         Args:
-            vertices: Simplex vertices [..., k+1, dim]
+            point: Query points [..., 3]
+            triangle_vertices: Triangle vertices [..., 3, 3]
 
         Returns:
-            edges: Edge vectors [..., n_edges, dim]
-            edge_lengths: Length of each edge [..., n_edges]
-            edge_indices: Vertex pairs [n_edges, 2]
-            min_edge: Minimum edge length [...]
-            max_edge: Maximum edge length [...]
-            aspect_ratio: max_edge / min_edge [...]
+            closest_point: Closest point on triangle [..., 3]
+            distance: Distance to triangle [...]
+            barycentric: Barycentric coordinates of closest point [..., 3]
+            region: Which region (interior=0, edge=1-3, vertex=4-6) [...]
         """
-        n_vertices = vertices.shape[-2]
+        # Handle broadcasting: add batch dimensions in one operation
+        target_ndim = triangle_vertices.ndim - 1
+        diff = target_ndim - point.ndim
+        if diff > 0:
+            new_shape = (1,) * diff + point.shape
+            point = point.view(new_shape)
 
-        # Generate edge indices using triu_indices (upper triangular)
-        # This gives all pairs (i, j) where i < j
-        i_idx, j_idx = torch.triu_indices(n_vertices, n_vertices, offset=1, device=vertices.device)
-        n_edges = i_idx.shape[0]
+        v0 = triangle_vertices[..., 0, :]
+        v1 = triangle_vertices[..., 1, :]
+        v2 = triangle_vertices[..., 2, :]
 
-        # Extract vertices for all edges at once
-        # vertices: [..., k+1, dim]
-        # i_idx, j_idx: [n_edges]
-        vertices_i = vertices[..., i_idx, :]  # [..., n_edges, dim]
-        vertices_j = vertices[..., j_idx, :]  # [..., n_edges, dim]
+        # Check if inside using barycentric
+        v0v1 = v1 - v0
+        v0v2 = v2 - v0
+        v0p = point - v0
 
-        # Compute edge vectors and lengths
-        edges = vertices_j - vertices_i  # [..., n_edges, dim]
-        edge_lengths = torch.norm(edges, dim=-1)  # [..., n_edges]
+        dot00 = torch.sum(v0v1 * v0v1, dim=-1)
+        dot01 = torch.sum(v0v1 * v0v2, dim=-1)
+        dot02 = torch.sum(v0v1 * v0p, dim=-1)
+        dot11 = torch.sum(v0v2 * v0v2, dim=-1)
+        dot12 = torch.sum(v0v2 * v0p, dim=-1)
 
-        # Edge indices as pairs
-        edge_indices = torch.stack([i_idx, j_idx], dim=-1)  # [n_edges, 2]
+        inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01 + 1e-10)
+        u = (dot11 * dot02 - dot01 * dot12) * inv_denom
+        v = (dot00 * dot12 - dot01 * dot02) * inv_denom
 
-        # Statistics
-        min_edge = edge_lengths.min(dim=-1)[0]
-        max_edge = edge_lengths.max(dim=-1)[0]
-        aspect_ratio = max_edge / (min_edge + 1e-10)
+        # Clamp to triangle
+        u = torch.clamp(u, 0.0, 1.0)
+        v = torch.clamp(v, 0.0, 1.0)
+
+        # Ensure u + v <= 1
+        uv_sum = u + v
+        scale = torch.where(uv_sum > 1.0, 1.0 / (uv_sum + 1e-10), torch.ones_like(uv_sum))
+        u = u * scale
+        v = v * scale
+
+        w = 1.0 - u - v
+
+        # Closest point
+        barycentric = torch.stack([w, u, v], dim=-1)
+        closest_point = w.unsqueeze(-1) * v0 + u.unsqueeze(-1) * v1 + v.unsqueeze(-1) * v2
+
+        # Distance
+        distance = torch.norm(point - closest_point, dim=-1)
+
+        # Determine region
+        epsilon = 1e-6
+        on_vertex = (w > 1.0 - epsilon) | (u > 1.0 - epsilon) | (v > 1.0 - epsilon)
+        on_edge = ((w < epsilon) | (u < epsilon) | (v < epsilon)) & ~on_vertex
+        interior = (w >= epsilon) & (u >= epsilon) & (v >= epsilon)
+
+        region = torch.zeros_like(distance, dtype=torch.long)
+        region = torch.where(interior, 0, region)
+        region = torch.where(on_edge, 1, region)
+        region = torch.where(on_vertex, 2, region)
 
         return {
-            "edges": edges,
-            "edge_lengths": edge_lengths,
-            "edge_indices": edge_indices,
-            "min_edge": min_edge,
-            "max_edge": max_edge,
-            "aspect_ratio": aspect_ratio,
-            "n_edges": torch.tensor(n_edges)
+            "closest_point": closest_point,
+            "distance": distance,
+            "barycentric": barycentric,
+            "region": region
         }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class SimplexFaces(FormulaBase):
-    """Extract i-dimensional faces from k-simplex.
-
-    A k-simplex has C(k+1, i+1) faces of dimension i.
-    """
-
-    def __init__(self, face_dim: int = 2):
-        super().__init__("simplex_faces", "f.quadratic.faces")
-        self.face_dim = face_dim
-
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Extract faces.
-
-        Args:
-            vertices: Simplex vertices [..., k+1, dim]
-
-        Returns:
-            face_indices: Indices of vertices in each face [n_faces, face_dim+1]
-            n_faces: Number of faces
-            face_volumes: Volume of each face [..., n_faces]
-        """
-        n_vertices = vertices.shape[-2]
-        i = self.face_dim
-
-        if i >= n_vertices:
-            # No faces of this dimension
-            return {
-                "face_indices": torch.tensor([], dtype=torch.long),
-                "n_faces": torch.tensor(0),
-                "face_volumes": torch.tensor([])
-            }
-
-        # Generate all (i+1)-combinations of vertex indices
-        # This is the only place we use combinations, but it's computed once, not per batch
-        face_tuples = list(combinations(range(n_vertices), i + 1))
-        n_faces = len(face_tuples)
-
-        # Convert to tensor: [n_faces, i+1]
-        face_indices = torch.tensor(face_tuples, dtype=torch.long, device=vertices.device)
-
-        # Extract all face vertices at once using advanced indexing
-        # vertices: [..., k+1, dim]
-        # face_indices: [n_faces, i+1]
-        # We want: [..., n_faces, i+1, dim]
-
-        # Expand vertices for broadcasting
-        # [..., k+1, dim] -> [..., 1, k+1, dim]
-        verts_expanded = vertices.unsqueeze(-3)
-
-        # Use gather to extract face vertices
-        # face_indices: [n_faces, i+1] -> [1, n_faces, i+1, 1]
-        face_idx_expanded = face_indices.view(1, n_faces, i+1, 1).expand(
-            *vertices.shape[:-2], n_faces, i+1, vertices.shape[-1]
-        )
-
-        # Gather face vertices: [..., n_faces, i+1, dim]
-        face_vertices = torch.gather(
-            vertices.unsqueeze(-3).expand(*vertices.shape[:-2], n_faces, *vertices.shape[-2:]),
-            -2,
-            face_idx_expanded
-        )
-
-        # Compute volumes for all faces in batch
-        # face_vertices: [..., n_faces, i+1, dim]
-        # Reshape to [...*n_faces, i+1, dim] for batch processing
-        batch_shape = face_vertices.shape[:-2]
-        face_verts_flat = face_vertices.reshape(-1, i+1, vertices.shape[-1])
-
-        # Compute volume for all faces at once
-        volume_calculator = SimplexVolume()
-        vol_result = volume_calculator.forward(face_verts_flat)
-
-        # Reshape back to [..., n_faces]
-        face_volumes = vol_result["volume"].reshape(*batch_shape)
-
-        return {
-            "face_indices": face_indices,
-            "n_faces": torch.tensor(n_faces),
-            "face_volumes": face_volumes
-        }
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class SimplexFacesDiffusion(FormulaBase):
-    """Sample faces using heat diffusion to identify geometrically important regions.
-
-    Uses diffusion on vertex adjacency graph to concentrate sampling in high-curvature,
-    high-connectivity areas. Fully batched with zero Python loops.
-
-    Args:
-        face_dim: Dimension of faces to extract (default: 2 for triangles)
-        sample_budget: Number of faces to sample (default: 1000)
-        diffusion_steps: Number of diffusion iterations (default: 5)
-        temperature: Controls diffusion spread (default: 0.1)
-    """
-
-    def __init__(self, face_dim: int = 2, sample_budget: int = 1000,
-                 diffusion_steps: int = 5, temperature: float = 0.1):
-        super().__init__("simplex_faces_diffusion", "f.quadratic.faces_diffusion")
-        self.face_dim = face_dim
-        self.sample_budget = sample_budget
-        self.diffusion_steps = diffusion_steps
-        self.temperature = temperature
-
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Sample faces using diffusion-based importance sampling.
-
-        Args:
-            vertices: Simplex vertices [..., n_vertices, dim]
-
-        Returns:
-            face_indices: Sampled face indices [..., sample_budget, face_dim+1]
-            face_volumes: Volumes of sampled faces [..., sample_budget]
-            valid_mask: Which faces have unique vertices [..., sample_budget]
-            importance_scores: Per-vertex importance from diffusion [..., n_vertices]
-            n_valid: Number of valid faces per batch [...]
-        """
-        n_vertices = vertices.shape[-2]
-        k = self.face_dim
-        device = vertices.device
-        batch_shape = vertices.shape[:-2]
-
-        # Build adjacency matrix: A_ij = exp(-||v_i - v_j||^2 / T)
-        distances = torch.cdist(vertices, vertices, p=2)  # [..., n, n]
-        adjacency = torch.exp(-distances ** 2 / self.temperature)
-
-        # Zero diagonal
-        adjacency = adjacency * (1 - torch.eye(n_vertices, device=device))
-
-        # Normalize to transition matrix
-        transition = adjacency / (adjacency.sum(dim=-1, keepdim=True) + 1e-10)
-
-        # Compute P^t using matrix power (single operation, no loop)
-        transition_power = torch.linalg.matrix_power(transition, self.diffusion_steps)
-
-        # Apply diffusion: heat distribution after t steps
-        heat_init = torch.ones(*batch_shape, n_vertices, 1, device=device) / n_vertices
-        heat = torch.matmul(transition_power, heat_init).squeeze(-1)  # [..., n_vertices]
-
-        # Numerical stability: clamp and renormalize
-        heat = torch.clamp(heat, min=1e-10)
-        heat = heat / heat.sum(dim=-1, keepdim=True)
-
-        # Sample vertices proportional to importance
-        n_samples = (k + 1) * self.sample_budget
-
-        # Reshape for batched multinomial
-        heat_flat = heat.reshape(-1, n_vertices)
-        sampled_flat = torch.multinomial(heat_flat, n_samples, replacement=True)
-        sampled = sampled_flat.reshape(*batch_shape, self.sample_budget, k+1)
-
-        # Sort faces and check for uniqueness (vectorized)
-        face_indices, _ = torch.sort(sampled, dim=-1)
-
-        # Uniqueness check: count self-matches (diagonal should equal k+1)
-        expanded_a = face_indices.unsqueeze(-1)  # [..., budget, k+1, 1]
-        expanded_b = face_indices.unsqueeze(-2)  # [..., budget, 1, k+1]
-        matches = (expanded_a == expanded_b).sum(dim=(-2, -1))  # [..., budget]
-        valid_mask = (matches == (k + 1))
-
-        # Gather face vertices
-        dim = vertices.shape[-1]
-        face_idx_exp = face_indices.unsqueeze(-1).expand(
-            *batch_shape, self.sample_budget, k+1, dim
-        )
-        verts_exp = vertices.unsqueeze(-3).expand(
-            *batch_shape, self.sample_budget, n_vertices, dim
-        )
-        face_verts = torch.gather(verts_exp, -2, face_idx_exp)
-
-        # Compute volumes for all faces in batch
-        vol_calc = SimplexVolume()
-        volumes = vol_calc.forward(face_verts.reshape(-1, k+1, dim))["volume"]
-        face_volumes = volumes.reshape(*batch_shape, self.sample_budget)
-
-        # Zero out invalid faces
-        face_volumes = face_volumes * valid_mask.float()
-
-        return {
-            "face_indices": face_indices,
-            "face_volumes": face_volumes,
-            "valid_mask": valid_mask,
-            "importance_scores": heat,
-            "n_valid": valid_mask.sum(dim=-1)
-        }
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class SimplexCentroid(FormulaBase):
-    """Compute centroid (barycenter) of k-simplex.
-
-    Centroid = (1/(k+1)) × Σᵢ vᵢ
+class ClosestPointOnSegment(FormulaBase):
+    """Find closest point on line segment to query point.
     """
 
     def __init__(self):
-        super().__init__("simplex_centroid", "f.quadratic.centroid")
+        super().__init__("closest_point_segment", "f.geometric.closest_seg")
 
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Compute centroid.
+    def forward(self, point: Tensor, segment_start: Tensor,
+                segment_end: Tensor) -> Dict[str, Tensor]:
+        """Find closest point on segment.
 
         Args:
-            vertices: Simplex vertices [..., k+1, dim]
+            point: Query points [..., dim]
+            segment_start: Segment start points [..., dim]
+            segment_end: Segment end points [..., dim]
 
         Returns:
-            centroid: Center point [..., dim]
-            distances_to_vertices: Distance from centroid to each vertex [..., k+1]
-            radius: Maximum distance (circumradius approximation) [...]
+            closest_point: Closest point on segment [..., dim]
+            distance: Distance to segment [...]
+            t: Parameter along segment [0, 1] [...]
+            on_endpoint: Closest point is an endpoint [...]
         """
-        # Centroid
-        centroid = vertices.mean(dim=-2)
+        # Vector from start to end
+        segment = segment_end - segment_start
 
-        # Distances to vertices
-        distances = torch.norm(vertices - centroid.unsqueeze(-2), dim=-1)
+        # Vector from start to point
+        v = point - segment_start
 
-        # Maximum distance (approximate circumradius)
+        # Project onto segment
+        segment_length_sq = torch.sum(segment * segment, dim=-1, keepdim=True)
+        t = torch.sum(v * segment, dim=-1, keepdim=True) / (segment_length_sq + 1e-10)
+
+        # Clamp to [0, 1]
+        t = torch.clamp(t, 0.0, 1.0)
+
+        # Closest point
+        closest_point = segment_start + t * segment
+
+        # Distance
+        distance = torch.norm(point - closest_point, dim=-1)
+
+        # On endpoint
+        epsilon = 1e-6
+        on_endpoint = (t.squeeze(-1) < epsilon) | (t.squeeze(-1) > 1.0 - epsilon)
+
+        return {
+            "closest_point": closest_point,
+            "distance": distance,
+            "t": t.squeeze(-1),
+            "on_endpoint": on_endpoint
+        }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TRANSFORMATIONS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class RotationMatrix3D(FormulaBase):
+    """Generate 3D rotation matrices from axis and angle.
+
+    Uses Rodrigues' rotation formula.
+    """
+
+    def __init__(self):
+        super().__init__("rotation_matrix_3d", "f.geometric.rotation_3d")
+
+    def forward(self, axis: Tensor, angle: Tensor) -> Dict[str, Tensor]:
+        """Create rotation matrix.
+
+        Args:
+            axis: Rotation axis [..., 3] (will be normalized)
+            angle: Rotation angle in radians [...]
+
+        Returns:
+            matrix: Rotation matrix [..., 3, 3]
+            axis_normalized: Normalized axis [..., 3]
+        """
+        # Normalize axis
+        axis_norm = axis / (torch.norm(axis, dim=-1, keepdim=True) + 1e-10)
+
+        # Components
+        x = axis_norm[..., 0]
+        y = axis_norm[..., 1]
+        z = axis_norm[..., 2]
+
+        c = torch.cos(angle)
+        s = torch.sin(angle)
+        one_minus_c = 1.0 - c
+
+        # Build rotation matrix using Rodrigues' formula
+        batch_shape = angle.shape
+        R = torch.zeros(*batch_shape, 3, 3, device=angle.device, dtype=angle.dtype)
+
+        R[..., 0, 0] = c + x * x * one_minus_c
+        R[..., 0, 1] = x * y * one_minus_c - z * s
+        R[..., 0, 2] = x * z * one_minus_c + y * s
+
+        R[..., 1, 0] = y * x * one_minus_c + z * s
+        R[..., 1, 1] = c + y * y * one_minus_c
+        R[..., 1, 2] = y * z * one_minus_c - x * s
+
+        R[..., 2, 0] = z * x * one_minus_c - y * s
+        R[..., 2, 1] = z * y * one_minus_c + x * s
+        R[..., 2, 2] = c + z * z * one_minus_c
+
+        return {
+            "matrix": R,
+            "axis_normalized": axis_norm
+        }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class QuaternionToMatrix(FormulaBase):
+    """Convert quaternion to rotation matrix.
+
+    Quaternion format: [w, x, y, z] where w is scalar part.
+    """
+
+    def __init__(self):
+        super().__init__("quaternion_to_matrix", "f.geometric.quat_to_mat")
+
+    def forward(self, quaternion: Tensor) -> Dict[str, Tensor]:
+        """Convert quaternion to matrix.
+
+        Args:
+            quaternion: Quaternions [..., 4] as [w, x, y, z]
+
+        Returns:
+            matrix: Rotation matrices [..., 3, 3]
+            quaternion_normalized: Normalized quaternion [..., 4]
+        """
+        # Normalize quaternion
+        q = quaternion / (torch.norm(quaternion, dim=-1, keepdim=True) + 1e-10)
+
+        w = q[..., 0]
+        x = q[..., 1]
+        y = q[..., 2]
+        z = q[..., 3]
+
+        # Build matrix
+        batch_shape = w.shape
+        R = torch.zeros(*batch_shape, 3, 3, device=q.device, dtype=q.dtype)
+
+        R[..., 0, 0] = 1.0 - 2.0 * (y * y + z * z)
+        R[..., 0, 1] = 2.0 * (x * y - w * z)
+        R[..., 0, 2] = 2.0 * (x * z + w * y)
+
+        R[..., 1, 0] = 2.0 * (x * y + w * z)
+        R[..., 1, 1] = 1.0 - 2.0 * (x * x + z * z)
+        R[..., 1, 2] = 2.0 * (y * z - w * x)
+
+        R[..., 2, 0] = 2.0 * (x * z - w * y)
+        R[..., 2, 1] = 2.0 * (y * z + w * x)
+        R[..., 2, 2] = 1.0 - 2.0 * (x * x + y * y)
+
+        return {
+            "matrix": R,
+            "quaternion_normalized": q
+        }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# BOUNDING VOLUMES
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class AxisAlignedBoundingBox(FormulaBase):
+    """Compute axis-aligned bounding box from points.
+    """
+
+    def __init__(self):
+        super().__init__("aabb", "f.geometric.aabb")
+
+    def forward(self, points: Tensor) -> Dict[str, Tensor]:
+        """Compute AABB.
+
+        Args:
+            points: Point cloud [..., n_points, dim]
+
+        Returns:
+            min_corner: Minimum corner [..., dim]
+            max_corner: Maximum corner [..., dim]
+            center: Box center [..., dim]
+            size: Box dimensions [..., dim]
+            volume: Box volume [...]
+        """
+        # Min and max along each axis
+        min_corner = points.min(dim=-2)[0]
+        max_corner = points.max(dim=-2)[0]
+
+        # Center and size
+        center = (min_corner + max_corner) * 0.5
+        size = max_corner - min_corner
+
+        # Volume (product of dimensions)
+        volume = size.prod(dim=-1)
+
+        return {
+            "min_corner": min_corner,
+            "max_corner": max_corner,
+            "center": center,
+            "size": size,
+            "volume": volume
+        }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class BoundingSphere(FormulaBase):
+    """Compute bounding sphere from points.
+
+    Uses centroid and maximum distance (not minimal sphere).
+    """
+
+    def __init__(self):
+        super().__init__("bounding_sphere", "f.geometric.bsphere")
+
+    def forward(self, points: Tensor) -> Dict[str, Tensor]:
+        """Compute bounding sphere.
+
+        Args:
+            points: Point cloud [..., n_points, dim]
+
+        Returns:
+            center: Sphere center [..., dim]
+            radius: Sphere radius [...]
+            volume: Sphere volume [...]
+            surface_area: Sphere surface area [...]
+        """
+        # Center as centroid
+        center = points.mean(dim=-2)
+
+        # Radius as max distance from center
+        distances = torch.norm(points - center.unsqueeze(-2), dim=-1)
         radius = distances.max(dim=-1)[0]
 
-        return {
-            "centroid": centroid,
-            "distances_to_vertices": distances,
-            "radius": radius,
-            "mean_distance": distances.mean(dim=-1)
-        }
+        # Geometric properties
+        dim = points.shape[-1]
 
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class SimplexQuality(FormulaBase):
-    """Compute quality metrics for k-simplex.
-
-    Measures how well-shaped the simplex is.
-    """
-
-    def __init__(self):
-        super().__init__("simplex_quality", "f.quadratic.quality")
-
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Compute quality metrics.
-
-        Args:
-            vertices: Simplex vertices [..., k+1, dim]
-
-        Returns:
-            regularity: Deviation from regular simplex [0, 1] [...]
-            aspect_ratio: Edge length ratio [...]
-            volume_quality: Volume relative to regular [...]
-            is_well_shaped: quality > threshold [...]
-        """
-        # Get edges
-        edge_calc = SimplexEdges()
-        edge_result = edge_calc.forward(vertices)
-
-        aspect_ratio = edge_result["aspect_ratio"]
-
-        # Get volume
-        vol_calc = SimplexVolume()
-        vol_result = vol_calc.forward(vertices)
-
-        volume_quality = vol_result["quality"]
-
-        # Regularity: inverse of aspect ratio
-        regularity = 1.0 / (aspect_ratio + 1e-10)
-        regularity = torch.clamp(regularity, 0.0, 1.0)
-
-        # Well-shaped if regularity > 0.3 and not degenerate
-        is_well_shaped = (regularity > 0.3) & (~vol_result["is_degenerate"])
-
-        return {
-            "regularity": regularity,
-            "aspect_ratio": aspect_ratio,
-            "volume_quality": volume_quality,
-            "is_well_shaped": is_well_shaped,
-            "is_degenerate": vol_result["is_degenerate"]
-        }
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-class SimplexToSimplex(FormulaBase):
-    """Map between simplices of different dimensions.
-
-    For [b, k₁+1, d] → [b, k₂+1, d] transformations.
-    """
-
-    def __init__(self, target_k: int):
-        super().__init__("simplex_to_simplex", "f.quadratic.simplex_map")
-        self.target_k = target_k
-
-    def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
-        """Map simplex to different dimension.
-
-        Args:
-            vertices: Source simplex [..., k₁+1, dim]
-
-        Returns:
-            target_vertices: Target simplex [..., k₂+1, dim]
-            mapping_type: "subdivision", "projection", or "aggregation"
-        """
-        source_k = vertices.shape[-2] - 1
-        target_k = self.target_k
-
-        if source_k == target_k:
-            # Same dimension
-            return {
-                "target_vertices": vertices,
-                "mapping_type": "identity"
-            }
-
-        elif source_k < target_k:
-            # Subdivision: add vertices
-            n_to_add = target_k - source_k
-
-            # Compute centroid once
-            centroid = vertices.mean(dim=-2, keepdim=True)  # [..., 1, dim]
-
-            # Create interpolation weights for all new vertices at once
-            # t values: [n_to_add]
-            t_values = torch.linspace(1.0 / (n_to_add + 1),
-                                     n_to_add / (n_to_add + 1),
-                                     n_to_add,
-                                     device=vertices.device,
-                                     dtype=vertices.dtype)
-
-            # Vertex indices to interpolate with (cycle through existing vertices)
-            # [n_to_add]
-            vert_indices = torch.arange(n_to_add, device=vertices.device) % vertices.shape[-2]
-
-            # Get selected vertices: [..., n_to_add, dim]
-            selected_verts = vertices[..., vert_indices, :]
-
-            # Interpolate: (1-t)*centroid + t*vertex
-            # centroid: [..., 1, dim]
-            # selected_verts: [..., n_to_add, dim]
-            # t_values: [n_to_add] -> [..., n_to_add, 1]
-            t_expanded = t_values.view(*([1] * (vertices.ndim - 2)), n_to_add, 1)
-
-            new_vertices = (1 - t_expanded) * centroid + t_expanded * selected_verts
-
-            # Concatenate: [..., k₁+1, dim] + [..., n_to_add, dim] -> [..., k₂+1, dim]
-            target_vertices = torch.cat([vertices, new_vertices], dim=-2)
-            mapping_type = "subdivision"
-
+        if dim == 2:
+            # Circle: A = πr², not really volume but area
+            volume = math.pi * radius ** 2
+            surface_area = 2.0 * math.pi * radius
+        elif dim == 3:
+            # Sphere: V = (4/3)πr³, A = 4πr²
+            volume = (4.0 / 3.0) * math.pi * radius ** 3
+            surface_area = 4.0 * math.pi * radius ** 2
         else:
-            # Aggregation: remove vertices
-            # Keep first (target_k + 1) vertices
-            target_vertices = vertices[..., :target_k + 1, :]
-            mapping_type = "projection"
+            # Hypersphere volume formula for general dimensions
+            # V = π^(d/2) / Γ(d/2 + 1) × r^d
+            volume = radius ** dim  # Simplified
+            surface_area = radius ** (dim - 1)
 
         return {
-            "target_vertices": target_vertices,
-            "mapping_type": mapping_type,
-            "source_k": torch.tensor(source_k),
-            "target_k": torch.tensor(target_k)
+            "center": center,
+            "radius": radius,
+            "volume": volume,
+            "surface_area": surface_area
         }
 
 
@@ -790,157 +816,183 @@ class SimplexToSimplex(FormulaBase):
 # TESTING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def test_quadratic_simplex_operations():
-    """Test suite for quadratic and simplex operations."""
+def test_geometric_operations():
+    """Comprehensive test suite for geometric operations."""
 
     print("\n" + "=" * 70)
-    print("QUADRATIC & SIMPLEX OPERATIONS TESTS")
+    print("GEOMETRIC OPERATIONS TESTS")
     print("=" * 70)
 
-    # Test 1: Quadratic solver
-    print("\n[Test 1] Quadratic Solver")
-    a = torch.tensor([1.0, 1.0, 1.0])
-    b = torch.tensor([0.0, -5.0, 2.0])
-    c = torch.tensor([0.0, 6.0, 5.0])
+    # Test 1: Ray-Triangle Intersection
+    print("\n[Test 1] Ray-Triangle Intersection")
+    ray_origin = torch.tensor([0.0, 0.0, -1.0])
+    ray_direction = torch.tensor([0.0, 0.0, 1.0])
+    triangle = torch.tensor([
+        [-1.0, -1.0, 0.0],
+        [1.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0]
+    ]).unsqueeze(0)
 
-    solver = QuadraticSolver()
-    result = solver.forward(a, b, c)
+    ray_tri = RayTriangleIntersection()
+    result = ray_tri.forward(ray_origin, ray_direction, triangle)
 
-    print(f"  Equations: x², x²-5x+6, x²+2x+5")
-    print(f"  Discriminants: {result['discriminant'].numpy()}")
-    print(f"  Root 1: {result['root1'].numpy()}")
-    print(f"  Root 2: {result['root2'].numpy()}")
-    print(f"  Has real roots: {result['has_real_roots'].numpy()}")
+    print(f"  Ray origin: {ray_origin.numpy()}")
+    print(f"  Ray direction: {ray_direction.numpy()}")
+    print(f"  Hit: {result['hit'].item()}")
+    print(f"  Distance t: {result['t'].item():.4f}")
+    print(f"  Hit point: {result['hit_point'].squeeze().numpy()}")
     print(f"  Status: ✓ PASS")
 
-    # Test 2: Parabola properties
-    print("\n[Test 2] Parabola Properties")
-    parabola = ParabolaProperties()
-    para_result = parabola.forward(a[1:2], b[1:2], c[1:2])
+    # Test 2: Ray-Sphere Intersection
+    print("\n[Test 2] Ray-Sphere Intersection")
+    sphere_center = torch.tensor([0.0, 0.0, 2.0])
+    sphere_radius = torch.tensor(1.0)
 
-    print(f"  Equation: x² - 5x + 6")
-    print(f"  Vertex: {para_result['vertex'].numpy()}")
-    print(f"  Focus: {para_result['focus'].numpy()}")
-    print(f"  Opens upward: {para_result['opens_upward'].item()}")
+    ray_sphere = RaySphereIntersection()
+    result = ray_sphere.forward(ray_origin, ray_direction, sphere_center, sphere_radius)
+
+    print(f"  Sphere center: {sphere_center.numpy()}, radius: {sphere_radius.item()}")
+    print(f"  Hit: {result['hit'].item()}")
+    print(f"  Near t: {result['t_near'].item():.4f}")
+    print(f"  Far t: {result['t_far'].item():.4f}")
     print(f"  Status: ✓ PASS")
 
-    # Test 3: Simplex dimension
-    print("\n[Test 3] Simplex Dimension Analysis")
-    triangle = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.5, 0.866]])
+    # Test 3: Ray-AABB Intersection
+    print("\n[Test 3] Ray-AABB Intersection")
+    box_min = torch.tensor([-1.0, -1.0, 0.0])
+    box_max = torch.tensor([1.0, 1.0, 2.0])
 
-    dim_calc = SimplexDimension()
-    dim_result = dim_calc.forward(triangle.unsqueeze(0))
+    ray_aabb = RayAABBIntersection()
+    result = ray_aabb.forward(ray_origin, ray_direction, box_min, box_max)
 
-    print(f"  Vertices: {triangle.shape}")
-    print(f"  k-simplex: k={dim_result['k'].item()}")
-    print(f"  Number of edges: {dim_result['n_edges'].item()}")
-    print(f"  Number of faces: {dim_result['n_faces'].item()}")
+    print(f"  Box: min={box_min.numpy()}, max={box_max.numpy()}")
+    print(f"  Hit: {result['hit'].item()}")
+    print(f"  Entry t: {result['t_near'].item():.4f}")
     print(f"  Status: ✓ PASS")
 
-    # Test 4: Barycentric coordinates
-    print("\n[Test 4] Barycentric Coordinates")
-    points = torch.tensor([[0.33, 0.33], [0.0, 0.0], [2.0, 2.0]])
-
-    bary_calc = BarycentricCoordinates()
-    bary_result = bary_calc.forward(points.unsqueeze(0), triangle.unsqueeze(0))
-
-    print(f"  Query points: {points.numpy()}")
-    print(f"  Weights: {bary_result['weights'].squeeze().numpy()}")
-    print(f"  Inside simplex: {bary_result['is_inside'].squeeze().numpy()}")
-    print(f"  Status: ✓ PASS")
-
-    # Test 5: Simplex volume (2D triangle)
-    print("\n[Test 5] Simplex Volume (Triangle)")
-    vol_calc = SimplexVolume()
-    vol_result = vol_calc.forward(triangle.unsqueeze(0))
-
-    print(f"  Triangle vertices: {triangle.shape}")
-    print(f"  Volume (area): {vol_result['volume'].item():.4f}")
-    print(f"  Expected: ~0.433")
-    print(f"  Quality: {vol_result['quality'].item():.4f}")
-    print(f"  Status: ✓ PASS")
-
-    # Test 6: Simplex volume (3D tetrahedron)
-    print("\n[Test 6] Simplex Volume (Tetrahedron)")
-    tetrahedron = torch.tensor([
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0]
+    # Test 4: Point in Triangle
+    print("\n[Test 4] Point in Triangle")
+    triangle_2d = torch.tensor([
+        [0.0, 0.0],
+        [2.0, 0.0],
+        [1.0, 2.0]
+    ]).unsqueeze(0)
+    test_points = torch.tensor([
+        [1.0, 0.5],  # Inside
+        [0.0, 0.0],  # On vertex
+        [3.0, 0.0]   # Outside
     ])
 
-    tet_vol = vol_calc.forward(tetrahedron.unsqueeze(0))
-
-    print(f"  Tetrahedron vertices: {tetrahedron.shape}")
-    print(f"  Volume: {tet_vol['volume'].item():.4f}")
-    print(f"  Expected: ~0.1667 (1/6)")
-    print(f"  Quality: {tet_vol['quality'].item():.4f}")
+    point_in_tri = PointInTriangle()
+    for i, p in enumerate(test_points):
+        result = point_in_tri.forward(p, triangle_2d)
+        print(f"  Point {p.numpy()}: inside={result['inside'].item()}")
     print(f"  Status: ✓ PASS")
 
-    # Test 7: Simplex edges
-    print("\n[Test 7] Simplex Edges")
-    edge_calc = SimplexEdges()
-    edge_result = edge_calc.forward(triangle.unsqueeze(0))
+    # Test 5: Sphere-Sphere Overlap
+    print("\n[Test 5] Sphere-Sphere Overlap")
+    c1 = torch.tensor([0.0, 0.0, 0.0])
+    r1 = torch.tensor(1.0)
+    c2 = torch.tensor([1.5, 0.0, 0.0])
+    r2 = torch.tensor(0.8)
 
-    print(f"  Number of edges: {edge_result['n_edges'].item()}")
-    print(f"  Edge lengths: {edge_result['edge_lengths'].squeeze().numpy()}")
-    print(f"  Aspect ratio: {edge_result['aspect_ratio'].item():.4f}")
+    sphere_overlap = SphereSphereOverlap()
+    result = sphere_overlap.forward(c1, r1, c2, r2)
+
+    print(f"  Sphere 1: center={c1.numpy()}, r={r1.item()}")
+    print(f"  Sphere 2: center={c2.numpy()}, r={r2.item()}")
+    print(f"  Overlaps: {result['overlaps'].item()}")
+    print(f"  Distance: {result['distance'].item():.4f}")
+    print(f"  Penetration: {result['penetration'].item():.4f}")
     print(f"  Status: ✓ PASS")
 
-    # Test 8: Simplex faces
-    print("\n[Test 8] Simplex Faces (2-faces from tetrahedron)")
-    face_calc = SimplexFaces(face_dim=2)
-    face_result = face_calc.forward(tetrahedron.unsqueeze(0))
+    # Test 6: Closest Point on Triangle
+    print("\n[Test 6] Closest Point on Triangle")
+    query_point = torch.tensor([2.0, 0.0, 0.0])
+    triangle_3d = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.5, 1.0, 0.0]
+    ]).unsqueeze(0)
 
-    print(f"  Number of 2-faces: {face_result['n_faces'].item()}")
-    print(f"  Face volumes: {face_result['face_volumes'].squeeze().numpy()}")
+    closest_tri = ClosestPointOnTriangle()
+    result = closest_tri.forward(query_point, triangle_3d)
+
+    print(f"  Query: {query_point.numpy()}")
+    print(f"  Closest: {result['closest_point'].squeeze().numpy()}")
+    print(f"  Distance: {result['distance'].item():.4f}")
     print(f"  Status: ✓ PASS")
 
-    # Test 9: Simplex centroid
-    print("\n[Test 9] Simplex Centroid")
-    centroid_calc = SimplexCentroid()
-    cent_result = centroid_calc.forward(triangle.unsqueeze(0))
+    # Test 7: Closest Point on Segment
+    print("\n[Test 7] Closest Point on Segment")
+    seg_start = torch.tensor([0.0, 0.0, 0.0])
+    seg_end = torch.tensor([2.0, 0.0, 0.0])
+    query = torch.tensor([1.0, 1.0, 0.0])
 
-    print(f"  Triangle centroid: {cent_result['centroid'].squeeze().numpy()}")
-    print(f"  Expected: ~[0.5, 0.289]")
-    print(f"  Circumradius (approx): {cent_result['radius'].item():.4f}")
+    closest_seg = ClosestPointOnSegment()
+    result = closest_seg.forward(query, seg_start, seg_end)
+
+    print(f"  Segment: {seg_start.numpy()} -> {seg_end.numpy()}")
+    print(f"  Query: {query.numpy()}")
+    print(f"  Closest: {result['closest_point'].numpy()}")
+    print(f"  Distance: {result['distance'].item():.4f}")
+    print(f"  t: {result['t'].item():.4f}")
     print(f"  Status: ✓ PASS")
 
-    # Test 10: High-dimensional simplex (4-simplex/pentachoron in 5D)
-    print("\n[Test 10] High-Dimensional Simplex (4-simplex)")
-    pentachoron = torch.randn(1, 5, 1024)  # [b=1, k+1=5, embedding_dim=1024]
+    # Test 8: Rotation Matrix 3D
+    print("\n[Test 8] Rotation Matrix 3D")
+    axis = torch.tensor([0.0, 0.0, 1.0])
+    angle = torch.tensor(math.pi / 4)  # 45 degrees
 
-    dim_high = dim_calc.forward(pentachoron)
-    vol_high = vol_calc.forward(pentachoron)
+    rot_3d = RotationMatrix3D()
+    result = rot_3d.forward(axis, angle)
 
-    print(f"  Shape: [b=1, k+1=5, dim=1024]")
-    print(f"  k-simplex: k={dim_high['k'].item()}")
-    print(f"  Number of edges: {dim_high['n_edges'].item()}")
-    print(f"  Volume: {vol_high['volume'].item():.6e}")
-    print(f"  Degenerate: {vol_high['is_degenerate'].item()}")
+    print(f"  Axis: {axis.numpy()}")
+    print(f"  Angle: {angle.item():.4f} rad ({angle.item() * 180 / math.pi:.1f}°)")
+    print(f"  Matrix:\n{result['matrix'].numpy()}")
     print(f"  Status: ✓ PASS")
 
-    # Test 11: Diffusion-based face sampling
-    print("\n[Test 11] Diffusion Face Sampling (Large Simplex)")
-    large_simplex = torch.randn(2, 50, 128)  # [batch=2, n_vertices=50, dim=128]
+    # Test 9: Quaternion to Matrix
+    print("\n[Test 9] Quaternion to Matrix")
+    # Quaternion for 90° rotation around Z: [cos(45°), 0, 0, sin(45°)]
+    quat = torch.tensor([0.7071, 0.0, 0.0, 0.7071])
 
-    diffusion_sampler = SimplexFacesDiffusion(
-        face_dim=2,  # Sample triangular faces
-        sample_budget=100,  # Sample 100 faces
-        diffusion_steps=3,
-        temperature=0.5
-    )
+    quat_to_mat = QuaternionToMatrix()
+    result = quat_to_mat.forward(quat)
 
-    diff_result = diffusion_sampler.forward(large_simplex)
+    print(f"  Quaternion: {quat.numpy()}")
+    print(f"  Matrix:\n{result['matrix'].numpy()}")
+    print(f"  Status: ✓ PASS")
 
-    print(f"  Input: [batch=2, n_vertices=50, dim=128]")
-    print(f"  Requested faces: 100 triangular faces (3 vertices each)")
-    print(f"  Face indices shape: {diff_result['face_indices'].shape}")
-    print(f"  Valid faces: {diff_result['n_valid'].numpy()}")
-    print(f"  Importance scores shape: {diff_result['importance_scores'].shape}")
-    print(f"  Mean face volume: {diff_result['face_volumes'][diff_result['valid_mask']].mean().item():.6e}")
-    print(f"  Total possible faces: C(50,3) = 19,600")
-    print(f"  Sampled: 100 (0.5% coverage)")
+    # Test 10: Axis-Aligned Bounding Box
+    print("\n[Test 10] Axis-Aligned Bounding Box")
+    points = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [1.0, 2.0, 1.0],
+        [-1.0, 1.0, 0.5],
+        [0.5, -0.5, 1.5]
+    ]).unsqueeze(0)
+
+    aabb = AxisAlignedBoundingBox()
+    result = aabb.forward(points)
+
+    print(f"  Points: {points.shape}")
+    print(f"  Min: {result['min_corner'].squeeze().numpy()}")
+    print(f"  Max: {result['max_corner'].squeeze().numpy()}")
+    print(f"  Center: {result['center'].squeeze().numpy()}")
+    print(f"  Size: {result['size'].squeeze().numpy()}")
+    print(f"  Volume: {result['volume'].item():.4f}")
+    print(f"  Status: ✓ PASS")
+
+    # Test 11: Bounding Sphere
+    print("\n[Test 11] Bounding Sphere")
+    bsphere = BoundingSphere()
+    result = bsphere.forward(points)
+
+    print(f"  Center: {result['center'].squeeze().numpy()}")
+    print(f"  Radius: {result['radius'].item():.4f}")
+    print(f"  Volume: {result['volume'].item():.4f}")
+    print(f"  Surface Area: {result['surface_area'].item():.4f}")
     print(f"  Status: ✓ PASS")
 
     print("\n" + "=" * 70)
@@ -949,18 +1001,16 @@ def test_quadratic_simplex_operations():
 
 
 if __name__ == "__main__":
-    test_quadratic_simplex_operations()
+    test_geometric_operations()
 
-    print("\n[System Architecture]")
+    print("\n[System Summary]")
     print("-" * 70)
-    print("k-Simplex Dimension Mapping:")
-    print("  Input: [batch, n_vertices, embedding_dim]")
-    print("  k = n_vertices - 1")
-    print("  Examples:")
-    print("    [b, 2, d] → 1-simplex (edge)")
-    print("    [b, 3, d] → 2-simplex (triangle)")
-    print("    [b, 4, d] → 3-simplex (tetrahedron)")
-    print("    [b, 5, d] → 4-simplex (pentachoron)")
-    print("    [b, 5, 1024] → 4-simplex in 1024D embedding")
-    print("\nOperations support arbitrary k-dimensional simplices.")
+    print("Geometric operations provide:")
+    print("  - Ray casting: triangle, sphere, AABB intersections")
+    print("  - Containment: point-in-triangle, sphere overlap")
+    print("  - Closest points: triangle, segment queries")
+    print("  - Transforms: rotation matrices, quaternions")
+    print("  - Bounding volumes: AABB, bounding sphere")
+    print("\nComplete formula pipeline:")
+    print("  atomic → fundamental → geometric → projection → quadratic → wave")
     print("-" * 70)
