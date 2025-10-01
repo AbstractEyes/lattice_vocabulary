@@ -743,6 +743,7 @@ class Plan:
 
 def create_formula_library() -> FormulaLibrary:
     """Create and populate formula library with 50+ formulas."""
+    print("Warning: Many of these formulas aren't production use and are only meant to be templates for better implementations.")
     lib = FormulaLibrary()
 
     # All formula specifications (50+)

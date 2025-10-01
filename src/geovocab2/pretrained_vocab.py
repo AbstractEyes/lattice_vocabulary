@@ -4,6 +4,7 @@ Fixes for:
 1. Character synthesis weight order bug - clarified that implementation was correct
 2. Cache key generation for definitions - fixed to handle None properly
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import os
@@ -156,25 +157,172 @@ class UnifiedGeometricVocabulary:
         """Get pooled vector with advanced methods"""
         return self.get_pooled(token, definition, method, synthesize)
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     def encode_batch(self, tokens: List[str],
                      definitions: Optional[List[Optional[str]]] = None,
                      synthesize: bool = True,
                      use_threading: bool = True) -> List[Optional[Crystal]]:
-        """Batch encode tokens"""
+        """Batch encode tokens with automatic chunking for large batches"""
         if definitions is None:
             definitions = [None] * len(tokens)
 
-        # Get batch data from dataset if available
-        batch_data = {}
-        if self._dataset_loaded:
-            batch_data = self.data_manager.get_batch_data(tokens)
+        # Auto-chunk large batches to avoid memory issues
+        chunk_size = self.config.batch_size
+        if len(tokens) > chunk_size:
+            all_results = []
+            for i in range(0, len(tokens), chunk_size):
+                chunk_end = min(i + chunk_size, len(tokens))
+                chunk_tokens = tokens[i:chunk_end]
+                chunk_defs = definitions[i:chunk_end]
 
-        results = []
-        for token, definition in zip(tokens, definitions):
-            crystal = self.get_crystal(token, definition, synthesize)
-            results.append(crystal)
+                # Recursive call for chunk processing
+                chunk_results = self._encode_batch_chunk(
+                    chunk_tokens, chunk_defs, synthesize, use_threading
+                )
+                all_results.extend(chunk_results)
+            return all_results
 
+        # Process normal-sized batch
+        return self._encode_batch_chunk(tokens, definitions, synthesize, use_threading)
+
+    def _encode_batch_chunk(self, tokens: List[str],
+                            definitions: List[Optional[str]],
+                            synthesize: bool,
+                            use_threading: bool) -> List[Optional[Crystal]]:
+        """Process a single chunk of tokens"""
+        results = [None] * len(tokens)
+
+        # Separate into cache hits, dataset candidates, and synthesis needs
+        cache_hits = []
+        dataset_candidates = []
+        to_synthesize = []
+
+        for i, (token, definition) in enumerate(zip(tokens, definitions)):
+            definition_key = hash(definition) if definition is not None else ""
+            cache_key = f"{token}_{definition_key}_{str(None)}"
+
+            if cache_key in self.crystal_cache:
+                cache_hits.append((i, cache_key))
+            elif not definition and self._dataset_loaded:
+                dataset_candidates.append((i, token))
+            elif synthesize:
+                to_synthesize.append((i, token, definition))
+
+        # Process cache hits
+        for i, cache_key in cache_hits:
+            results[i] = self.crystal_cache[cache_key]
+            self.stats["cache_hits"] += 1
+
+        # Batch fetch from dataset
+        if dataset_candidates:
+            tokens_to_fetch = [token for _, token in dataset_candidates]
+            batch_data = self.data_manager.get_batch_data(tokens_to_fetch)
+
+            for i, token in dataset_candidates:
+                if token in batch_data and batch_data[token].get("crystal") is not None:
+                    dataset_result = batch_data[token]
+                    crystal = self._process_dataset_crystal(
+                        dataset_result["crystal"],
+                        token,
+                        None
+                    )
+
+                    # Cache it
+                    cache_key = f"{token}_{hash(None)}_{str(None)}"
+                    self.crystal_cache[cache_key] = crystal
+                    results[i] = crystal
+                    self.stats["dataset_hits"] += 1
+                else:
+                    # Dataset miss, add to synthesis if enabled
+                    if synthesize:
+                        to_synthesize.append((i, token, None))
+
+        # Synthesis with optional threading
+        if to_synthesize:
+            # Use threading for 2+ items, but limit threads for very small batches
+            should_thread = (use_threading and
+                             self.config.num_threads > 1 and
+                             len(to_synthesize) > 1)
+
+            if should_thread:
+                # Adaptive thread count based on batch size
+                n_threads = min(self.config.num_threads, len(to_synthesize))
+
+                with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                    futures = {}
+                    for i, token, definition in to_synthesize:
+                        future = executor.submit(self._synthesize_crystal, token, definition)
+                        futures[future] = (i, token, definition)
+
+                    for future in as_completed(futures):
+                        i, token, definition = futures[future]
+                        try:
+                            crystal = future.result()
+                            if crystal is not None:
+                                definition_key = hash(definition) if definition is not None else ""
+                                cache_key = f"{token}_{definition_key}_{str(None)}"
+                                self.crystal_cache[cache_key] = crystal
+                                results[i] = crystal
+                                self.stats["synthesized"] += 1
+                        except Exception as e:
+                            if not self.config.silent_synthesis:
+                                print(f"Error synthesizing '{token}' at index {i}: {e}")
+                            results[i] = None
+            else:
+                # Sequential synthesis
+                for i, token, definition in to_synthesize:
+                    crystal = self._synthesize_crystal(token, definition)
+                    if crystal is not None:
+                        definition_key = hash(definition) if definition is not None else ""
+                        cache_key = f"{token}_{definition_key}_{str(None)}"
+                        self.crystal_cache[cache_key] = crystal
+                        results[i] = crystal
+                        self.stats["synthesized"] += 1
+
+        self.stats["crystals_created"] += len([r for r in results if r is not None])
         return results
+
+    def _process_dataset_crystal(self, crystal_data: np.ndarray,
+                                 token: str,
+                                 definition: Optional[str]) -> Crystal:
+        """Process crystal from dataset with transformations"""
+        if crystal_data.ndim == 1:
+            center = crystal_data
+            base_crystal = self.factory._pentachoron_from_center(center, token)
+        elif crystal_data.shape[0] != self.config.dimension_type.value:
+            base_crystal = self.factory._reshape_crystal(crystal_data, self.config.dimension_type)
+        else:
+            base_crystal = crystal_data.copy()
+
+        # Apply transformations using enum values for dict access
+        formula_crystal = self.factory.formula_handlers[self.config.formula_type.value](
+            base_crystal, token, definition
+        )
+        content_crystal = self.factory.content_handlers[self.config.content_type.value](
+            formula_crystal, token, definition
+        )
+
+        # Apply normalization
+        if self.config.content_type == ContentType.VOLUME:
+            final_crystal = content_crystal
+        elif self.config.norm_type != NormType.NONE:
+            final_crystal = self.factory._apply_normalization(content_crystal, self.config.norm_type)
+        else:
+            final_crystal = content_crystal
+
+        final_crystal = final_crystal - final_crystal.mean(axis=0, keepdims=True)
+        return final_crystal.astype(np.float32)
+
+    def _synthesize_crystal(self, token: str, definition: Optional[str]) -> Optional[Crystal]:
+        """Helper for synthesis - thread-safe"""
+        try:
+            result = self.factory.create_crystal(token, definition, None, use_dataset=False)
+            return result['crystal']
+        except Exception as e:
+            if not self.config.silent_synthesis:
+                print(f"Synthesis failed for '{token}': {e}")
+            return None
 
     def similarity(self, token_a: str, token_b: str,
                    definition_a: Optional[str] = None,
@@ -598,7 +746,7 @@ if __name__ == "__main__":
         norm_type=NormType.L2,
         enable_synthesis=True,
         repo_id="AbstractPhil/geometric-vocab",
-        dataset_name="unicode_100d"
+        dataset_name="wordnet_eng_100d"
     )
 
     token = "example"
@@ -606,6 +754,8 @@ if __name__ == "__main__":
 
     crystal = vocab.get_crystal(token, definition)
     pooled = vocab.get_pooled(token, definition, method="geometric_centroid")
+
+    vocab.encode_batch(["test", "sample", "data"], synthesize=False, use_threading=True)
 
     print(f"Crystal for '{token}':\n{crystal}")
     print(f"Pooled vector for '{token}':\n{pooled}")

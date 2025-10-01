@@ -128,6 +128,7 @@ The preliminary version has multiple built-in formulas for generating and manipu
 
 ## V2 Blockers
 - X Formula bank incompatible requires refitting
+  - I don't like the current implementation so I will make a better interface.
 - Trainer module not yet implemented
 
 ## V2 Todo
