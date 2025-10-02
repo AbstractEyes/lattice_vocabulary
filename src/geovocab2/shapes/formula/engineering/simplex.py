@@ -1,5 +1,5 @@
 """
-QUADRATIC & SIMPLEX OPERATIONS
+QUADRADIC & SIMPLEX OPERATIONS
 -------------------------------
 Quadratic equations, conic sections, and k-dimensional simplex operations.
 

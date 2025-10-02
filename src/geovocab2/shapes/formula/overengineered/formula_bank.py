@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import Tensor
 import time
 
-from shapes.tensor.geo_tensor import Tier, GeoTensor
+from shapes.formula.overengineered.geo_tensor import Tier, GeoTensor
 
 
 # ========= FORMULA CATEGORIES =========
