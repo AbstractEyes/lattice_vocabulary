@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple, Any, Iterator
 from pathlib import Path
 from huggingface_hub import login
 
-from shapes.tensor.legacy_shape_factory import CrystalFactory
+from shapes.legacy.legacy_shape_factory import CrystalFactory
 from src.geovocab2.defaults import (
     DimensionType,
     ContentType,
