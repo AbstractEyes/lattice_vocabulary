@@ -81,7 +81,7 @@ They are AI friendly and human-readable, so they can be easily understood and mo
 
 The current implementation has these directories and files for the formula playground:
 
-`geovocab2/shapes/formula/`
+`src/geovocab2/shapes/formula/`
 - engineering: 
 - - atomic.py for basic atomic operations and structures, not so useful on its own but foundational if necessary.
 - - fundamental.py for more advanced basic operations like atan2, vector norms, and other basic mathematical operations.
@@ -111,7 +111,7 @@ The current implementation has these directories and files for the formula playg
 # Factories
 The factories are designed to produce specific types of symbolic lattice structures based on the provided configuration.
 
-`geovocab2/shapes/factory/`
+`src/geovocab2/shapes/factory/`
 - factory_base.py for the base factory class and common methods.
 - simplex_factory.py for generating simplex-shaped symbolic lattice structures.
 - legacy_factory.py for direct 1:1 compatibility with the original geovocab structures, almost ready.
@@ -123,7 +123,7 @@ These are specifically curated to synthesize complex symbolic lattice structures
 Meant to be independent and reusable for various synthesis tasks.
 
 
-`geovocab2/shapes/fusion/`
+`src/geovocab2/shapes/fusion/`
 - composition_base.py for the base composition class and common character embedding synthesis methods.
 - lexical_simplex_synthesizer.py for synthesizing lexical simplex structures from vocab data and shapes.
 - wordnet_synthesizer.py for synthesizing structures using WordNet data, doesn't do much yet. Use simplex for now.
