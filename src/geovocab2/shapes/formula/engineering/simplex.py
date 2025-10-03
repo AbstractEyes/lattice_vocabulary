@@ -52,6 +52,70 @@ from itertools import combinations
 from shapes.formula.formula_base import FormulaBase
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Stable k-simplex volume via Gram matrix (fp64 internal, fp32 return)
+# ──────────────────────────────────────────────────────────────────────────────
+def _stable_simplex_volume(vertices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute k-simplex volume using Gram determinant with fp64 and scale normalization.
+    Args:
+        vertices: [..., k+1, dim] float tensor
+    Returns:
+        volume:      [...,] float tensor (same dtype as input)
+        volume_sq:   [...,] float tensor (same dtype as input)
+    """
+    x = vertices
+    k_plus_1 = x.shape[-2]
+    k = k_plus_1 - 1
+    if k <= 0:
+        z = torch.zeros(x.shape[:-2], device=x.device, dtype=x.dtype)
+        return z, z
+
+    # Edge matrix E = [v1-v0, v2-v0, ..., vk-v0]  -> [..., dim, k]
+    v0 = x[..., 0:1, :]
+    E = (x[..., 1:, :] - v0).to(torch.float64)
+
+    # Normalize by mean edge length to reduce conditioning issues
+    with torch.no_grad():
+        dists = torch.cdist(x.to(torch.float64), x.to(torch.float64), p=2)  # [..., k+1, k+1]
+        iu, ju = torch.triu_indices(k_plus_1, k_plus_1, offset=1, device=x.device)
+        mean_edge = dists[..., iu, ju].mean(dim=-1).clamp(min=1e-12)  # [...]
+    scale = mean_edge[..., None, None]  # broadcast
+    E = E / scale
+
+    # Gram matrix (symmetric PSD in the ideal case)
+    G = E.transpose(-2, -1) @ E                 # [..., k, k] fp64
+    G = 0.5 * (G + G.transpose(-2, -1))         # symmetrize
+
+    # Cholesky with adaptive jitter for rank-deficiency
+    eye_k = torch.eye(k, dtype=G.dtype, device=G.device)
+    jitter = 0.0
+    L = None
+    for _ in range(3):
+        try:
+            L = torch.linalg.cholesky(G + (jitter * eye_k))
+            break
+        except RuntimeError:
+            jitter = 1e-10 if jitter == 0.0 else jitter * 10.0
+    if L is None:
+        # Fallback: use small diagonal to proceed
+        L = torch.linalg.cholesky(G + (1e-6 * eye_k))
+
+    # log det(G) = 2 * sum(log diag(L))
+    diag = torch.diagonal(L, dim1=-2, dim2=-1)
+    logdetG = 2.0 * torch.sum(torch.log(diag.clamp(min=1e-24)), dim=-1)
+
+    # Volume_k^2 = det(G) / (k!)^2
+    log_vol_sq = logdetG - 2.0 * math.log(math.factorial(k))
+    vol_sq = torch.exp(log_vol_sq)                       # fp64
+    vol = torch.sqrt(vol_sq.clamp(min=0.0))              # fp64
+
+    # Rescale back (edge scaling to power k)
+    vol = vol * (mean_edge ** k)
+    vol_sq = vol_sq * (mean_edge ** (2 * k))
+    return vol.to(x.dtype), vol_sq.to(x.dtype)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # QUADRATIC EQUATIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -367,6 +431,195 @@ class SimplexVolume(FormulaBase):
             "quality": quality
         }
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class SimplexVolumeExtended(FormulaBase):
+    """
+    Computes a more specific k-simplex volume with optional degeneracy checks.
+
+    Modes:
+      - auto (default): try Gram, fallback to CM
+      - gram: force Gram method
+      - cm:   force Cayley–Menger
+
+    Args:
+        mode (str): "auto" | "gram" | "cm"
+        check_degeneracy (bool): if True, check via eigenvalues/determinants
+    """
+
+    def __init__(self, mode: str = "auto", check_degeneracy: bool = True):
+        super().__init__("simplex_volume", "f.quadratic.volume")
+        if mode not in ("auto", "gram", "cm"):
+            raise ValueError(f"Invalid mode: {mode}")
+        self.mode = mode
+        self.check_degeneracy = check_degeneracy
+
+    # ─────────────────────────────────────────────────────────────
+    def _gram_volume(self, vertices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Gram determinant method. Returns (volume, volume_squared, is_degenerate).
+        """
+        x = vertices
+        k_plus_1 = x.shape[-2]
+        k = k_plus_1 - 1
+        if k <= 0:
+            z = torch.zeros(x.shape[:-2], device=x.device, dtype=x.dtype)
+            return z, z, torch.ones_like(z, dtype=torch.bool)
+
+        v0 = x[..., 0:1, :]
+        E = (x[..., 1:, :] - v0).to(torch.float64)             # [..., dim, k]
+
+        with torch.no_grad():
+            dists = torch.cdist(x.to(torch.float64), x.to(torch.float64), p=2)
+            iu, ju = torch.triu_indices(k_plus_1, k_plus_1, 1, device=x.device)
+            mean_edge = dists[..., iu, ju].mean(dim=-1).clamp(min=1e-12)
+        E = E / mean_edge[..., None, None]
+
+        G = E.transpose(-2, -1) @ E                            # [..., k, k]
+        G = 0.5 * (G + G.transpose(-2, -1))
+
+        eye_k = torch.eye(k, dtype=G.dtype, device=G.device)
+        if G.ndim > 2:
+            eye_k = eye_k.expand(*G.shape[:-2], k, k)
+
+        jitter = 0.0
+        L = None
+        for _ in range(4):
+            try:
+                L = torch.linalg.cholesky(G + jitter * eye_k)
+                break
+            except RuntimeError:
+                jitter = 1e-10 if jitter == 0.0 else jitter * 10.0
+        if L is None:
+            nan = torch.full_like(mean_edge, float("nan"))
+            return nan, nan, torch.ones_like(mean_edge, dtype=torch.bool)
+
+        diag = torch.diagonal(L, dim1=-2, dim2=-1).clamp(min=1e-24)
+        logdetG = 2.0 * torch.sum(torch.log(diag), dim=-1)
+        log_vol_sq = logdetG - 2.0 * math.log(math.factorial(k))
+
+        vol_sq = torch.exp(log_vol_sq) * (mean_edge ** (2 * k))
+        vol = torch.sqrt(vol_sq.clamp(min=0.0))
+
+        if not self.check_degeneracy:
+            is_degenerate = torch.zeros_like(vol, dtype=torch.bool)
+        else:
+            evals = torch.linalg.eigvalsh(G).real
+            lambda_min = evals[..., 0].clamp(min=0.0)
+            deg_rank = lambda_min < 1e-12
+            deg_vol = vol < 1e-10
+            is_degenerate = deg_rank | deg_vol
+
+        return vol.to(x.dtype), vol_sq.to(x.dtype), is_degenerate
+
+    # ─────────────────────────────────────────────────────────────
+    def _cm_volume(self, vertices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Cayley–Menger method. Returns (volume, volume_squared, is_degenerate).
+        """
+        k_plus_1 = vertices.shape[-2]
+        k = k_plus_1 - 1
+        dists = torch.cdist(vertices, vertices, p=2)
+        dist_sq = dists ** 2
+        cm = torch.zeros(*dist_sq.shape[:-2], k_plus_1 + 1, k_plus_1 + 1,
+                         device=vertices.device, dtype=vertices.dtype)
+        cm[..., 1:, 1:] = dist_sq
+        cm[..., 0, 1:] = 1.0
+        cm[..., 1:, 0] = 1.0
+        cm[..., 0, 0] = 0.0
+
+        det = torch.linalg.det(cm)
+        sign = (-1) ** (k + 1)
+        denominator = (2 ** k) * (math.factorial(k) ** 2)
+        vol_sq = (sign * det / denominator).clamp(min=0.0)
+        vol = torch.sqrt(vol_sq)
+
+        if not self.check_degeneracy:
+            is_degenerate = torch.zeros_like(vol, dtype=torch.bool)
+        else:
+            is_degenerate = (torch.abs(det) < 1e-12) | (vol < 1e-10)
+
+        return vol, vol_sq, is_degenerate
+
+    # ─────────────────────────────────────────────────────────────
+    def forward(self, vertices: torch.Tensor) -> Dict[str, torch.Tensor]:
+        k_plus_1 = vertices.shape[-2]
+        k = k_plus_1 - 1
+
+        if k <= 0:
+            z = torch.zeros(vertices.shape[:-2], device=vertices.device, dtype=vertices.dtype)
+            return {
+                "volume": z,
+                "volume_squared": z,
+                "is_degenerate": torch.ones_like(z, dtype=torch.bool) if self.check_degeneracy else torch.zeros_like(z, dtype=torch.bool),
+                "quality": z,
+            }
+
+        vol, vol_sq, is_degenerate = None, None, None
+
+        if self.mode in ("auto", "gram"):
+            vol, vol_sq, is_degenerate = self._gram_volume(vertices)
+            if self.mode == "gram" and torch.isnan(vol).any():
+                raise RuntimeError("Gram method failed")
+
+        if (self.mode == "cm") or (self.mode == "auto" and (vol is None or torch.isnan(vol).any())):
+            vol, vol_sq, is_degenerate = self._cm_volume(vertices)
+
+        # quality vs regular simplex
+        dists = torch.cdist(vertices, vertices, p=2)
+        iu, ju = torch.triu_indices(k_plus_1, k_plus_1, 1, device=vertices.device)
+        mean_edge = dists[..., iu, ju].mean(dim=-1).clamp(min=1e-12)
+        reg = ((mean_edge ** k) / math.factorial(k)) * math.sqrt((k + 1) / (2 ** k))
+        quality = (vol / (reg + 1e-10)).clamp(min=0.0)
+
+        return {
+            "volume": vol,
+            "volume_squared": vol_sq,
+            "is_degenerate": is_degenerate,
+            "quality": quality,
+        }
+class SimplexQualityExtended(FormulaBase):
+    """Compute extended quality metrics for k-simplex."""
+
+    def __init__(self):
+        super().__init__("simplex_quality", "f.quadratic.quality")
+
+    def forward(self, vertices: torch.Tensor) -> Dict[str, torch.Tensor]:
+        edge_calc = SimplexEdges()
+        edge_result = edge_calc.forward(vertices)
+        aspect_ratio = edge_result["aspect_ratio"]
+
+        vol_calc = SimplexVolumeExtended()
+        vol_result = vol_calc.forward(vertices)
+        volume_quality = vol_result["quality"]
+        is_degenerate = vol_result["is_degenerate"]
+
+        regularity = (1.0 / (aspect_ratio + 1e-10)).clamp(0.0, 1.0)
+
+        # NEW: edge coefficient of variation
+        n_vertices = vertices.shape[-2]
+        ii, jj = torch.triu_indices(n_vertices, n_vertices, offset=1, device=vertices.device)
+        all_edges = torch.norm(vertices[..., jj, :] - vertices[..., ii, :], dim=-1)
+        edge_mean = all_edges.mean(dim=-1).clamp(min=1e-12)
+        edge_cv = (all_edges.std(dim=-1) / edge_mean).clamp(min=0.0)
+
+        # NEW: Gram condition index
+        v0 = vertices[..., 0:1, :]
+        E = (vertices[..., 1:, :] - v0).to(torch.float64)
+        G = 0.5 * (E.transpose(-2, -1) @ E + (E.transpose(-2, -1) @ E).transpose(-2, -1))
+        evals = torch.linalg.eigvalsh(G).real.clamp(min=1e-20)
+        cond_index = (evals[..., -1] / evals[..., 0]).to(vertices.dtype)
+
+        is_well_shaped = (regularity > 0.3) & (~is_degenerate) & (cond_index < 1e6)
+
+        return {
+            "regularity": regularity,
+            "aspect_ratio": aspect_ratio,
+            "volume_quality": volume_quality,
+            "edge_cv": edge_cv,                       # NEW
+            "gram_condition_index": cond_index,       # NEW
+            "is_well_shaped": is_well_shaped,
+            "is_degenerate": is_degenerate,
+        }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 class SimplexEdges(FormulaBase):
@@ -905,6 +1158,112 @@ class SimplexToSimplex(FormulaBase):
             "target_k": torch.tensor(target_k)
         }
 
+class CMLogDetRegularizer(FormulaBase):
+    """
+    Log-det(Gram) regularizer:
+      loss = - logdet(Gram(E)) + γ * clamp(cond_index / C, min=0)
+    Promotes non-collapsed, well-conditioned simplices.
+    """
+
+    def __init__(self, gamma: float = 0.0, cond_cap: float = 1e6):
+        super().__init__("cm_logdet_reg", "f.reg.cm_logdet")
+        self.gamma = float(gamma)
+        self.cond_cap = float(cond_cap)
+
+    def forward(self, vertices: torch.Tensor) -> Dict[str, torch.Tensor]:
+        x = vertices
+        v0 = x[..., 0:1, :]
+        E = (x[..., 1:, :] - v0).to(torch.float64)        # [..., dim, k]
+        G = E.transpose(-2, -1) @ E
+        G = 0.5 * (G + G.transpose(-2, -1))
+
+        # Cholesky logdet (stable)
+        k = G.shape[-1]
+        eye_k = torch.eye(k, dtype=G.dtype, device=G.device)
+        jitter = 0.0
+        for _ in range(3):
+            try:
+                L = torch.linalg.cholesky(G + (jitter * eye_k))
+                break
+            except RuntimeError:
+                jitter = 1e-10 if jitter == 0.0 else jitter * 10.0
+        else:
+            L = torch.linalg.cholesky(G + (1e-6 * eye_k))
+        diag = torch.diagonal(L, dim1=-2, dim2=-1).clamp(min=1e-24)
+        logdetG = 2.0 * torch.sum(torch.log(diag), dim=-1).to(vertices.dtype)   # [...,]
+
+        # Condition index
+        evals = torch.linalg.eigvalsh(G).real.clamp(min=1e-20)
+        cond_index = (evals[..., -1] / evals[..., 0]).to(vertices.dtype)
+
+        # Loss (minimize): encourage larger logdet, penalize huge condition
+        loss = -logdetG + self.gamma * torch.clamp(cond_index / self.cond_cap, min=0.0)
+
+        return {
+            "logdet_gram": logdetG,
+            "gram_condition_index": cond_index,
+            "loss": loss,
+        }
+
+from typing import Callable
+
+class RoseWeightedVolume(FormulaBase):
+    """
+    Combine resonance ('rose') with stable volume to produce a shaping loss.
+      score   = normalize(volume) * normalize(rose)
+      loss    = -score
+    Optionally provide rose_fn(vertices)->[...]-shaped resonance; else use an edge-direction cosine proxy.
+    """
+
+    def __init__(self, rose_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+                 eps: float = 1e-8):
+        super().__init__("rose_weighted_volume", "f.reg.rose_weighted_volume")
+        self.rose_fn = rose_fn
+        self.eps = float(eps)
+
+    def _edge_cos_proxy(self, vertices: torch.Tensor) -> torch.Tensor:
+        n = vertices.shape[-2]
+        if n < 3:
+            return torch.zeros(vertices.shape[:-2], device=vertices.device, dtype=vertices.dtype)
+        ii, jj = torch.triu_indices(n, n, offset=1, device=vertices.device)
+        edges = vertices[..., jj, :] - vertices[..., ii, :]                # [..., E, dim]
+        norm = torch.norm(edges, dim=-1, keepdim=True).clamp(min=self.eps)
+        U = edges / norm                                                   # unit
+        # mean pairwise cosine across edges (directional cohesion)
+        e_i = U
+        e_j = U
+        # (E dot E) mean; compute via batch matmul
+        cos_mat = torch.matmul(e_i, e_j.transpose(-2, -1))                 # [..., E, E]
+        # exclude diagonal
+        E = U.shape[-2]
+        mask = (~torch.eye(E, dtype=torch.bool, device=U.device))[None, ...]
+        cos_mean = (cos_mat.masked_select(mask).reshape(*vertices.shape[:-2], E*(E-1))).mean(dim=-1)
+        return cos_mean.clamp(-1.0, 1.0)
+
+    def forward(self, vertices: torch.Tensor) -> Dict[str, torch.Tensor]:
+        vol, vol_sq = _stable_simplex_volume(vertices)                     # stable volume
+        # Normalize volume within batch for scale-invariance
+        vnorm = (vol / (vol.mean(dim=tuple(range(vol.ndim)), keepdim=False) + self.eps)) if vol.ndim == 0 else (vol / (vol.mean() + self.eps))
+
+        if self.rose_fn is not None:
+            rose = self.rose_fn(vertices).to(vertices.dtype)
+        else:
+            rose = self._edge_cos_proxy(vertices)
+
+        # map to [0,1] via tanh-ish squashing
+        v_s = torch.tanh(vnorm)
+        r_s = (rose + 1.0) * 0.5   # [-1,1] -> [0,1]
+        score = v_s * r_s
+        loss = -score
+
+        return {
+            "volume": vol,
+            "rose": rose,
+            "score": score,
+            "loss": loss,
+        }
+
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TESTING
@@ -1164,6 +1523,72 @@ def test_simplex_sampler_new_features():
     print("  ✓ Works with CLIP/BERT embeddings")
     print("=" * 70 + "\n")
 
+def test_simplex_quality_extended():
+    print("\n" + "=" * 70)
+    print("SIMPLEX QUALITY EXTENDED TESTS")
+    print("=" * 70)
+
+    triangle = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.5, 0.866]])  # equilateral
+    tetrahedron = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0]
+    ])  # regular 3D
+
+    quality_ext = SimplexQualityExtended()
+
+    # Triangle check
+    res_tri = quality_ext.forward(triangle.unsqueeze(0))
+    print(f"Triangle Regularity: {res_tri['regularity'].item():.4f}")
+    print(f"Triangle Gram Condition: {res_tri['gram_condition_index'].item():.4e}")
+    assert res_tri["is_well_shaped"].item()
+
+    # Tetrahedron check
+    res_tet = quality_ext.forward(tetrahedron.unsqueeze(0))
+    print(f"Tetrahedron Regularity: {res_tet['regularity'].item():.4f}")
+    print(f"Tetrahedron Gram Condition: {res_tet['gram_condition_index'].item():.4e}")
+    assert res_tet["is_well_shaped"].item()
+
+
+def test_rose_weighted_volume():
+    print("\n" + "=" * 70)
+    print("ROSE WEIGHTED VOLUME TESTS")
+    print("=" * 70)
+
+    tetrahedron = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0]
+    ])
+
+    rose_vol = RoseWeightedVolume()
+    res = rose_vol.forward(tetrahedron.unsqueeze(0))
+    print(f"Volume: {res['volume'].item():.4f}, Rose Score: {res['rose'].item():.4f}")
+    print(f"Weighted Loss: {res['loss'].item():.4f}")
+    assert torch.isfinite(res["loss"]).all()
+
+
+def test_cm_logdet_regularizer():
+    print("\n" + "=" * 70)
+    print("CM LOGDET REGULARIZER TESTS")
+    print("=" * 70)
+
+    tetrahedron = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0]
+    ])
+
+    cm_reg = CMLogDetRegularizer(gamma=0.1)
+    res = cm_reg.forward(tetrahedron.unsqueeze(0))
+    print(f"LogDet Gram: {res['logdet_gram'].item():.4f}")
+    print(f"Condition Index: {res['gram_condition_index'].item():.4e}")
+    print(f"Regularizer Loss: {res['loss'].item():.4f}")
+    assert torch.isfinite(res["loss"]).all()
+
 
 if __name__ == "__main__":
     # Run original tests
@@ -1171,6 +1596,11 @@ if __name__ == "__main__":
 
     # Run new tests
     test_simplex_sampler_new_features()
+
+    test_simplex_quality_extended()
+    test_rose_weighted_volume()
+    test_cm_logdet_regularizer()
+
 
     print("\n[System Architecture]")
     print("-" * 70)

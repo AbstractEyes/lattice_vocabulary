@@ -90,7 +90,7 @@ The current implementation has these directories and files for the formula playg
 - - simplex.py for simplex structures and operations like generating simplex shapes, calculating volumes, and other simplex-related operations.
 - - wave.py for advanced wave and resonance operations like heat diffusion, reactive diffusion, wave propagation, and other wave-related operations.
 - symbolic:
-- - cantor.py for for advanced symbolic infinity operations.
+- - cantor.py for advanced symbolic infinity operations.
 - - cayley.py unpopulated, most of the cayley operations are in cayley_menger.py
 - - cayley_menger.py for Cayley-Menger determinant calculations and related operations, backbone of core.
 - - einstein.py for Einstein summation operations and related tensor manipulations.
