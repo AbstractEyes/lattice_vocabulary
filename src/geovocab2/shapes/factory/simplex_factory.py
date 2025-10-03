@@ -18,7 +18,11 @@ License: MIT
 
 import numpy as np
 from typing import Optional, Tuple, Union
-from factory_base import FactoryBase, HAS_TORCH
+
+try:
+    from .factory_base import FactoryBase, HAS_TORCH
+except ImportError:
+    from factory_base import FactoryBase, HAS_TORCH
 
 if HAS_TORCH:
     import torch
