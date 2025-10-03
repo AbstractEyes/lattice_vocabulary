@@ -39,7 +39,7 @@ Mathematical Foundation:
         - Regularity: measure of deviation from regular simplex
         - Degeneracy: near-zero volume
 
-Author: AbstractPhil + Claude Sonnet 4.5
+Author: AbstractPhil + Claude Sonnet 4.5 + GPT 5
 License: MIT
 """
 
