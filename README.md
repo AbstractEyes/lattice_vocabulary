@@ -255,7 +255,7 @@ cd lattice_vocabulary
 pip install -r requirements.txt
 
 
-## 📖 License
+## 📖 V1 License
 
 Apache 2.0 — use freely, cite with clarity.
 
