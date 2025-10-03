@@ -13,7 +13,7 @@ If you have problems you can revert to an earlier commit or use the original cod
 
 The natural evolution of geovocab, now a full refactored and reinvented structure basin built specifically for symbolic lattice vocabularies.
 
-This will function as a standalone library for generating and manipulating symbolic lattices and a strong synthesizer for randomized vocabularies for experimentation.
+This will function as a standalone library for generating and manipulating symbolic lattices while fulfilling the role for a strong synthesizer for randomized vocabularies for experimentation.
 
 The trie structure will properly replace the original caching mechanism for large vocabulary ngram structures, allowing for highly efficient storage and retrieval of complex symbolic structures using lexicographical ordering. This has strengths and weaknesses, so more database options will be available in the future for rapid prototyping.
 
