@@ -28,7 +28,7 @@ except ImportError:
     torch = None
     HAS_TORCH = False
 
-from fusion.composition_base_v2 import CompositionBase
+from fusion.composition_base import CompositionBase
 from shapes.formula.formula_base import FormulaBase
 from shapes.formula.symbolic.cayley_menger import CayleyMengerFromSimplex
 
