@@ -111,28 +111,42 @@ class SimplexFactory(FactoryBase):
 
     def _generate_regular(self, dtype) -> np.ndarray:
         """
-        Generate regular simplex (all edges equal length).
+        Generate regular simplex (all edges equal length = 1.0).
 
-        Uses standard construction in minimal embedding space.
+        Uses standard construction where vertex i has:
+        - coordinate i: sqrt((k+1)/k)
+        - all other coordinates: -1/k
+
+        This guarantees all pairwise distances equal sqrt(2(k+1)/k).
+        Then we normalize to unit edge length.
         """
-        if self.embed_dim < self.k:
-            raise ValueError(
-                f"Regular {self.k}-simplex requires embed_dim >= {self.k}"
-            )
+        if self.k == 0:
+            return np.zeros((1, self.embed_dim), dtype=dtype)
 
-        # Standard simplex construction
-        vertices = np.zeros((self.num_vertices, self.embed_dim), dtype=dtype)
+        # Need k+1 dimensions minimum for k-simplex
+        min_dim = self.k + 1
 
-        for i in range(self.num_vertices):
-            if i < self.k:
-                vertices[i, i] = 1.0
-            else:
-                # Final vertex ensures regularity
-                vertices[i, :self.k] = 1.0 / self.k
+        # Build in minimal embedding space
+        vertices_minimal = np.full((self.num_vertices, min_dim), -1.0 / self.k, dtype=dtype)
 
-        # Center and normalize
+        # Set diagonal to sqrt((k+1)/k)
+        coef = np.sqrt((self.k + 1.0) / self.k)
+        np.fill_diagonal(vertices_minimal, coef)
+
+        # Embed into higher dimensional space if needed
+        if self.embed_dim > min_dim:
+            vertices = np.zeros((self.num_vertices, self.embed_dim), dtype=dtype)
+            vertices[:, :min_dim] = vertices_minimal
+        else:
+            vertices = vertices_minimal[:, :self.embed_dim]
+
+        # Center at origin
         vertices = vertices - vertices.mean(axis=0, keepdims=True)
-        vertices = vertices / np.linalg.norm(vertices[1] - vertices[0])
+
+        # Normalize to unit edge length
+        edge_length = np.linalg.norm(vertices[1] - vertices[0])
+        if edge_length > 1e-10:
+            vertices = vertices / edge_length
 
         return vertices
 
@@ -210,35 +224,53 @@ class SimplexFactory(FactoryBase):
         return vertices
 
     def _generate_regular_torch(self, dtype) -> "torch.Tensor":
-        """Regular simplex construction."""
-        vertices = torch.zeros(
-            (self.num_vertices, self.embed_dim),
-            dtype=dtype
-        )
+        """Regular simplex construction (vectorized, matches numpy)."""
+        if self.k == 0:
+            return torch.zeros((1, self.embed_dim), dtype=dtype)
 
-        for i in range(self.num_vertices):
-            if i < self.k:
-                vertices[i, i] = 1.0
-            else:
-                vertices[i, :self.k] = 1.0 / self.k
+        min_dim = self.k + 1
 
+        # Create matrix filled with -1/k
+        vertices_minimal = torch.full((self.num_vertices, min_dim), -1.0 / self.k, dtype=dtype)
+
+        # Set diagonal to sqrt((k+1)/k) - vectorized
+        coef = float(np.sqrt((self.k + 1.0) / self.k))
+        diag_size = min(self.num_vertices, min_dim)
+        diag_indices = torch.arange(diag_size, dtype=torch.long)
+        vertices_minimal[diag_indices, diag_indices] = coef
+
+        # Embed into higher dimensional space if needed
+        if self.embed_dim > min_dim:
+            vertices = torch.zeros((self.num_vertices, self.embed_dim), dtype=dtype)
+            vertices[:, :min_dim] = vertices_minimal
+        else:
+            vertices = vertices_minimal[:, :self.embed_dim]
+
+        # Center and normalize
         vertices = vertices - vertices.mean(dim=0, keepdim=True)
-        vertices = vertices / torch.linalg.norm(vertices[1] - vertices[0])
+
+        edge_length = torch.linalg.norm(vertices[1] - vertices[0])
+        if edge_length > 1e-10:
+            vertices = vertices / edge_length
 
         return vertices
 
     def _generate_uniform_torch(self, gen, dtype) -> "torch.Tensor":
-        """Uniform hypercube sampling."""
+        """Uniform hypercube sampling (vectorized)."""
         vertices = torch.rand(
             (self.num_vertices, self.embed_dim),
             generator=gen,
             dtype=dtype
         ) * 2 - 1  # Scale to [-1, 1]
 
-        # Ensure affine independence
-        for i in range(1, self.num_vertices):
+        # Vectorized perturbation for affine independence
+        if self.num_vertices > 1:
             eye = torch.eye(self.embed_dim, dtype=dtype)
-            vertices[i] += 0.1 * i * eye[i % self.embed_dim]
+            indices = torch.arange(1, self.num_vertices, dtype=torch.long)
+
+            # Create perturbations: [num_vertices-1, embed_dim]
+            perturbations = 0.1 * indices.unsqueeze(-1).float() * eye[indices % self.embed_dim]
+            vertices[1:] += perturbations
 
         return vertices
 
@@ -355,8 +387,10 @@ if __name__ == "__main__":
             edge_len = np.linalg.norm(tetrahedron[i] - tetrahedron[j])
             edges.append(edge_len)
 
-    print(f"  Edge lengths (regular): {edges[:3]}... (all should be ≈ equal)")
-    print(f"  Edge std dev: {np.std(edges):.6f}")
+    print(f"  Edge lengths (regular): {[f'{e:.6f}' for e in edges[:3]]}...")
+    print(f"  All edges: {[f'{e:.6f}' for e in edges]}")
+    print(f"  Edge std dev: {np.std(edges):.8f} (should be ~0)")
+    print(f"  Edge mean: {np.mean(edges):.6f}")
 
     # Example 3: High-dimensional simplex
     print("\n[Example 3] 5-simplex in R^10, uniform method")
