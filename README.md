@@ -2,7 +2,12 @@
 
 > “To define a word geometrically is to place it in an infinite structure that cannot be forgotten.”
 
-**Lattice Vocabulary** is a symbolic crystallization of the English language into a geometric, navigable integer lattice—designed not for compression, but for cognition. Each word, its meanings, transformations, and connections are encoded not as embeddings, but as structured, lossless, multidimensional crystals.
+**Lattice Vocabulary** is a symbolic crystallization of representative multimodal language into a geometric, navigable systemic-driven lattice. This is designed not for compression, but for cognition. Each word, its meanings, transformations, and connections are encoded not as just embeddings, but as structured, lossless, multidimensional shapes.
+
+## geovocab: The Original
+The original geovocab structure is still present in the `geovocab` directory for legacy support and reference.
+If you have problems you can revert to an earlier commit or use the original code as needed.
+
 
 ## 📐 geovocab2
 
@@ -10,144 +15,143 @@ The natural evolution of geovocab, now a full refactored and reinvented structur
 
 This will function as a standalone library for generating and manipulating symbolic lattices and a strong synthesizer for randomized vocabularies for experimentation.
 
-The trie structure has replaced the original caching mechanism, allowing for highly efficient storage and retrieval of complex symbolic structures using lexicographical ordering. This has strengths and weaknesses, so more database options will be available in the future for rapid prototyping.
+The trie structure will properly replace the original caching mechanism for large vocabulary ngram structures, allowing for highly efficient storage and retrieval of complex symbolic structures using lexicographical ordering. This has strengths and weaknesses, so more database options will be available in the future for rapid prototyping.
 
 This new version supports advanced toolset symbolic operations and transformations, making it ideal for geometric experimental applications in natural language processing, cognitive computing, and AI development.
 
-```
-class DimensionType(Enum):
-    """Dimensional control for geometric tokens"""
-    D1 = 1
-    D2 = 2
-    D3 = 3
-    D4 = 4
-    D5 = 5
-    D6_PLUS = 6
 
+## I've made the dev branch the main branch now.
 
-class ContentType(Enum):
-    """Content richness of crystal"""
-    SPARSE = "sparse"
-    ENRICHED = "enriched"
-    TRAJECTORY = "trajectory"
-    MAGNITUDE = "magnitude"
-    VOLUME = "volume"
-    HYBRID = "hybrid"
+This is primarily due to AI not seeing the dev branch at all so they aren't helping me directly edit the repo and haven't been able to for days at this point.
 
+The original code is all still present in the geovocab directory - so you can access the legacy code without interference... hopefully.
 
-class FormulaType(Enum):
-    """Mathematical formula basis"""
-    ROSE_CAYLEY = "rose_cayley"
-    CAYLEY_MENGER = "cayley_menger"
-    CAYLEY = "cayley"
-    MENGER = "menger"
-    EULER = "euler"
-    GRAHAM_INFINITE = "graham_infinite"
-    GRAHAM_FINITE = "graham_finite"
-    GRAHAM_MASKED = "graham_masked"
-    HYBRID_V1V2 = "hybrid_v1v2"
-    
-class NormType(Enum):
-    """Normalization strategies"""
-    L1 = "l1"
-    L2 = "l2"
-    LINF = "linf"
-    NONE = "none"
+Let me know if there are any critical issues and I'll attempt to resolve it until v2 is fully operational with a matching interface as v1.
 
-@dataclass
-class UnifiedCrystalConfig:
-    """Unified configuration for the complete system"""
-    # Dataset settings
-    repo_id: str = "AbstractPhil/geometric-vocab"
-    dataset_name: str = "unicode_100d"
-    split: str = "train"
-
-    # Dimensions
-    embedding_dim: int = 100
-    dimension_type: DimensionType = DimensionType.D5
-
-    # Crystal properties
-    content_type: ContentType = ContentType.HYBRID
-    formula_type: FormulaType = FormulaType.HYBRID_V1V2
-    norm_type: NormType = NormType.L2
-
-    # Synthesis options
-    enable_synthesis: bool = True
-    use_definitions: bool = True
-    use_character_composition: bool = True
-    silent_synthesis: bool = False
-    prefer_dataset: bool = True
-
-    # Cache settings
-    memory_cache_size: int = 10000
-    disk_cache_path: Optional[Path] = None
-
-    # Performance
-    batch_size: int = 100
-    num_threads: int = 4
-
-    # Graham-specific
-    graham_levels: Optional[int] = None
-    graham_mask: Optional[np.ndarray] = None
-
-    # Rose structure
-    use_rose_structure: bool = False
-    freeze_anchor: bool = True
-
-
-```
 
 ## V2 Key Features
 The initial v2 variation is a bit rigid and requires some manual setup, but it is a solid foundation for building complex symbolic vocabularies.
 
-It's refitted with proper lazy loading, optimization, formula synthesis, and baseline crystal structures is currently present.
-
 The interface has changed, so be aware if you're coming from v1. v1 still exists so you can still use it if you prefer.
 
-The Nikola-Graham formula and the infinite lattice synthesis will be applied specifically in the trainer module, which is not yet ready.
+# Explanation for changes
 
-The preliminary version has multiple built-in formulas for generating and manipulating symbolic lattices, including:
-- Cayley-Menger determinants for volume and resonance calculations
-- Cantor and Cantor-Graham mappings for masked infinite structures and control
-- Triplet alignment rules for routing consistency
-- RoSE score calculations for relational and semantic alignment similarity
-  - Missing the theta controllers
-- Direct Graham [MASKED] Infinity mappings for infinite crystal structures
-- Direct Graham finite mappings for bounded structures and transformations
-- Trajectory and magnitude-based transformations for dynamic relationships
-- Hybrid formulas combining multiple approaches for enhanced flexibility
-- Support for various dimensionality (1D to 6D+)
-- Support for different content types (sparse, enriched, trajectory-based, magnitude-based, hybrid)
-- Normalization strategies (L1, L2, L∞, none)
-- Configurable synthesis options (definitions, character composition, dataset preference)
-- Specific graham levels and masks for targeted synthesis
-- Basic caching mechanisms (in-memory and disk-based)
-- Testing variation of a formula bank to house variant formulas for experimentation and development.
-  - Currently tasked with just WORKING, will house all the formulas from the directories as they are implemented for a bank of access.
+geovocab2 is a complete refit and rewrite of the original geovocab structure.
+
+It uses a series of principles that the original did not have;
+
+1. simple objects with hierarchical inheritance by 1 or 2 levels at most.
+2. overload operators with self-documenting methods and properties.
+3. reusable formulas and transformations each standalone capable of being tested and validated independently.
+4. factory structures meant to efficiently generate and manage complex symbolic lattices with minimal overhead.
+5. synthesis options for generating complex symbolic lattices with various configurations and parameters.
+
+# Core directive:
+
+1. torch and numpy compatible.
+2. everything compiles or translates directly to torch tensors for gpu acceleration.
+3. everything is independently testable and usable with at most one file dependency.
+4. everything is inherited from a base class with common methods and properties.
+5. import footprint is small and efficient, useful for rapid prototyping and experimentation.
+6. everything is human-readable and AI friendly, so it can be easily understood and modified by both humans and AI systems.
+
+These principles allow for a more modular and maintainable codebase that is easier to extend and adapt to new requirements.
+
+To ensure these structures align; I've specifically designed the inheritance hierarchy to be shallow and focused. 
+The wording is concise and meaningful. The structures are designed to be easily understandable and modifiable.
+The hierarchy follows a clear pattern. The torch and numpy compatibility is maintained throughout the codebase with careful attention to detail.
+
+Some things may not compile at first, but it will be fixed as I go through and test everything with direct scrutiny.
+
+# Structure Hierarchy
+
+```
+BaseFormula > OverriddenFormula > SpecificFormula
+    Example:
+        BaseFactory -> SimplexFactory -> Produces simplex shaped structures 
+        BaseFormula -> CayleyMengerFromSimplex -> Produces Cayley-Menger determinants from simplex structures
+        CompositionBase -> LexicalSimplexSynthesizer -> Synthesizes lexical simplex structures from vocab data and shapes
+```
+
+The structures are formatted specifically to be expandable and utility-focused, so they can be used in a variety of contexts and applications.
+
+They are AI friendly and human-readable, so they can be easily understood and modified by both humans and AI systems.
+
+# Formula Playground
+
+The current implementation has these directories and files for the formula playground:
+
+`geovocab2/shapes/formula/`
+- engineering: 
+- - atomic.py for basic atomic operations and structures, not so useful on its own but foundational if necessary.
+- - fundamental.py for more advanced basic operations like atan2, vector norms, and other basic mathematical operations.
+- - geometric.py for geometric analysis and transformations like raycast, geometric point calculations, and other geometric operations.
+- - projection.py for projection operations like to_homogenous, orthographic, perspective, and other projection methods.
+- - simplex.py for simplex structures and operations like generating simplex shapes, calculating volumes, and other simplex-related operations.
+- - wave.py for advanced wave and resonance operations like heat diffusion, reactive diffusion, wave propagation, and other wave-related operations.
+- symbolic:
+- - cantor.py for for advanced symbolic infinity operations.
+- - cayley.py unpopulated, most of the cayley operations are in cayley_menger.py
+- - cayley_menger.py for Cayley-Menger determinant calculations and related operations, backbone of core.
+- - einstein.py for Einstein summation operations and related tensor manipulations.
+- - euler.py for Euler characteristic calculations and related topological operations.
+- - graham.py unpopulated
+- - hawking.py for Hawking radiation and black hole related symbolic operations.
+- - hooke.py for Hooke's law and related elastic deformation operations.
+- - menger.py unpopulated
+- - newton.py for Newtonian mechanics and related physical operations.
+- - nikola.py for Nikola Tesla's resonance, frequency, and energy operations.
+
+- specifically k-simplex supported on many of these files, but not all yet.
+- The k-simplex depth is nth, so 0-simplex is a point, 1-simplex is a line, 2-simplex is a triangle, 3-simplex is a tetrahedron, 4-simplex is a pentachoron, and so on.
+
+
+
+
+# Factories
+The factories are designed to produce specific types of symbolic lattice structures based on the provided configuration.
+
+`geovocab2/shapes/factory/`
+- factory_base.py for the base factory class and common methods.
+- simplex_factory.py for generating simplex-shaped symbolic lattice structures.
+- legacy_factory.py for direct 1:1 compatibility with the original geovocab structures, almost ready.
+- factory_dataloaders.py for loading datasets and vocabularies into the factories.
+
+# Synthesis
+
+These are specifically curated to synthesize complex symbolic lattice structures from vocabularies and shapes interconnected.
+Meant to be independent and reusable for various synthesis tasks.
+
+
+`geovocab2/shapes/fusion/`
+- composition_base.py for the base composition class and common character embedding synthesis methods.
+- lexical_simplex_synthesizer.py for synthesizing lexical simplex structures from vocab data and shapes.
+- wordnet_synthesizer.py for synthesizing structures using WordNet data, doesn't do much yet. Use simplex for now.
 
 
 ## V2 Blockers
 - X Formula bank incompatible requires refitting
   - I don't like the current implementation so I will make a better interface.
+- X Structure refitting for baseline new structure established
 - Trainer module not yet implemented
 
 ## V2 Todo
 - Implement the missing formulas and transformations
   - X Formula bank established for housing the formulas as they are implemented.
-  - Synthesize and test Nikola-Menger resonance axiom formula structures with finite and infinite lattice structures
+  - X Synthesize and test Nikola-Menger resonance axiom formula structures with finite and infinite lattice structures
   - Chaos theory controllers for dynamic adjustments
-  - Chaos-Menger transformations for dynamic structural adjustments
+  - X Chaos-Menger transformations for dynamic structural adjustments
   - Implement the Rose score magnitude and trajectory-based loss functions
   - Integrate with existing symbolic loss functions for NLP tasks
-  - Implement Graham infinite and finite transformations with masking capabilities
+  - X Implement Graham infinite and finite transformations with masking capabilities
   - RoPE-like theta controllers and rotational adjustments for dynamic synthesis pre and post-processing
   - RoSE controllers for advanced resonance and alignment tuning
     - Multi-structural adjustments for targeting specific resonance patterns and alignments
     - Multi-dimensional adjustments for cross-contrastive synthesis and transformations
-- Advanced lexical controllers for fine-tuning synthesis parameters
+- X Advanced lexical controllers for fine-tuning synthesis parameters
   - Currently they are rigid and nonconformant to datasets and vocabularies
-- Implement more control over sparse and enriched content types
-  - Currently they are either bound to single word/character or omitted word/character and only definition.
+- X Implement more control over sparse and enriched content types
+  - X Currently they are either bound to single word/character or omitted word/character and only definition.
 - Implement more normalization strategies and options
   - Currently limited to L1, L2, L∞, and none - this needs to be more flexible and adaptable to different use cases.
 - Implement the corpus trainer module for advanced symbolic lattice operations with gpu gradient and loss functions
@@ -168,22 +172,22 @@ The preliminary version has multiple built-in formulas for generating and manipu
 - Expand the synthesis options to include more linguistic features and relationships.
   - Direct symbolic, linguistic, relational, morphological, and semantic relationships.
   - Including code, ordinal, and other non-linguistic symbols with custom behavioral synthesis options.
-- Refine higher-dimensional simplex handling (6-simplex and beyond to the infinite axiom)
-  - Currently they are hit or miss and the formulas are not fully tested or validated.
-  - BASICALLY everything after simplex 4 is imperfect and requires refinement, but there are solid foundations for building complex symbolic vocabularies.
+- X Refine higher-dimensional simplex handling (6-simplex and beyond to the infinite axiom)
+  - X Currently they are hit or miss and the formulas are not fully tested or validated.
+  - X BASICALLY everything after simplex 4 is imperfect and requires refinement, but there are solid foundations for building complex symbolic vocabularies.
 - Optimize performance for large-scale vocabularies with flags for preloading, caching, batching, workers, devices, and compression methods.
 
 I plan to knock most of these pieces out over the next few days, so look forward to the updates.
+
+Well it wasn't ready in a few days, but it's getting closer. 5 days in.
 
 I work fast as anyone who observes knows.
 
 ## System Status
 
-The tests passed, so the system is MOSTLY functional. It will have bugs, but it is a solid foundation for building complex symbolic vocabularies.
+Each system is independently testable and usable, but the full system is not yet complete.
 
-Higher than 4simplex are imperfect and require refinement, but they provide a solid foundation for building complex symbolic vocabularies.
-
-I've been researching potentials and managed to accommodate 5-simplex (pentachoron) structures with reasonable fidelity.
+The validation tests at the bottom of each formula file can be run to ensure the integrity and correctness of the formulas. This does not guarantee every configuration or every setting just yet, but it's a strong start.
 
 ## The Trainer is coming.
 
@@ -191,14 +195,17 @@ This exposes the more complex symbolic lattice operations that I've been researc
 Some aren't perfect yet, but this code is available for experimentation and further development.
 
 
-# Older Basin left for posterity - will edit later
-License still stands, cite with clarity - free for all.
 
 ## 📖 License
 
-Apache 2.0 — use freely, cite with clarity.
+MIT License — use freely, cite, but maintain this notice. You can relicense your derivative works.
+
+I have changed from Apache 2.0 to MIT for the simple idea that I want this to be as free as possible for all to use and adapt.
 
 
+
+# Older Basin left for posterity - will edit later
+License still stands, cite with clarity - free for all.
 
 ## 📐 Core Concept
 
