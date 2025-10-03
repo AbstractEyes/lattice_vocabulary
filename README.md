@@ -108,6 +108,7 @@ The Nikola-Graham formula and the infinite lattice synthesis will be applied spe
 
 The preliminary version has multiple built-in formulas for generating and manipulating symbolic lattices, including:
 - Cayley-Menger determinants for volume and resonance calculations
+- Cantor and Cantor-Graham mappings for masked infinite structures and control
 - Triplet alignment rules for routing consistency
 - RoSE score calculations for relational and semantic alignment similarity
   - Missing the theta controllers
@@ -115,16 +116,25 @@ The preliminary version has multiple built-in formulas for generating and manipu
 - Direct Graham finite mappings for bounded structures and transformations
 - Trajectory and magnitude-based transformations for dynamic relationships
 - Hybrid formulas combining multiple approaches for enhanced flexibility
-- Support for various dimensionalities (1D to 6D+)
+- Support for various dimensionality (1D to 6D+)
 - Support for different content types (sparse, enriched, trajectory-based, magnitude-based, hybrid)
 - Normalization strategies (L1, L2, L∞, none)
 - Configurable synthesis options (definitions, character composition, dataset preference)
 - Specific graham levels and masks for targeted synthesis
 - Basic caching mechanisms (in-memory and disk-based)
+- Testing variation of a formula bank to house variant formulas for experimentation and development.
+  - Currently tasked with just WORKING, will house all the formulas from the directories as they are implemented for a bank of access.
+
+
+## V2 Blockers
+- X Formula bank incompatible requires refitting
+  - I don't like the current implementation so I will make a better interface.
+- Trainer module not yet implemented
 
 ## V2 Todo
 - Implement the missing formulas and transformations
-  - Synthesize and test Nikola-Menger resonance axioms with finite and infinite lattice structures
+  - X Formula bank established for housing the formulas as they are implemented.
+  - Synthesize and test Nikola-Menger resonance axiom formula structures with finite and infinite lattice structures
   - Chaos theory controllers for dynamic adjustments
   - Chaos-Menger transformations for dynamic structural adjustments
   - Implement the Rose score magnitude and trajectory-based loss functions
@@ -154,6 +164,7 @@ The preliminary version has multiple built-in formulas for generating and manipu
 - Implement advanced device control caching and storage solutions for handling large-scale vocabularies efficiently.
   - Currently it will be hit or miss with numpy to torch while the other is quite streamlined in comparison. This will be fixed.
 - Add more unit tests and validation checks to ensure the integrity and correctness of the geometric structures.
+  X Still needs more but I added some.
 - Expand the synthesis options to include more linguistic features and relationships.
   - Direct symbolic, linguistic, relational, morphological, and semantic relationships.
   - Including code, ordinal, and other non-linguistic symbols with custom behavioral synthesis options.
