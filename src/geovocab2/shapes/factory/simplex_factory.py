@@ -46,7 +46,6 @@ class SimplexFactory(FactoryBase):
         method: str = "random",
         scale: float = 1.0,
     ):
-        super().__init__(name="simplex_factory", uid="factory.simplex")
         if k < 0:
             raise ValueError(f"k must be non-negative, got {k}")
         if embed_dim < k:
