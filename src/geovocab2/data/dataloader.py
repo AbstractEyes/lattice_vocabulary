@@ -75,7 +75,7 @@ class FactoryDataset(Dataset):
         self.seed_offset = seed_offset
         self.backend = backend
         # DataLoader workers are CPU-only, device transfer happens in collate
-        self.device = "cpu" if backend == "torch" else None
+        self.device = device
 
     def __len__(self):
         return self.count
