@@ -312,7 +312,7 @@ class SimplexFactory(FactoryBase):
 
         # Use CayleyMengerFromSimplex for validation
         try:
-            from shapes.formula.symbolic.cayley_menger import CayleyMengerFromSimplex
+            from geovocab2.shapes.formula.symbolic.cayley_menger import CayleyMengerFromSimplex
 
             validator = CayleyMengerFromSimplex(eps=1e-10, validate_input=False)
             result = validator.forward(verts_torch)

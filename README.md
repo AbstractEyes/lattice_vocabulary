@@ -19,6 +19,16 @@ The trie structure will properly replace the original caching mechanism for larg
 
 This new version supports advanced toolset symbolic operations and transformations, making it ideal for geometric experimental applications in natural language processing, cognitive computing, and AI development.
 
+## Known Issues 10/3/2025
+
+Progress is steady but slow due to the complexity of the refit and rewrite.
+
+Importing from geovocab2 may be problematic due to the change in structure and organization.
+
+I'm looking into solutions for relative import to ensure individual systems function correctly, likely an __init__.py file in each directory to ensure proper module recognition and import resolution.
+
+This should be tested and ready by tomorrow at some point and the README updated accordingly.
+
 
 ## I've made the dev branch the main branch now.
 
