@@ -44,8 +44,9 @@ except ImportError:
     HAS_TORCH = False
 
 # Import base classes
-from composition_base import CompositionBase, CharacterCompositor, HashCompositor
+from .composition_base import CompositionBase, CharacterCompositor, HashCompositor
 
+#todo: currently dead needs refactoring
 
 class WordNetSynthesizer(CompositionBase):
     """

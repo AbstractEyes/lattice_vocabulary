@@ -28,9 +28,9 @@ except ImportError:
     torch = None
     HAS_TORCH = False
 
-from fusion.composition_base import CompositionBase
-from shapes.formula.formula_base import FormulaBase
-from shapes.formula.symbolic.cayley_menger import CayleyMengerFromSimplex
+from .composition_base import CompositionBase
+from geovocab2.shapes.formula.formula_base import FormulaBase
+from geovocab2.shapes.formula import CayleyMengerFromSimplex
 
 EPS = 1e-12
 

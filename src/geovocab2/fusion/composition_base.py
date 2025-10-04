@@ -35,9 +35,9 @@ except ImportError:
     HAS_TORCH = False
 
 # Import FormulaBase and specific formulas
-from shapes.formula.formula_base import FormulaBase
-import shapes.formula  # Ensure atomic formulas are registered
-from geovocab2 import (
+from geovocab2.shapes.formula.formula_base import FormulaBase
+
+from geovocab2.shapes.formula import (
     Normalize, DotProduct, CrossProduct, VectorNorm,
     VectorProjection, LinearInterpolation
 )

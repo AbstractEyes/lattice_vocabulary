@@ -8,27 +8,28 @@
 The original geovocab structure is still present in the `geovocab` directory for legacy support and reference.
 If you have problems you can revert to an earlier commit or use the original code as needed.
 
+# 📐 geovocab2
 
-## 📐 geovocab2
+* The natural evolution of geovocab, now a full refactored and reinvented structure basin built specifically for symbolic lattice vocabularies.
+* This will function as a standalone library for generating and manipulating symbolic lattices while fulfilling the role for a strong synthesizer for randomized vocabularies for experimentation.
+* The trie structure will properly replace the original caching mechanism for large vocabulary ngram structures, allowing for highly efficient storage and retrieval of complex symbolic structures using lexicographical ordering. This has strengths and weaknesses, so more database options will be available in the future for rapid prototyping.
+* This new version supports advanced toolset symbolic operations and transformations, making it ideal for geometric experimental applications in natural language processing, cognitive computing, and AI development.
+* Equipped with pyi for autocomplete and a standardized package structure for ease of use.
+* Formatted specifically for easy expansion with IDE by utilizing autocomplete pyi capacity while retaining that core functionality for imported projects.
 
-The natural evolution of geovocab, now a full refactored and reinvented structure basin built specifically for symbolic lattice vocabularies.
 
-This will function as a standalone library for generating and manipulating symbolic lattices while fulfilling the role for a strong synthesizer for randomized vocabularies for experimentation.
+# Resolved immediate issues 10/4/2025
+- Importing from geovocab2 may be problematic due to the change in structure and organization.
+- I'm looking into solutions for relative import to ensure individual systems function correctly, likely an __init__.py file in each directory to ensure proper module recognition and import resolution.
+- - This should be tested and ready by tomorrow at some point and the README updated accordingly.
+- - This has been resolved with __init__.py and __init__.pyi files in each directory, with a baseline generate_stubs.py included in src/geovocab2/tools meant to be run as needed to regenerate the stubs for type checking and IDE support.
 
-The trie structure will properly replace the original caching mechanism for large vocabulary ngram structures, allowing for highly efficient storage and retrieval of complex symbolic structures using lexicographical ordering. This has strengths and weaknesses, so more database options will be available in the future for rapid prototyping.
-
-This new version supports advanced toolset symbolic operations and transformations, making it ideal for geometric experimental applications in natural language processing, cognitive computing, and AI development.
-
-## Known Issues 10/3/2025
-
-Progress is steady but slow due to the complexity of the refit and rewrite.
-
-Importing from geovocab2 may be problematic due to the change in structure and organization.
-
-I'm looking into solutions for relative import to ensure individual systems function correctly, likely an __init__.py file in each directory to ensure proper module recognition and import resolution.
-
-This should be tested and ready by tomorrow at some point and the README updated accordingly.
-
+# Current Access Import Structure:
+```
+from geovocab2.shapes.factory import SimplexFactory
+from geovocab2.shapes.formula import CayleyMengerFromSimplex
+from geovocab2.shapes.fusion import LexicalSimplexSynthesizer
+```
 
 ## I've made the dev branch the main branch now.
 
