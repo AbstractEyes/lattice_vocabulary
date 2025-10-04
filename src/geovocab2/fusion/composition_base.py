@@ -36,7 +36,8 @@ except ImportError:
 
 # Import FormulaBase and specific formulas
 from shapes.formula.formula_base import FormulaBase
-from shapes.formula.engineering.atomic import (
+import shapes.formula  # Ensure atomic formulas are registered
+from geovocab2 import (
     Normalize, DotProduct, CrossProduct, VectorNorm,
     VectorProjection, LinearInterpolation
 )

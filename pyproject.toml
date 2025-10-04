@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geometricvocab"
-version = "0.2.0"
+version = "0.2.1"
 description = "Deterministic geometric vocabulary: pentachora crystals, Unicode cobbling, and rose-aware utilities."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,11 +23,9 @@ classifiers = [
 
 dependencies = [
   "numpy>=1.23",
-  "datasets>=2.15",  # for HF parquet access
+  "datasets>=2.15",
+  "torch>=2.1",  # Move torch to main deps since formulas require it
 ]
-
-[project.optional-dependencies]
-torch = ["torch>=2.1"]  # optional; only needed when using .cache()
 
 [project.urls]
 Homepage = "https://huggingface.co/AbstractPowered"

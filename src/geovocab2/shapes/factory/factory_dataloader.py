@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Callable
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
+from .factory_base import TensorFactory  # Assuming FactoryBase is imported
+
 try:
     import torch
 
@@ -293,7 +295,6 @@ class CacheStage(PipelineStage):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if __name__ == "__main__":
-    from shapes.factory.factory_base import TensorFactory  # Assuming FactoryBase is imported
 
     print("=" * 70)
     print("FACTORY DATALOADER PIPELINE DEMONSTRATION")

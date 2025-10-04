@@ -49,7 +49,7 @@ from torch import Tensor
 import math
 from itertools import combinations
 
-from shapes.formula.formula_base import FormulaBase
+from ..formula_base import FormulaBase
 
 
 # ──────────────────────────────────────────────────────────────────────────────

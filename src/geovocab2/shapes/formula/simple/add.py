@@ -10,7 +10,7 @@
 from torch import Tensor
 from typing import Dict
 
-from shapes.formula.formula_base import FormulaBase
+from ..formula_base import FormulaBase
 
 
 class AddFormula(FormulaBase):

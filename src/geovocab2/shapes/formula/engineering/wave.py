@@ -47,7 +47,7 @@ from torch import Tensor
 import torch.nn.functional as F
 import math
 
-from shapes.formula.formula_base import FormulaBase
+from ..formula_base import FormulaBase
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

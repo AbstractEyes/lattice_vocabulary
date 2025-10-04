@@ -8,7 +8,7 @@ Usage:
 
 import torch
 
-from formula_bank import LIB, GeoTensor  # Assume LIB is pre-loaded global
+from .formula_bank import LIB, GeoTensor  # Assume LIB is pre-loaded global
 
 class F:
     """Direct formula access."""

@@ -23,7 +23,7 @@ License: MIT
 
 import numpy as np
 from typing import Optional, Union, Tuple
-from factory_base import FactoryBase, HAS_TORCH
+from .factory_base import FactoryBase, HAS_TORCH
 
 if HAS_TORCH:
     import torch

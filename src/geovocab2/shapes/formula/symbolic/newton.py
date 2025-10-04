@@ -69,7 +69,7 @@ import torch
 from torch import Tensor
 import math
 
-from shapes.formula.formula_base import FormulaBase
+from ..formula_base import FormulaBase
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
