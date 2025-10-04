@@ -498,12 +498,12 @@ if __name__ == "__main__":
     # Example usage
     config = UnifiedCrystalConfig(
         repo_id="AbstractPhil/geometric-vocab",
-        dataset_name="unicode_100d",
+        dataset_name="wordnet_eng_100d",
         split="train"
     )
     manager = ArrowDataManager(config)
     if manager.initialize():
-        token = "example_token"
+        token = "example"
         data = manager.get_token_data(token)
         if data:
             print(f"Token: {data['token']}, ID: {data['token_id']}, Crystal shape: {data['crystal'].shape if data['crystal'] is not None else 'None'}")
