@@ -92,6 +92,20 @@ from .engineering.wave import (
     WavePropagation as WavePropagation,
     WindowFunction as WindowFunction,
 )
+from .experimental.chaos import (
+    NoiseCollector as NoiseCollector,
+    SimplexQuality as SimplexQuality,
+    SimplexVolume as SimplexVolume,
+)
+from .experimental.origin_sampler import (
+    CMLogDetRegularizer as CMLogDetRegularizer,
+    GeometricOriginSampler as GeometricOriginSampler,
+    RoseWeightedVolume as RoseWeightedVolume,
+    SimplexCentroid as SimplexCentroid,
+    SimplexFacesSampler as SimplexFacesSampler,
+    SimplexQuality as SimplexQuality,
+    SimplexVolume as SimplexVolume,
+)
 from .simple.add import (
     AddFormula as AddFormula,
 )
