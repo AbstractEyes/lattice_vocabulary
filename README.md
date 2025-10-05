@@ -27,8 +27,14 @@ If you have problems you can revert to an earlier commit or use the original cod
 # Current Access Import Structure:
 ```
 from geovocab2.shapes.factory import SimplexFactory
+# access to multiple factories
+
 from geovocab2.shapes.formula import CayleyMengerFromSimplex
+# access to hundreds of formulas
+
 from geovocab2.shapes.fusion import LexicalSimplexSynthesizer
+# access to multiple synthesizers and fusion methods
+
 ```
 
 ## I've made the dev branch the main branch now.

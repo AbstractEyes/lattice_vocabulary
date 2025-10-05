@@ -28,7 +28,7 @@ except ImportError:
     torch = None
     HAS_TORCH = False
 
-from .composition_base import CompositionBase
+from geovocab2.fusion.composition_base import CompositionBase
 from geovocab2.shapes.formula.formula_base import FormulaBase
 from geovocab2.shapes.formula import CayleyMengerFromSimplex
 
