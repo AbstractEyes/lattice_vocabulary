@@ -30,7 +30,7 @@ from geovocab2.shapes.factory import SimplexFactory
 # access to multiple factories
 
 from geovocab2.shapes.formula import CayleyMengerFromSimplex
-# access to hundreds of formulas
+# access to hundreds of formulas from the geovocab2.shapes.formula
 
 from geovocab2.shapes.fusion import LexicalSimplexSynthesizer
 # access to multiple synthesizers and fusion methods
