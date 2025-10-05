@@ -97,6 +97,12 @@ from .experimental.chaos import (
     SimplexQuality as SimplexQuality,
     SimplexVolume as SimplexVolume,
 )
+from .experimental.flow import (
+    CMLogDetRegularizer as CMLogDetRegularizer,
+    FlowMatcher as FlowMatcher,
+    SimplexQuality as SimplexQuality,
+    SimplexVolume as SimplexVolume,
+)
 from .experimental.origin_sampler import (
     CMLogDetRegularizer as CMLogDetRegularizer,
     GeometricOriginSampler as GeometricOriginSampler,
