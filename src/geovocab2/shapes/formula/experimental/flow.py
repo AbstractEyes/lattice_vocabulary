@@ -52,13 +52,6 @@ class GeometricTrajectoryNet(nn.Module):
         )
 
     def forward(self, simplex_state: Tensor) -> Tensor:
-        """
-        Args:
-            simplex_state: [..., k+1, dim] current simplex configuration
-
-        Returns:
-            velocity: [..., k+1, dim] geometric velocity field
-        """
         orig_shape = simplex_state.shape
         batch_dims = orig_shape[:-2]
         k_plus_1 = orig_shape[-2]
@@ -76,9 +69,20 @@ class GeometricTrajectoryNet(nn.Module):
         )
         combined = encoded + attn_repeated
         velocity = self.velocity_proj(combined)
-        velocity = velocity.reshape(*batch_dims, k_plus_1, dim)
 
-        return velocity
+        # GEOMETRIC CONSTRAINT: velocity magnitude bounded by current simplex scale
+        # Compute current edge magnitudes
+        v0 = simplex_flat[:, 0:1, :]
+        edges = simplex_flat[:, 1:, :] - v0
+        edge_norms = torch.norm(edges, dim=-1, keepdim=True).mean(dim=-2, keepdim=True)
+
+        # Scale velocity to be proportional to current simplex size
+        # This prevents small simplices from making huge jumps
+        velocity_norm = torch.norm(velocity, dim=-1, keepdim=True).clamp(min=1e-8)
+        velocity_scaled = velocity * (edge_norms / velocity_norm).clamp(max=1.0)
+
+        velocity_scaled = velocity_scaled.reshape(*batch_dims, k_plus_1, dim)
+        return velocity_scaled
 
 
 class FlowMatcher(FormulaBase):
