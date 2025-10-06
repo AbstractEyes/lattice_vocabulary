@@ -177,22 +177,31 @@ class FlowMatcher(FormulaBase):
         return state
 
     def flow(
-        self,
-        initial_state: Tensor,
-        return_trajectory: bool = False
+            self,
+            initial_state: Tensor,
+            return_trajectory: bool = False
     ) -> Dict[str, Tensor]:
         """
-        Flow through geometric space.
-
-        Args:
-            initial_state: [..., k+1, dim] starting simplices
-            return_trajectory: Return full trajectory (all steps)
-
-        Returns:
-            final_state: [..., k+1, dim] final configuration
-            trajectory: Optional full path
-            flow_metrics: Quality, stability, etc.
+        Flow through geometric space with internal profiling.
+        Will crash after 3 calls with detailed timing breakdown.
         """
+        import time
+
+        # Initialize profiling storage
+        if not hasattr(self, '_profile_calls'):
+            self._profile_calls = 0
+            self._profile_data = {
+                'trajectory_net': [],
+                'clamp_update': [],
+                'volume_calc_validate': [],
+                'quality_calc_validate': [],
+                'correction_logic': [],
+                'quality_metrics': [],
+                'volume_metrics': []
+            }
+
+        self._profile_calls += 1
+
         current_state = initial_state
         trajectory = [current_state.detach().clone()] if return_trajectory else None
 
@@ -206,32 +215,69 @@ class FlowMatcher(FormulaBase):
         }
 
         for step in range(self.flow_steps):
-            # Compute velocity
+            # 1. Compute velocity
+            t0 = time.perf_counter()
             velocity = self.trajectory_net(current_state)
+            self._profile_data['trajectory_net'].append(time.perf_counter() - t0)
 
-            # Clip velocity to prevent explosion
+            # 2. Clip and update
+            t0 = time.perf_counter()
             step_size = 0.1
-            max_grad_size = max(0.5, min(1.0, self.max_grad_norm / step_size))
+            max_grad_size = max(0.0001, min(1.0, self.max_grad_norm / step_size))
             velocity = torch.clamp(velocity, -max_grad_size, max_grad_size)
-
-            # Flow update (simple Euler step with small step size)
             next_state = current_state + step_size * velocity
+            self._profile_data['clamp_update'].append(time.perf_counter() - t0)
 
-            # CHANGE: Only validate on last step or every 2 steps
-            if step == self.flow_steps - 1 or step % self.validate_every == 0:
-                next_state = self._validate_and_project(next_state, step)
+            # 3. Validate and project (FIRST volume/quality computation)
+            t0_validate = time.perf_counter()
 
-                # Only compute metrics when validating
-                step_quality = self.quality_check.forward(next_state)
-                flow_metrics['step_qualities'].append(
-                    step_quality['regularity'].mean().detach()
-                )
-                vol_result = self.volume_calc.forward(next_state)
-                flow_metrics['step_volumes'].append(
-                    vol_result['volume'].mean().detach()
-                )
+            # Volume check
+            t0 = time.perf_counter()
+            vol_result = self.volume_calc.forward(next_state)
+            self._profile_data['volume_calc_validate'].append(time.perf_counter() - t0)
 
-            # Update
+            is_degenerate = vol_result['is_degenerate']
+
+            # Quality check
+            t0 = time.perf_counter()
+            quality_result = self.quality_check.forward(next_state)
+            self._profile_data['quality_calc_validate'].append(time.perf_counter() - t0)
+
+            poor_quality = quality_result['regularity'] < 0.1
+            needs_correction = is_degenerate | poor_quality
+
+            # Correction
+            t0 = time.perf_counter()
+            if needs_correction.any():
+                k_plus_1 = next_state.shape[-2]
+                ii, jj = torch.triu_indices(k_plus_1, k_plus_1, offset=1, device=next_state.device)
+                edges = next_state[..., jj, :] - next_state[..., ii, :]
+                edge_lengths = torch.norm(edges, dim=-1)
+                mean_edge = edge_lengths.mean(dim=-1, keepdim=True)
+                scale_factor = 1.0 / (mean_edge.unsqueeze(-1) + 1e-6)
+                correction_mask = needs_correction.float()
+                while correction_mask.dim() < next_state.dim():
+                    correction_mask = correction_mask.unsqueeze(-1)
+                next_state = next_state * (1 - correction_mask) + (next_state * scale_factor) * correction_mask
+            self._profile_data['correction_logic'].append(time.perf_counter() - t0)
+
+            # 4. Track metrics (SECOND volume/quality computation - REDUNDANT!)
+            t0 = time.perf_counter()
+            step_quality = self.quality_check.forward(next_state)
+            self._profile_data['quality_metrics'].append(time.perf_counter() - t0)
+
+            flow_metrics['step_qualities'].append(
+                step_quality['regularity'].mean().detach()
+            )
+
+            t0 = time.perf_counter()
+            vol_result_metrics = self.volume_calc.forward(next_state)
+            self._profile_data['volume_metrics'].append(time.perf_counter() - t0)
+
+            flow_metrics['step_volumes'].append(
+                vol_result_metrics['volume'].mean().detach()
+            )
+
             current_state = next_state
 
             if return_trajectory:
@@ -241,7 +287,6 @@ class FlowMatcher(FormulaBase):
         final_quality = self.quality_check.forward(current_state)
         flow_metrics['final_quality'] = final_quality['regularity']
 
-        # Stack tracked metrics
         if flow_metrics['step_qualities']:
             flow_metrics['step_qualities'] = torch.stack(flow_metrics['step_qualities'])
             flow_metrics['step_volumes'] = torch.stack(flow_metrics['step_volumes'])
@@ -253,6 +298,38 @@ class FlowMatcher(FormulaBase):
 
         if return_trajectory:
             result['trajectory'] = torch.stack(trajectory, dim=0)
+
+        # After 3 calls, print stats and crash
+        if self._profile_calls >= 3:
+            print("\n" + "=" * 70)
+            print("FLOW_MATCHER DETAILED PROFILING (3 batches)")
+            print("=" * 70)
+
+            total_time = 0
+            for key, times in self._profile_data.items():
+                if times:
+                    avg_ms = (sum(times) / len(times)) * 1000
+                    total_time += avg_ms
+                    print(f"{key:30s}: {avg_ms:8.2f} ms")
+
+            print("-" * 70)
+            print(f"{'TOTAL':30s}: {total_time:8.2f} ms")
+            print("=" * 70)
+
+            print("\nKey findings:")
+            print("  - trajectory_net: MLP forward pass")
+            print("  - volume_calc_validate: First volume computation (in validation)")
+            print("  - quality_calc_validate: First quality computation (in validation)")
+            print("  - quality_metrics: REDUNDANT quality computation for logging")
+            print("  - volume_metrics: REDUNDANT volume computation for logging")
+            print("\nREDUNDANT WORK:")
+            redundant = (
+                                sum(self._profile_data['quality_metrics']) +
+                                sum(self._profile_data['volume_metrics'])
+                        ) * 1000
+            print(f"  Wasted time on duplicate calcs: {redundant:.2f} ms")
+
+            raise SystemExit("Profiling complete - exiting to show results")
 
         return result
 
