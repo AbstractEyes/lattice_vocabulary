@@ -1086,17 +1086,20 @@ class SimplexCentroid(FormulaBase):
 class SimplexQuality(FormulaBase):
     """Compute quality metrics for k-simplex."""
 
-    def __init__(self):
+    def __init__(self,
+                 edge_calculator: Optional[FormulaBase] = None,
+                 volume_calculator: Optional[FormulaBase] = None
+             ):
         super().__init__("simplex_quality", "f.quadratic.quality")
+        self.edge_calc = SimplexEdges() if edge_calculator is None else edge_calculator
+        self.vol_calc = SimplexVolumeExtended() if volume_calculator is None else volume_calculator
 
     def forward(self, vertices: Tensor) -> Dict[str, Tensor]:
         """Compute quality metrics."""
-        edge_calc = SimplexEdges()
-        edge_result = edge_calc.forward(vertices)
+        edge_result = self.edge_calc.forward(vertices)
         aspect_ratio = edge_result["aspect_ratio"]
 
-        vol_calc = SimplexVolume()
-        vol_result = vol_calc.forward(vertices)
+        vol_result = self.vol_calc.forward(vertices)
         volume_quality = vol_result["quality"]
 
         regularity = 1.0 / (aspect_ratio + 1e-10)
