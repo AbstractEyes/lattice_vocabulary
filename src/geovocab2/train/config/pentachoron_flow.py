@@ -19,6 +19,7 @@ class PentachoronFlowConfig:
         base_radius: float = 1.0,
         k_nearest: int = 16,
         flow_steps: int = 4,
+        diffusion_steps: int = 1000,
         hidden_scale: int = 4,
         max_grad_norm: float = 1.0,
         validation_weights: Dict[str, float] = None,
@@ -56,6 +57,7 @@ class PentachoronFlowConfig:
         self.max_init_attempts = max_init_attempts
         self.use_trajectory_attention = use_trajectory_attention
         self.trajectory_attention_heads = trajectory_attention_heads
+        self.diffusion_steps = diffusion_steps
 
 
 
