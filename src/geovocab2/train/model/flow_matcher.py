@@ -26,7 +26,7 @@ class GeometricTrajectoryNet(nn.Module):
     Uses: Geometric constraints + vertex attention
     """
 
-    def __init__(self, simplex_dim: int, hidden_scale: int = 4, num_heads: int = 4):
+    def __init__(self, simplex_dim: int, hidden_scale: int = 4, num_heads: int = 4, use_attention=False):
         super().__init__()
 
         self.simplex_dim = simplex_dim
@@ -39,11 +39,14 @@ class GeometricTrajectoryNet(nn.Module):
         )
 
         # Geometric attention over simplex vertices
-        self.vertex_attention = nn.MultiheadAttention(
-            embed_dim=simplex_dim,
-            num_heads=num_heads,
-            batch_first=True
-        )
+        if not use_attention:
+            self.vertex_attention = nn.Identity()
+        else:
+            self.vertex_attention = nn.MultiheadAttention(
+                embed_dim=simplex_dim,
+                num_heads=num_heads,
+                batch_first=True
+            )
 
         # Project to velocity
         self.velocity_proj = nn.Sequential(
@@ -108,7 +111,9 @@ class FlowMatcher(FormulaBase):
         hidden_scale: int = 4,
         validation_strength: float = 0.1,
         projection_lr: float = 0.01,  # Reduced from 0.1
-        max_grad_norm: float = 1.0    # New: gradient clipping
+        max_grad_norm: float = 1.0,    # New: gradient clipping
+        use_trajectory_attention: bool = True,
+        trajectory_attention_heads: int = 4
     ):
         super().__init__("flow_matcher", "f.flow.matcher")
 
@@ -121,7 +126,9 @@ class FlowMatcher(FormulaBase):
         # Trajectory network
         self.trajectory_net = GeometricTrajectoryNet(
             simplex_dim,
-            hidden_scale=hidden_scale
+            hidden_scale=hidden_scale,
+            use_attention=use_trajectory_attention,
+            num_heads=trajectory_attention_heads
         )
 
         # Validation with extended volume calculator (better numerical stability)
@@ -206,10 +213,11 @@ class FlowMatcher(FormulaBase):
             velocity = self.trajectory_net(current_state)
 
             # Clip velocity to prevent explosion
-            velocity = torch.clamp(velocity, -self.max_grad_norm, self.max_grad_norm)
+            step_size = max(0.001, 1 - (self.validation_strength * (step / self.flow_steps)))
+            max_grad_size = min(1.0, self.max_grad_norm / step_size)
+            velocity = torch.clamp(velocity, -max_grad_size, max_grad_size)
 
             # Flow update (simple Euler step with small step size)
-            step_size = max(0.001, 1 - (self.validation_strength * (step / self.flow_steps)))
             next_state = current_state + step_size * velocity
 
             # Validate and project to maintain geometric constraints
@@ -222,8 +230,7 @@ class FlowMatcher(FormulaBase):
             )
 
             # Volume tracking
-            vol_calc = SimplexVolume()
-            vol_result = vol_calc.forward(next_state)
+            vol_result = self.volume_calc.forward(next_state)
             flow_metrics['step_volumes'].append(
                 vol_result['volume'].mean().detach()
             )

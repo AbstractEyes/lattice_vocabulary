@@ -62,7 +62,8 @@ class GeometricOriginSampler(FormulaBase):
             validation_formula: Optional[FormulaBase] = None,
             temperature: float = 0.1,
             quality_threshold: float = 0.3,
-            max_init_attempts: int = 100
+            max_init_attempts: int = 100,
+            diffusion_steps: int = 50,
     ):
         super().__init__("geometric_origin_sampler", "f.origin.sampler")
 
@@ -74,6 +75,7 @@ class GeometricOriginSampler(FormulaBase):
         self.temperature = temperature
         self.quality_threshold = quality_threshold
         self.max_init_attempts = max_init_attempts
+        self.diffusion_steps = diffusion_steps
 
         # Validation formula (default: combined quality check)
         if validation_formula is None:
@@ -217,6 +219,7 @@ class GeometricOriginSampler(FormulaBase):
         sampler = SimplexFacesSampler(
             face_dim=self.k,
             sample_budget=self.num_origins,
+            diffusion_steps=self.diffusion_steps,
             formula=self.validator,
             selection_strategy='diffusion',
             temperature=self.temperature,

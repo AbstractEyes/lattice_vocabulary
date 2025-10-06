@@ -9,6 +9,7 @@ class PentachoronFlowConfig:
         num_classes: int = 10,
         input_channels: int = 3,
         image_size: int = 32,
+        patch_size: int = 4,
         num_origins: int = 49,
         origin_dim: int = 5,
         embed_dim: int = 768,
@@ -24,11 +25,17 @@ class PentachoronFlowConfig:
         sample_size: float = 0.15,
         use_attention: bool = True,
         attention_heads: int = 8,
-        dropout_rate: float = 0.1
+        dropout_rate: float = 0.1,
+        temperature: float = 1.0,
+        quality_threshold: float = 0.5,
+        max_init_attempts: int = 10,
+        use_trajectory_attention: bool = False,
+        trajectory_attention_heads: int = 4,
     ):
         self.num_classes = num_classes
         self.input_channels = input_channels
         self.image_size = image_size
+        self.patch_size = patch_size
         self.num_origins = num_origins
         self.origin_dim = origin_dim
         self.embed_dim = embed_dim
@@ -44,6 +51,13 @@ class PentachoronFlowConfig:
         self.use_attention = use_attention
         self.attention_heads = attention_heads
         self.dropout_rate = dropout_rate
+        self.temperature = temperature
+        self.quality_threshold = quality_threshold
+        self.max_init_attempts = max_init_attempts
+        self.use_trajectory_attention = use_trajectory_attention
+        self.trajectory_attention_heads = trajectory_attention_heads
+
+
 
         if validation_weights is None:
             self.validation_weights = {'rose': 0.5, 'quality': 0.3, 'volume': 0.2}

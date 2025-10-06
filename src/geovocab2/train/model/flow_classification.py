@@ -53,10 +53,9 @@ class PentachoronFlowNetwork(nn.Module):
 
         self.config = config
 
-        patch_size = 4 if config.image_size == 32 else 16
         self.patch_embed = PatchEmbedding(
             img_size=config.image_size,
-            patch_size=patch_size,
+            patch_size=config.patch_size,
             in_channels=config.input_channels,
             embed_dim=config.embed_dim
         )
@@ -66,9 +65,10 @@ class PentachoronFlowNetwork(nn.Module):
             origin_dim=config.origin_dim,
             embed_dim=config.embed_dim,
             init_strategy=config.init_strategy,
-            temperature=1.0,
-            quality_threshold=0.5,
-            max_init_attempts=10
+            temperature=config.temperature,
+            quality_threshold=config.quality_threshold,
+            max_init_attempts=config.max_init_attempts,
+            diffusion_steps=config.flow_steps
         )
 
         self.noise_collector = NoiseCollector(
@@ -82,7 +82,10 @@ class PentachoronFlowNetwork(nn.Module):
             simplex_dim=config.embed_dim,
             flow_steps=config.flow_steps,
             hidden_scale=config.hidden_scale,
-            max_grad_norm=config.max_grad_norm
+            max_grad_norm=config.max_grad_norm,
+            use_trajectory_attention=config.use_trajectory_attention,
+            trajectory_attention_heads=config.trajectory_attention_heads,
+            projection_lr=config.embed_dim ** -0.5
         )
 
         self.validator = CayleyMengerValidator(config)
