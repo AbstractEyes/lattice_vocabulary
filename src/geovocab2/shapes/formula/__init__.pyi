@@ -97,9 +97,8 @@ from .experimental.chaos import (
     SimplexQuality as SimplexQuality,
     SimplexVolume as SimplexVolume,
 )
-from .experimental.flow import (
+from geovocab2.train.model.flow_matcher import (
     CMLogDetRegularizer as CMLogDetRegularizer,
-    FlowMatcher as FlowMatcher,
     SimplexQuality as SimplexQuality,
     SimplexVolume as SimplexVolume,
 )
