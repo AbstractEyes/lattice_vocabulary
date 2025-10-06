@@ -109,7 +109,8 @@ class FlowMatcher(FormulaBase):
         validation_strength: float = 0.1,
         projection_lr: float = 0.01,  # Reduced from 0.1
         max_grad_norm: float = 1.0,    # New: gradient clipping
-        trajectory_attention_heads: int = 4
+        trajectory_attention_heads: int = 4,
+        validate_every: int = 2  # New: validate every N steps
     ):
         super().__init__("flow_matcher", "f.flow.matcher")
 
@@ -118,6 +119,7 @@ class FlowMatcher(FormulaBase):
         self.validation_strength = validation_strength
         self.projection_lr = projection_lr
         self.max_grad_norm = max_grad_norm
+        self.validate_every = validate_every
 
         # Trajectory network
         self.trajectory_net = GeometricTrajectoryNet(
@@ -209,26 +211,25 @@ class FlowMatcher(FormulaBase):
 
             # Clip velocity to prevent explosion
             step_size = 0.1
-            max_grad_size = max(0.0001, min(1.0, self.max_grad_norm / step_size))
+            max_grad_size = max(0.5, min(1.0, self.max_grad_norm / step_size))
             velocity = torch.clamp(velocity, -max_grad_size, max_grad_size)
 
             # Flow update (simple Euler step with small step size)
             next_state = current_state + step_size * velocity
 
-            # Validate and project to maintain geometric constraints
-            next_state = self._validate_and_project(next_state, step)
+            # CHANGE: Only validate on last step or every 2 steps
+            if step == self.flow_steps - 1 or step % self.validate_every == 0:
+                next_state = self._validate_and_project(next_state, step)
 
-            # Track metrics
-            step_quality = self.quality_check.forward(next_state)
-            flow_metrics['step_qualities'].append(
-                step_quality['regularity'].mean().detach()
-            )
-
-            # Volume tracking
-            vol_result = self.volume_calc.forward(next_state)
-            flow_metrics['step_volumes'].append(
-                vol_result['volume'].mean().detach()
-            )
+                # Only compute metrics when validating
+                step_quality = self.quality_check.forward(next_state)
+                flow_metrics['step_qualities'].append(
+                    step_quality['regularity'].mean().detach()
+                )
+                vol_result = self.volume_calc.forward(next_state)
+                flow_metrics['step_volumes'].append(
+                    vol_result['volume'].mean().detach()
+                )
 
             # Update
             current_state = next_state
