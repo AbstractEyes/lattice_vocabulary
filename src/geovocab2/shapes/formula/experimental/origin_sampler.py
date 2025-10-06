@@ -127,22 +127,22 @@ class GeometricOriginSampler(FormulaBase):
         # Create num_origins copies with different rotations/positions
         origins = []
 
-        for i in range(self.num_origins):
-            # Random rotation in (k+1)D
-            Q, _ = torch.linalg.qr(torch.randn(k_plus_1, k_plus_1, device=device, dtype=dtype))
-            rotated = canonical @ Q
+        # Generate all rotations at once
+        Q = torch.randn(self.num_origins, k_plus_1, k_plus_1, device=device, dtype=dtype)
+        Q, _ = torch.linalg.qr(Q)  # Batch QR decomposition
+        rotated = torch.matmul(canonical.unsqueeze(0), Q)  # [num_origins, k+1, k+1]
 
-            # Embed into embed_dim space (pad with zeros)
-            embedded = torch.zeros(k_plus_1, self.embed_dim, device=device, dtype=dtype)
-            embedded[:, :k_plus_1] = rotated
+        # Embed all at once
+        embedded = torch.zeros(self.num_origins, k_plus_1, self.embed_dim, device=device, dtype=dtype)
+        embedded[:, :, :k_plus_1] = rotated
 
-            # Random translation
-            translation = torch.randn(1, self.embed_dim, device=device, dtype=dtype) * 0.1
-            embedded = embedded + translation
+        # Add random translations
+        translation = torch.randn(self.num_origins, 1, self.embed_dim, device=device, dtype=dtype) * 0.1
+        embedded = embedded + translation
 
-            origins.append(embedded)
+        origins = embedded
 
-        origins = torch.stack(origins, dim=0)  # [num_origins, k+1, embed_dim]
+        #origins = torch.stack(origins, dim=0)  # [num_origins, k+1, embed_dim]
 
         # Expand for batch
         for _ in batch_shape:
