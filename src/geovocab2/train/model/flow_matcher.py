@@ -26,10 +26,11 @@ class GeometricTrajectoryNet(nn.Module):
     Uses: Geometric constraints + vertex attention
     """
 
-    def __init__(self, simplex_dim: int, hidden_scale: int = 4, num_heads: int = 4, use_attention=False):
+    def __init__(self, simplex_dim: int, hidden_scale: int = 4, num_heads: int = 4):
         super().__init__()
 
         self.simplex_dim = simplex_dim
+        self.use_attention = use_attention
 
         # Encode simplex structure
         self.edge_encoder = nn.Sequential(
@@ -39,14 +40,11 @@ class GeometricTrajectoryNet(nn.Module):
         )
 
         # Geometric attention over simplex vertices
-        if not use_attention:
-            self.vertex_attention = nn.Identity()
-        else:
-            self.vertex_attention = nn.MultiheadAttention(
-                embed_dim=simplex_dim,
-                num_heads=num_heads,
-                batch_first=True
-            )
+        self.vertex_attention = nn.MultiheadAttention(
+            embed_dim=simplex_dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
 
         # Project to velocity
         self.velocity_proj = nn.Sequential(
@@ -112,7 +110,6 @@ class FlowMatcher(FormulaBase):
         validation_strength: float = 0.1,
         projection_lr: float = 0.01,  # Reduced from 0.1
         max_grad_norm: float = 1.0,    # New: gradient clipping
-        use_trajectory_attention: bool = True,
         trajectory_attention_heads: int = 4
     ):
         super().__init__("flow_matcher", "f.flow.matcher")
@@ -127,7 +124,6 @@ class FlowMatcher(FormulaBase):
         self.trajectory_net = GeometricTrajectoryNet(
             simplex_dim,
             hidden_scale=hidden_scale,
-            use_attention=use_trajectory_attention,
             num_heads=trajectory_attention_heads
         )
 

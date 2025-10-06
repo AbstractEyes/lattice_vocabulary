@@ -30,7 +30,6 @@ class PentachoronFlowConfig:
         temperature: float = 1.0,
         quality_threshold: float = 0.5,
         max_init_attempts: int = 10,
-        use_trajectory_attention: bool = False,
         trajectory_attention_heads: int = 4,
     ):
         self.num_classes = num_classes
@@ -55,7 +54,6 @@ class PentachoronFlowConfig:
         self.temperature = temperature
         self.quality_threshold = quality_threshold
         self.max_init_attempts = max_init_attempts
-        self.use_trajectory_attention = use_trajectory_attention
         self.trajectory_attention_heads = trajectory_attention_heads
         self.diffusion_steps = diffusion_steps
 

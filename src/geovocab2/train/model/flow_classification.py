@@ -83,7 +83,6 @@ class PentachoronFlowNetwork(nn.Module):
             flow_steps=config.flow_steps,
             hidden_scale=config.hidden_scale,
             max_grad_norm=config.max_grad_norm,
-            use_trajectory_attention=config.use_trajectory_attention,
             trajectory_attention_heads=config.trajectory_attention_heads,
             projection_lr=config.embed_dim ** -0.5
         )
