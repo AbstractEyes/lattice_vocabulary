@@ -65,6 +65,7 @@ from .engineering.projection import (
 from .engineering.simplex import (
     BarycentricCoordinates as BarycentricCoordinates,
     CMLogDetRegularizer as CMLogDetRegularizer,
+    FastSimplexCheck as FastSimplexCheck,
     ParabolaProperties as ParabolaProperties,
     QuadraticSolver as QuadraticSolver,
     RoseWeightedVolume as RoseWeightedVolume,
@@ -94,11 +95,6 @@ from .engineering.wave import (
 )
 from .experimental.chaos import (
     NoiseCollector as NoiseCollector,
-    SimplexQuality as SimplexQuality,
-    SimplexVolume as SimplexVolume,
-)
-from geovocab2.train.model.flow_matcher import (
-    CMLogDetRegularizer as CMLogDetRegularizer,
     SimplexQuality as SimplexQuality,
     SimplexVolume as SimplexVolume,
 )
