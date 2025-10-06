@@ -785,7 +785,7 @@ class SimplexFacesSampler(FormulaBase):
         self.selection_strategy = selection_strategy
         self.aggregate_to_vertices = aggregate_to_vertices
 
-    def _select_diffusion(self, vertices: Tensor, early_stopping=True) -> Dict[str, Tensor]:
+    def _select_diffusion(self, vertices: Tensor) -> Dict[str, Tensor]:
         """Diffusion-based sampling with efficient matrix power."""
         batch_dims = vertices.shape[:-2]
         n_vertices = vertices.shape[-2]
@@ -793,7 +793,7 @@ class SimplexFacesSampler(FormulaBase):
         device = vertices.device
         dtype = vertices.dtype
 
-        # Compute adjacency (same as before)
+        # Compute adjacency
         distances = torch.cdist(vertices, vertices, p=2)
         dist_flat = distances.reshape(-1, n_vertices * n_vertices)
         median_dist = torch.median(dist_flat, dim=-1, keepdim=True)[0]
@@ -804,36 +804,21 @@ class SimplexFacesSampler(FormulaBase):
         adjacency = adjacency * (1 - torch.eye(n_vertices, device=device, dtype=dtype))
 
         row_sums = adjacency.sum(dim=-1, keepdim=True)
-        row_sums = torch.where(row_sums < 1e-10,
-                               torch.ones_like(row_sums),
-                               row_sums)
+        row_sums = torch.where(row_sums < 1e-10, torch.ones_like(row_sums), row_sums)
         transition = adjacency / row_sums
 
-        # SOLUTION 1: Iterative multiplication with early stopping
-        # Much faster than matrix_power and allows convergence detection
+        # Iterative multiplication with early stopping
         heat = torch.ones(*batch_dims, n_vertices, 1, device=device, dtype=dtype) / n_vertices
-        current = transition
-
-        # Reduce from 50 to ~5-8 iterations (empirically sufficient for diffusion)
-        max_iters = min(self.diffusion_steps, 8)
+        max_iters = min(self.diffusion_steps, 6)  # Reduced from 8 to 6
 
         for i in range(max_iters):
-            heat = torch.matmul(current, heat)
+            new_heat = torch.matmul(transition, heat)
 
-            # Optional: early stopping if converged (heat distribution stabilized)
-            if i > 2 and i % 2 == 0 and early_stopping:
-                # Check if heat changed less than threshold
-                prev_heat = torch.matmul(current, heat)
-                if torch.allclose(heat, prev_heat, rtol=1e-3):
-                    break
+            # Early stopping: check convergence
+            if i > 1 and torch.allclose(heat, new_heat, rtol=5e-3):  # More aggressive threshold
+                break
 
-        # SOLUTION 2 (Alternative): Eigendecomposition for symmetric matrices
-        # Uncomment if transition is symmetric (it's not in this case, but shown for reference)
-        # if torch.allclose(transition, transition.transpose(-2, -1), rtol=1e-3):
-        #     eigenvalues, eigenvectors = torch.linalg.eigh(transition)
-        #     eigenvalues_power = eigenvalues.pow(self.diffusion_steps)
-        #     transition_power = eigenvectors @ torch.diag_embed(eigenvalues_power) @ eigenvectors.transpose(-2, -1)
-        #     heat = torch.matmul(transition_power, heat)
+            heat = new_heat
 
         # Ensure valid probability distribution
         heat = heat.squeeze(-1)
@@ -843,7 +828,7 @@ class SimplexFacesSampler(FormulaBase):
         if not torch.all(torch.isfinite(heat)):
             heat = torch.ones_like(heat) / n_vertices
 
-        # Sample (same as before)
+        # Sample
         n_samples = (k + 1) * self.sample_budget
         batch_size = heat.reshape(-1, n_vertices).shape[0]
         heat_flat = heat.reshape(batch_size, n_vertices)
