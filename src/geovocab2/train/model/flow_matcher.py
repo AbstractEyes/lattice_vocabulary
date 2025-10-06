@@ -209,7 +209,7 @@ class FlowMatcher(FormulaBase):
             velocity = torch.clamp(velocity, -self.max_grad_norm, self.max_grad_norm)
 
             # Flow update (simple Euler step with small step size)
-            step_size = 0.1  # Small step size for stability
+            step_size = max(0.001, 1 - (self.validation_strength * (step / self.flow_steps)))
             next_state = current_state + step_size * velocity
 
             # Validate and project to maintain geometric constraints
