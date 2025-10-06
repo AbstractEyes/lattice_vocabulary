@@ -48,7 +48,7 @@ class CayleyMengerValidator(nn.Module):
         quality_loss = (1.0 - quality_result['regularity']).mean()
 
         # 3. Volume degeneracy check only (skip full volume computation)
-        volume_result = quality_result['volume_quality'] if 'volume_quality' in quality_result else self.volume_calc.forward(pred_flat)
+        volume_result = self.volume_calc.forward(pred_flat)
         volume_loss = volume_result['is_degenerate'].float().mean()
 
         w = self.config.validation_weights

@@ -12,17 +12,17 @@ class PentachoronFlowConfig:
         patch_size: int = 4,
         num_origins: int = 49,
         origin_dim: int = 5,
-        embed_dim: int = 768,
+        embed_dim: int = 128,
         init_strategy: str = 'diffusion',
-        collection_strategy: str = 'geometric_distance',
+        collection_strategy: str = 'k_nearest',
         adaptive_radius: bool = True,
         base_radius: float = 1.0,
         k_nearest: int = 16,
-        flow_steps: int = 4,
+        flow_steps: int = 3,
         diffusion_steps: int = 1000,
         hidden_scale: int = 4,
         max_grad_norm: float = 1.0,
-        validation_weights: Dict[str, float] = None,
+        validation_weights: Dict[str, float] = {'rose': 0.5, 'quality': 0.3, 'volume': 0.2},
         sample_size: float = 0.15,
         use_attention: bool = True,
         attention_heads: int = 8,
@@ -56,10 +56,4 @@ class PentachoronFlowConfig:
         self.max_init_attempts = max_init_attempts
         self.trajectory_attention_heads = trajectory_attention_heads
         self.diffusion_steps = diffusion_steps
-
-
-
-        if validation_weights is None:
-            self.validation_weights = {'rose': 0.5, 'quality': 0.3, 'volume': 0.2}
-        else:
-            self.validation_weights = validation_weights
+        self.validation_weights = validation_weights
