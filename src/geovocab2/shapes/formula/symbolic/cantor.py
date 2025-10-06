@@ -81,7 +81,7 @@ import torch
 from torch import Tensor
 import math
 
-from geovocab2.shapes.formula.formula_base import FormulaBase
+from ..formula_base import FormulaBase
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
