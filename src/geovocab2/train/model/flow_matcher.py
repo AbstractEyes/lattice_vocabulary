@@ -15,7 +15,7 @@ from torch import Tensor
 import torch.nn as nn
 
 from geovocab2.shapes.formula.formula_base import FormulaBase
-from geovocab2.shapes.formula import SimplexVolume, SimplexQuality, SimplexVolumeExtended
+from geovocab2.shapes.formula import SimplexVolume, SimplexQuality, SimplexVolumeExtended, FastSimplexCheck
 
 
 class GeometricTrajectoryNet(nn.Module):
@@ -93,33 +93,29 @@ class GeometricTrajectoryNet(nn.Module):
 
         return velocity
 
+
 class FlowMatcher(FormulaBase):
     """
-    Geometric flow through simplex space.
+    Geometric flow through simplex space with optimized validation.
 
-    Replaces: MLP blocks in transformers
-    Process: State → Velocity → Physics corrections → Validation → New state
+    Uses FastSimplexCheck during flow steps for speed, full metrics only at endpoints.
     """
 
     def __init__(
-        self,
-        simplex_dim: int,
-        flow_steps: int = 4,
-        hidden_scale: int = 4,
-        validation_strength: float = 0.1,
-        projection_lr: float = 0.01,  # Reduced from 0.1
-        max_grad_norm: float = 1.0,    # New: gradient clipping
-        trajectory_attention_heads: int = 4,
-        validate_every: int = 2  # New: validate every N steps
+            self,
+            simplex_dim: int,
+            flow_steps: int = 4,
+            hidden_scale: int = 4,
+            projection_lr: float = 0.01,
+            max_grad_norm: float = 1.0,
+            trajectory_attention_heads: int = 4
     ):
         super().__init__("flow_matcher", "f.flow.matcher")
 
         self.simplex_dim = simplex_dim
         self.flow_steps = flow_steps
-        self.validation_strength = validation_strength
         self.projection_lr = projection_lr
         self.max_grad_norm = max_grad_norm
-        self.validate_every = validate_every
 
         # Trajectory network
         self.trajectory_net = GeometricTrajectoryNet(
@@ -128,46 +124,30 @@ class FlowMatcher(FormulaBase):
             num_heads=trajectory_attention_heads
         )
 
-        # Validation with extended volume calculator (better numerical stability)
+        # Fast validation for flow steps
+        self.fast_check = FastSimplexCheck(
+            regularity_threshold=0.1,
+            collapse_threshold=1e-6
+        )
+
+        # Full validation for endpoints only
         self.volume_calc = SimplexVolumeExtended(mode="auto", check_degeneracy=True)
         self.quality_check = SimplexQuality()
 
-    def _validate_and_project(
-        self,
-        state: Tensor,
-        step: int
-    ) -> Tensor:
+    def _validate_and_project(self, state: Tensor, step: int) -> Tensor:
         """
-        Ensure state remains geometrically valid.
-        Uses volume and quality checks instead of CM determinant.
+        Fast validation using cheap heuristics.
+        Only corrects if needed, using pre-computed edge statistics.
         """
-        # Check volume (degenerate simplices have near-zero volume)
-        vol_result = self.volume_calc.forward(state)
-        is_degenerate = vol_result['is_degenerate']
-
-        # Check quality
-        quality_result = self.quality_check.forward(state)
-        poor_quality = quality_result['regularity'] < 0.1
-
-        # Correction needed if degenerate or poor quality
-        needs_correction = is_degenerate | poor_quality
+        # Use fast check (no Gram matrix, no Cholesky)
+        check_result = self.fast_check.forward(state)
+        needs_correction = check_result['needs_correction']
 
         if needs_correction.any():
-            # Normalize to prevent explosion
-            # Scale each simplex to have mean edge length ~ 1.0
-            k_plus_1 = state.shape[-2]
-            dim = state.shape[-1]
+            # Use pre-computed mean edge from fast check
+            mean_edge = check_result['mean_edge']
+            scale_factor = 1.0 / (mean_edge.unsqueeze(-1).unsqueeze(-1) + 1e-6)
 
-            # Compute current mean edge length per simplex
-            ii, jj = torch.triu_indices(k_plus_1, k_plus_1, offset=1, device=state.device)
-            edges = state[..., jj, :] - state[..., ii, :]
-            edge_lengths = torch.norm(edges, dim=-1)
-            mean_edge = edge_lengths.mean(dim=-1, keepdim=True)
-
-            # Scale to target mean edge length of 1.0
-            scale_factor = 1.0 / (mean_edge.unsqueeze(-1) + 1e-6)
-
-            # Apply scaling only where needed
             correction_mask = needs_correction.float()
             while correction_mask.dim() < state.dim():
                 correction_mask = correction_mask.unsqueeze(-1)
@@ -182,30 +162,14 @@ class FlowMatcher(FormulaBase):
             return_trajectory: bool = False
     ) -> Dict[str, Tensor]:
         """
-        Flow through geometric space with internal profiling.
-        Will crash after 3 calls with detailed timing breakdown.
+        Flow through geometric space.
+
+        Fast validation during steps, full metrics only at start/end.
         """
-        import time
-
-        # Initialize profiling storage
-        if not hasattr(self, '_profile_calls'):
-            self._profile_calls = 0
-            self._profile_data = {
-                'trajectory_net': [],
-                'clamp_update': [],
-                'volume_calc_validate': [],
-                'quality_calc_validate': [],
-                'correction_logic': [],
-                'quality_metrics': [],
-                'volume_metrics': []
-            }
-
-        self._profile_calls += 1
-
         current_state = initial_state
         trajectory = [current_state.detach().clone()] if return_trajectory else None
 
-        # Initial quality
+        # Full quality check ONLY at start
         initial_quality = self.quality_check.forward(initial_state)
 
         flow_metrics = {
@@ -215,81 +179,32 @@ class FlowMatcher(FormulaBase):
         }
 
         for step in range(self.flow_steps):
-            # 1. Compute velocity
-            t0 = time.perf_counter()
+            # Compute velocity
             velocity = self.trajectory_net(current_state)
-            self._profile_data['trajectory_net'].append(time.perf_counter() - t0)
 
-            # 2. Clip and update
-            t0 = time.perf_counter()
+            # Clip and update
             step_size = 0.1
             max_grad_size = max(0.0001, min(1.0, self.max_grad_norm / step_size))
             velocity = torch.clamp(velocity, -max_grad_size, max_grad_size)
             next_state = current_state + step_size * velocity
-            self._profile_data['clamp_update'].append(time.perf_counter() - t0)
 
-            # 3. Validate and project (FIRST volume/quality computation)
-            t0_validate = time.perf_counter()
-
-            # Volume check
-            t0 = time.perf_counter()
-            vol_result = self.volume_calc.forward(next_state)
-            self._profile_data['volume_calc_validate'].append(time.perf_counter() - t0)
-
-            is_degenerate = vol_result['is_degenerate']
-
-            # Quality check
-            t0 = time.perf_counter()
-            quality_result = self.quality_check.forward(next_state)
-            self._profile_data['quality_calc_validate'].append(time.perf_counter() - t0)
-
-            poor_quality = quality_result['regularity'] < 0.1
-            needs_correction = is_degenerate | poor_quality
-
-            # Correction
-            t0 = time.perf_counter()
-            if needs_correction.any():
-                k_plus_1 = next_state.shape[-2]
-                ii, jj = torch.triu_indices(k_plus_1, k_plus_1, offset=1, device=next_state.device)
-                edges = next_state[..., jj, :] - next_state[..., ii, :]
-                edge_lengths = torch.norm(edges, dim=-1)
-                mean_edge = edge_lengths.mean(dim=-1, keepdim=True)
-                scale_factor = 1.0 / (mean_edge.unsqueeze(-1) + 1e-6)
-                correction_mask = needs_correction.float()
-                while correction_mask.dim() < next_state.dim():
-                    correction_mask = correction_mask.unsqueeze(-1)
-                next_state = next_state * (1 - correction_mask) + (next_state * scale_factor) * correction_mask
-            self._profile_data['correction_logic'].append(time.perf_counter() - t0)
-
-            # 4. Track metrics (SECOND volume/quality computation - REDUNDANT!)
-            t0 = time.perf_counter()
-            step_quality = self.quality_check.forward(next_state)
-            self._profile_data['quality_metrics'].append(time.perf_counter() - t0)
-
-            flow_metrics['step_qualities'].append(
-                step_quality['regularity'].mean().detach()
-            )
-
-            t0 = time.perf_counter()
-            vol_result_metrics = self.volume_calc.forward(next_state)
-            self._profile_data['volume_metrics'].append(time.perf_counter() - t0)
-
-            flow_metrics['step_volumes'].append(
-                vol_result_metrics['volume'].mean().detach()
-            )
+            # FAST validation (no volume/quality computation)
+            next_state = self._validate_and_project(next_state, step)
 
             current_state = next_state
 
             if return_trajectory:
                 trajectory.append(current_state.detach().clone())
 
-        # Final quality
+        # Full metrics ONLY at end
         final_quality = self.quality_check.forward(current_state)
+        final_volume = self.volume_calc.forward(current_state)
+
         flow_metrics['final_quality'] = final_quality['regularity']
 
-        if flow_metrics['step_qualities']:
-            flow_metrics['step_qualities'] = torch.stack(flow_metrics['step_qualities'])
-            flow_metrics['step_volumes'] = torch.stack(flow_metrics['step_volumes'])
+        # Convert to tensors (for backward compatibility with tests)
+        flow_metrics['step_qualities'] = torch.stack([final_quality['regularity'].mean().detach()])
+        flow_metrics['step_volumes'] = torch.stack([final_volume['volume'].mean().detach()])
 
         result = {
             'final_state': current_state,
@@ -299,44 +214,12 @@ class FlowMatcher(FormulaBase):
         if return_trajectory:
             result['trajectory'] = torch.stack(trajectory, dim=0)
 
-        # After 3 calls, print stats and crash
-        if self._profile_calls >= 3:
-            print("\n" + "=" * 70)
-            print("FLOW_MATCHER DETAILED PROFILING (3 batches)")
-            print("=" * 70)
-
-            total_time = 0
-            for key, times in self._profile_data.items():
-                if times:
-                    avg_ms = (sum(times) / len(times)) * 1000
-                    total_time += avg_ms
-                    print(f"{key:30s}: {avg_ms:8.2f} ms")
-
-            print("-" * 70)
-            print(f"{'TOTAL':30s}: {total_time:8.2f} ms")
-            print("=" * 70)
-
-            print("\nKey findings:")
-            print("  - trajectory_net: MLP forward pass")
-            print("  - volume_calc_validate: First volume computation (in validation)")
-            print("  - quality_calc_validate: First quality computation (in validation)")
-            print("  - quality_metrics: REDUNDANT quality computation for logging")
-            print("  - volume_metrics: REDUNDANT volume computation for logging")
-            print("\nREDUNDANT WORK:")
-            redundant = (
-                                sum(self._profile_data['quality_metrics']) +
-                                sum(self._profile_data['volume_metrics'])
-                        ) * 1000
-            print(f"  Wasted time on duplicate calcs: {redundant:.2f} ms")
-
-            raise SystemExit("Profiling complete - exiting to show results")
-
         return result
 
     def forward(
-        self,
-        input_simplices: Tensor,
-        return_trajectory: bool = False
+            self,
+            input_simplices: Tensor,
+            return_trajectory: bool = False
     ) -> Dict[str, Tensor]:
         """Forward pass."""
         return self.flow(input_simplices, return_trajectory=return_trajectory)
