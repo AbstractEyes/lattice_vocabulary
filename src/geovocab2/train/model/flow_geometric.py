@@ -104,19 +104,11 @@ class GeometricClassificationHead(nn.Module):
             nn.Linear(embed_dim // 2, num_classes)
         )
 
-    def forward(self, flowed_simplices):
+    def forward(self, flowed_simplices: Tensor) -> Tensor:
         pooled = flowed_simplices.mean(dim=-2)
         pooled = self.simplex_pooling(pooled)
-
-        # Add this before attention
-        pooled = torch.clamp(pooled, -10, 10)  # Prevent extreme values
-
         attended, _ = self.origin_attention(pooled, pooled, pooled)
         features = attended.mean(dim=1)
-
-        # Clamp before classifier too
-        features = torch.clamp(features, -10, 10)
-
         logits = self.classifier(features)
         return logits
 
