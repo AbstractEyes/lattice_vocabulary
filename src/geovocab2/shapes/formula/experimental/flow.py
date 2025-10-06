@@ -1,10 +1,10 @@
 """
-FLOW MATCHER + CANTOR-AWARE CLASSIFICATION
--------------------------------------------
-Maps transfinite geometric flow to finite classification via Cantor structure.
+FLOW MATCHER
+------------
+Geometric trajectory learning through simplex space.
 
-The insight: Flowed simplices operate in transfinite scale regimes.
-The solution: Use Cantor function to map infinite hierarchy to [0,1] for classification.
+Replaces: Transformer MLP blocks, residual connections
+Uses: Physics-informed geometric flow operators
 
 Author: AbstractPhil + Claude Sonnet 4.5
 """
@@ -16,161 +16,89 @@ import torch.nn as nn
 
 from geovocab2.shapes.formula.formula_base import FormulaBase
 from geovocab2.shapes.formula import SimplexVolume, SimplexQuality, SimplexVolumeExtended
-from geovocab2.shapes.formula import CantorFunction
 
 
 class GeometricTrajectoryNet(nn.Module):
-    """Learn velocity field in geometric space."""
+    """
+    Learn velocity field in geometric space.
+
+    Replaces: Linear → Activation → Linear
+    Uses: Geometric constraints + vertex attention
+    """
 
     def __init__(self, simplex_dim: int, hidden_scale: int = 4, num_heads: int = 4):
         super().__init__()
+
         self.simplex_dim = simplex_dim
 
+        # Encode simplex structure
         self.edge_encoder = nn.Sequential(
             nn.Linear(simplex_dim, simplex_dim * hidden_scale),
             nn.GELU(),
             nn.LayerNorm(simplex_dim * hidden_scale)
         )
 
+        # Geometric attention over simplex vertices
         self.vertex_attention = nn.MultiheadAttention(
             embed_dim=simplex_dim,
             num_heads=num_heads,
             batch_first=True
         )
 
+        # Project to velocity
         self.velocity_proj = nn.Sequential(
             nn.Linear(simplex_dim * hidden_scale, simplex_dim),
             nn.LayerNorm(simplex_dim)
         )
 
     def forward(self, simplex_state: Tensor) -> Tensor:
+        """
+        Args:
+            simplex_state: [..., k+1, dim] current simplex configuration
+
+        Returns:
+            velocity: [..., k+1, dim] geometric velocity field
+        """
+        # Save original shape
         orig_shape = simplex_state.shape
         batch_dims = orig_shape[:-2]
         k_plus_1 = orig_shape[-2]
         dim = orig_shape[-1]
 
+        # Flatten batch dimensions for attention: [batch_total, k+1, dim]
         simplex_flat = simplex_state.reshape(-1, k_plus_1, dim)
+
+        # Encode edges
         encoded = self.edge_encoder(simplex_flat)
 
+        # Self-attention over vertices (geometric routing)
+        # Now input is [batch_total, k+1, dim] which is 3D
         attn_out, _ = self.vertex_attention(
             simplex_flat, simplex_flat, simplex_flat
         )
 
+        # Combine with encoding
+        # Repeat attn_out to match encoded dimension
         attn_repeated = attn_out.repeat_interleave(
             encoded.shape[-1] // attn_out.shape[-1], dim=-1
         )
         combined = encoded + attn_repeated
+
+        # Project to velocity
         velocity = self.velocity_proj(combined)
+
+        # Reshape back to original batch dimensions
         velocity = velocity.reshape(*batch_dims, k_plus_1, dim)
 
         return velocity
-
-
-class CantorGeometricClassificationHead(nn.Module):
-    """
-    Classification head that maps transfinite geometric positions to logits.
-
-    Uses Cantor function to compress infinite-scale simplices to [0,1],
-    preserving hierarchical structure information.
-    """
-
-    def __init__(self, num_origins: int, origin_dim: int, embed_dim: int, num_classes: int):
-        super().__init__()
-
-        self.num_origins = num_origins
-        self.origin_dim = origin_dim
-        self.embed_dim = embed_dim
-
-        # Cantor function for scale mapping
-        self.cantor_fn = CantorFunction(iterations=8)
-
-        # Process Cantor-normalized features
-        self.simplex_pooling = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU(),
-            nn.LayerNorm(embed_dim)
-        )
-
-        self.origin_attention = nn.MultiheadAttention(
-            embed_dim=embed_dim,
-            num_heads=8,
-            batch_first=True
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(embed_dim // 2, num_classes)
-        )
-
-    def _map_to_cantor_space(self, flowed_simplices: Tensor) -> Tensor:
-        """
-        Map flowed simplices from transfinite geometric space to [0,1] via Cantor.
-
-        Args:
-            flowed_simplices: [..., num_origins, k+1, embed_dim]
-
-        Returns:
-            cantor_features: [..., num_origins, embed_dim] in [0,1] range
-        """
-        # Pool over simplex vertices
-        pooled = flowed_simplices.mean(dim=-2)  # [..., num_origins, embed_dim]
-
-        # Compute position in transfinite hierarchy
-        # Use log-scale to map explosive values to reasonable range
-        abs_values = torch.abs(pooled)
-
-        # Map to [0,1]: use log to compress large values
-        # log(1 + |x|) maps [0, inf) -> [0, inf), then normalize
-        log_scale = torch.log1p(abs_values)  # [..., num_origins, embed_dim]
-
-        # Normalize to [0,1] per feature dimension
-        min_vals = log_scale.min(dim=-2, keepdim=True)[0]
-        max_vals = log_scale.max(dim=-2, keepdim=True)[0]
-        normalized = (log_scale - min_vals) / (max_vals - min_vals + 1e-8)
-
-        # Apply Cantor function to get hierarchical position
-        cantor_values = self.cantor_fn.forward(normalized)['values']
-
-        # Restore sign information (Cantor function loses sign)
-        sign = torch.sign(pooled)
-        cantor_features = sign * cantor_values
-
-        return cantor_features
-
-    def forward(self, flowed_simplices: Tensor) -> Tensor:
-        """
-        Args:
-            flowed_simplices: [..., num_origins, k+1, embed_dim]
-
-        Returns:
-            logits: [..., num_classes]
-        """
-        # Map from transfinite geometric space to Cantor-normalized features
-        cantor_features = self._map_to_cantor_space(flowed_simplices)
-
-        # Now features are in [-1, 1] range - safe for standard neural operations
-        features = self.simplex_pooling(cantor_features)
-
-        # Attention over origins
-        attended, _ = self.origin_attention(features, features, features)
-
-        # Pool over origins
-        pooled = attended.mean(dim=-2)
-
-        # Classify
-        logits = self.classifier(pooled)
-
-        return logits
 
 
 class FlowMatcher(FormulaBase):
     """
     Geometric flow through simplex space.
 
-    Allows transfinite-scale exploration - no artificial clamping.
-    Classification head handles the mapping back to finite space.
+    Replaces: MLP blocks in transformers
+    Process: State → Velocity → Physics corrections → Validation → New state
     """
 
     def __init__(
@@ -179,8 +107,8 @@ class FlowMatcher(FormulaBase):
         flow_steps: int = 4,
         hidden_scale: int = 4,
         validation_strength: float = 0.1,
-        projection_lr: float = 0.01,
-        max_grad_norm: float = 1.0
+        projection_lr: float = 0.01,  # Reduced from 0.1
+        max_grad_norm: float = 1.0    # New: gradient clipping
     ):
         super().__init__("flow_matcher", "f.flow.matcher")
 
@@ -190,36 +118,53 @@ class FlowMatcher(FormulaBase):
         self.projection_lr = projection_lr
         self.max_grad_norm = max_grad_norm
 
+        # Trajectory network
         self.trajectory_net = GeometricTrajectoryNet(
             simplex_dim,
             hidden_scale=hidden_scale
         )
 
+        # Validation with extended volume calculator (better numerical stability)
         self.volume_calc = SimplexVolumeExtended(mode="auto", check_degeneracy=True)
         self.quality_check = SimplexQuality()
 
-    def _validate_and_project(self, state: Tensor, step: int) -> Tensor:
+    def _validate_and_project(
+        self,
+        state: Tensor,
+        step: int
+    ) -> Tensor:
         """
-        Light geometric validation - only fix true degeneracies.
-        Allow transfinite scale exploration.
+        Ensure state remains geometrically valid.
+        Uses volume and quality checks instead of CM determinant.
         """
-        # Only check for actual geometric degeneracy (collapsed simplices)
+        # Check volume (degenerate simplices have near-zero volume)
         vol_result = self.volume_calc.forward(state)
         is_degenerate = vol_result['is_degenerate']
 
-        if is_degenerate.any():
-            # Only fix truly degenerate simplices
-            k_plus_1 = state.shape[-2]
+        # Check quality
+        quality_result = self.quality_check.forward(state)
+        poor_quality = quality_result['regularity'] < 0.1
 
+        # Correction needed if degenerate or poor quality
+        needs_correction = is_degenerate | poor_quality
+
+        if needs_correction.any():
+            # Normalize to prevent explosion
+            # Scale each simplex to have mean edge length ~ 1.0
+            k_plus_1 = state.shape[-2]
+            dim = state.shape[-1]
+
+            # Compute current mean edge length per simplex
             ii, jj = torch.triu_indices(k_plus_1, k_plus_1, offset=1, device=state.device)
             edges = state[..., jj, :] - state[..., ii, :]
             edge_lengths = torch.norm(edges, dim=-1)
-            mean_edge = edge_lengths.mean(dim=-1, keepdim=True).clamp(min=1e-6)
+            mean_edge = edge_lengths.mean(dim=-1, keepdim=True)
 
-            # Scale to unit mean edge
-            scale_factor = 1.0 / mean_edge.unsqueeze(-1)
+            # Scale to target mean edge length of 1.0
+            scale_factor = 1.0 / (mean_edge.unsqueeze(-1) + 1e-6)
 
-            correction_mask = is_degenerate.float()
+            # Apply scaling only where needed
+            correction_mask = needs_correction.float()
             while correction_mask.dim() < state.dim():
                 correction_mask = correction_mask.unsqueeze(-1)
 
@@ -233,11 +178,21 @@ class FlowMatcher(FormulaBase):
         return_trajectory: bool = False
     ) -> Dict[str, Tensor]:
         """
-        Flow through geometric space - allow transfinite exploration.
+        Flow through geometric space.
+
+        Args:
+            initial_state: [..., k+1, dim] starting simplices
+            return_trajectory: Return full trajectory (all steps)
+
+        Returns:
+            final_state: [..., k+1, dim] final configuration
+            trajectory: Optional full path
+            flow_metrics: Quality, stability, etc.
         """
         current_state = initial_state
         trajectory = [current_state.detach().clone()] if return_trajectory else None
 
+        # Initial quality
         initial_quality = self.quality_check.forward(initial_state)
 
         flow_metrics = {
@@ -247,16 +202,17 @@ class FlowMatcher(FormulaBase):
         }
 
         for step in range(self.flow_steps):
+            # Compute velocity
             velocity = self.trajectory_net(current_state)
 
-            # Simple gradient clipping
-            torch.nn.utils.clip_grad_value_(velocity, self.max_grad_norm)
+            # Clip velocity to prevent explosion
+            velocity = torch.clamp(velocity, -self.max_grad_norm, self.max_grad_norm)
 
-            # Flow update
-            step_size = 0.1
+            # Flow update (simple Euler step with small step size)
+            step_size = 0.1  # Small step size for stability
             next_state = current_state + step_size * velocity
 
-            # Only fix degeneracies, allow scale to vary
+            # Validate and project to maintain geometric constraints
             next_state = self._validate_and_project(next_state, step)
 
             # Track metrics
@@ -265,20 +221,24 @@ class FlowMatcher(FormulaBase):
                 step_quality['regularity'].mean().detach()
             )
 
+            # Volume tracking
             vol_calc = SimplexVolume()
             vol_result = vol_calc.forward(next_state)
             flow_metrics['step_volumes'].append(
                 vol_result['volume'].mean().detach()
             )
 
+            # Update
             current_state = next_state
 
             if return_trajectory:
                 trajectory.append(current_state.detach().clone())
 
+        # Final quality
         final_quality = self.quality_check.forward(current_state)
         flow_metrics['final_quality'] = final_quality['regularity']
 
+        # Stack tracked metrics
         if flow_metrics['step_qualities']:
             flow_metrics['step_qualities'] = torch.stack(flow_metrics['step_qualities'])
             flow_metrics['step_volumes'] = torch.stack(flow_metrics['step_volumes'])
@@ -300,6 +260,8 @@ class FlowMatcher(FormulaBase):
     ) -> Dict[str, Tensor]:
         """Forward pass."""
         return self.flow(input_simplices, return_trajectory=return_trajectory)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TESTING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
