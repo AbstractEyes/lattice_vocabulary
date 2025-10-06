@@ -30,7 +30,6 @@ class GeometricTrajectoryNet(nn.Module):
         super().__init__()
 
         self.simplex_dim = simplex_dim
-        self.use_attention = use_attention
 
         # Encode simplex structure
         self.edge_encoder = nn.Sequential(
