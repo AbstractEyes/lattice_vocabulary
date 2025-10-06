@@ -208,8 +208,8 @@ class FlowMatcher(FormulaBase):
             velocity = self.trajectory_net(current_state)
 
             # Clip velocity to prevent explosion
-            step_size = max(0.001, 1 - (self.validation_strength * (step / self.flow_steps)))
-            max_grad_size = min(1.0, self.max_grad_norm / step_size)
+            step_size = 0.1
+            max_grad_size = max(0.0001, min(1.0, self.max_grad_norm / step_size))
             velocity = torch.clamp(velocity, -max_grad_size, max_grad_size)
 
             # Flow update (simple Euler step with small step size)
