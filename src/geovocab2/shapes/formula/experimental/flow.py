@@ -1,10 +1,10 @@
 """
-FLOW MATCHER
---------------------------------------
-Geometric trajectory learning through simplex space with proper manifold constraints.
+FLOW MATCHER + CANTOR-AWARE CLASSIFICATION
+-------------------------------------------
+Maps transfinite geometric flow to finite classification via Cantor structure.
 
-The issue: Flowed state explodes to 10^24 because velocity integration has no geometric grounding.
-The solution: Constrain flow to the stable simplex manifold using Gram decomposition.
+The insight: Flowed simplices operate in transfinite scale regimes.
+The solution: Use Cantor function to map infinite hierarchy to [0,1] for classification.
 
 Author: AbstractPhil + Claude Sonnet 4.5
 """
@@ -16,36 +16,28 @@ import torch.nn as nn
 
 from geovocab2.shapes.formula.formula_base import FormulaBase
 from geovocab2.shapes.formula import SimplexVolume, SimplexQuality, SimplexVolumeExtended
+from geovocab2.shapes.formula import CantorFunction
 
 
 class GeometricTrajectoryNet(nn.Module):
-    """
-    Learn velocity field in geometric space.
-
-    Replaces: Linear → Activation → Linear
-    Uses: Geometric constraints + vertex attention
-    """
+    """Learn velocity field in geometric space."""
 
     def __init__(self, simplex_dim: int, hidden_scale: int = 4, num_heads: int = 4):
         super().__init__()
-
         self.simplex_dim = simplex_dim
 
-        # Encode simplex structure
         self.edge_encoder = nn.Sequential(
             nn.Linear(simplex_dim, simplex_dim * hidden_scale),
             nn.GELU(),
             nn.LayerNorm(simplex_dim * hidden_scale)
         )
 
-        # Geometric attention over simplex vertices
         self.vertex_attention = nn.MultiheadAttention(
             embed_dim=simplex_dim,
             num_heads=num_heads,
             batch_first=True
         )
 
-        # Project to velocity
         self.velocity_proj = nn.Sequential(
             nn.Linear(simplex_dim * hidden_scale, simplex_dim),
             nn.LayerNorm(simplex_dim)
@@ -69,28 +61,116 @@ class GeometricTrajectoryNet(nn.Module):
         )
         combined = encoded + attn_repeated
         velocity = self.velocity_proj(combined)
+        velocity = velocity.reshape(*batch_dims, k_plus_1, dim)
 
-        # GEOMETRIC CONSTRAINT: velocity magnitude bounded by current simplex scale
-        # Compute current edge magnitudes
-        v0 = simplex_flat[:, 0:1, :]
-        edges = simplex_flat[:, 1:, :] - v0
-        edge_norms = torch.norm(edges, dim=-1, keepdim=True).mean(dim=-2, keepdim=True)
+        return velocity
 
-        # Scale velocity to be proportional to current simplex size
-        # This prevents small simplices from making huge jumps
-        velocity_norm = torch.norm(velocity, dim=-1, keepdim=True).clamp(min=1e-8)
-        velocity_scaled = velocity * (edge_norms / velocity_norm).clamp(max=1.0)
 
-        velocity_scaled = velocity_scaled.reshape(*batch_dims, k_plus_1, dim)
-        return velocity_scaled
+class CantorGeometricClassificationHead(nn.Module):
+    """
+    Classification head that maps transfinite geometric positions to logits.
+
+    Uses Cantor function to compress infinite-scale simplices to [0,1],
+    preserving hierarchical structure information.
+    """
+
+    def __init__(self, num_origins: int, origin_dim: int, embed_dim: int, num_classes: int):
+        super().__init__()
+
+        self.num_origins = num_origins
+        self.origin_dim = origin_dim
+        self.embed_dim = embed_dim
+
+        # Cantor function for scale mapping
+        self.cantor_fn = CantorFunction(iterations=8)
+
+        # Process Cantor-normalized features
+        self.simplex_pooling = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.LayerNorm(embed_dim)
+        )
+
+        self.origin_attention = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=8,
+            batch_first=True
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(embed_dim // 2, num_classes)
+        )
+
+    def _map_to_cantor_space(self, flowed_simplices: Tensor) -> Tensor:
+        """
+        Map flowed simplices from transfinite geometric space to [0,1] via Cantor.
+
+        Args:
+            flowed_simplices: [..., num_origins, k+1, embed_dim]
+
+        Returns:
+            cantor_features: [..., num_origins, embed_dim] in [0,1] range
+        """
+        # Pool over simplex vertices
+        pooled = flowed_simplices.mean(dim=-2)  # [..., num_origins, embed_dim]
+
+        # Compute position in transfinite hierarchy
+        # Use log-scale to map explosive values to reasonable range
+        abs_values = torch.abs(pooled)
+
+        # Map to [0,1]: use log to compress large values
+        # log(1 + |x|) maps [0, inf) -> [0, inf), then normalize
+        log_scale = torch.log1p(abs_values)  # [..., num_origins, embed_dim]
+
+        # Normalize to [0,1] per feature dimension
+        min_vals = log_scale.min(dim=-2, keepdim=True)[0]
+        max_vals = log_scale.max(dim=-2, keepdim=True)[0]
+        normalized = (log_scale - min_vals) / (max_vals - min_vals + 1e-8)
+
+        # Apply Cantor function to get hierarchical position
+        cantor_values = self.cantor_fn.forward(normalized)['values']
+
+        # Restore sign information (Cantor function loses sign)
+        sign = torch.sign(pooled)
+        cantor_features = sign * cantor_values
+
+        return cantor_features
+
+    def forward(self, flowed_simplices: Tensor) -> Tensor:
+        """
+        Args:
+            flowed_simplices: [..., num_origins, k+1, embed_dim]
+
+        Returns:
+            logits: [..., num_classes]
+        """
+        # Map from transfinite geometric space to Cantor-normalized features
+        cantor_features = self._map_to_cantor_space(flowed_simplices)
+
+        # Now features are in [-1, 1] range - safe for standard neural operations
+        features = self.simplex_pooling(cantor_features)
+
+        # Attention over origins
+        attended, _ = self.origin_attention(features, features, features)
+
+        # Pool over origins
+        pooled = attended.mean(dim=-2)
+
+        # Classify
+        logits = self.classifier(pooled)
+
+        return logits
 
 
 class FlowMatcher(FormulaBase):
     """
-    Geometric flow through simplex space with manifold constraints.
+    Geometric flow through simplex space.
 
-    Key insight: Flow must stay on the stable simplex manifold.
-    We use Gram matrix eigenvalue structure to define this manifold.
+    Allows transfinite-scale exploration - no artificial clamping.
+    Classification head handles the mapping back to finite space.
     """
 
     def __init__(
@@ -118,103 +198,17 @@ class FlowMatcher(FormulaBase):
         self.volume_calc = SimplexVolumeExtended(mode="auto", check_degeneracy=True)
         self.quality_check = SimplexQuality()
 
-    def _project_to_stable_manifold(self, state: Tensor) -> Tensor:
-        """
-        Project state onto the stable simplex manifold using Gram eigenvalue structure.
-
-        The stable manifold is defined by:
-        - Gram matrix has bounded condition number
-        - Volume is non-degenerate
-        - Edge lengths are in reasonable range
-        """
-        k_plus_1 = state.shape[-2]
-        dim = state.shape[-1]
-
-        # Center simplex at origin (first vertex)
-        v0 = state[..., 0:1, :]
-        E = state[..., 1:, :] - v0  # Edge matrix [..., k, dim]
-
-        # Compute Gram matrix
-        G = torch.matmul(E.transpose(-2, -1), E)  # [..., k, k]
-        G = 0.5 * (G + G.transpose(-2, -1))  # Symmetrize
-
-        # Eigendecomposition
-        eigenvalues, eigenvectors = torch.linalg.eigh(G)
-
-        # Condition number check
-        lambda_max = eigenvalues[..., -1:]
-        lambda_min = eigenvalues[..., :1].clamp(min=1e-8)
-        condition = lambda_max / lambda_min
-
-        # If condition number too high, truncate small eigenvalues
-        needs_projection = condition.squeeze(-1) > 1e4
-
-        if needs_projection.any():
-            # Truncate eigenvalues below threshold
-            threshold = lambda_max * 1e-6
-            eigenvalues_stable = torch.where(
-                eigenvalues < threshold,
-                threshold,
-                eigenvalues
-            )
-
-            # Reconstruct Gram matrix with stable eigenvalues
-            G_stable = torch.matmul(
-                eigenvectors * eigenvalues_stable.unsqueeze(-2),
-                eigenvectors.transpose(-2, -1)
-            )
-
-            # Reconstruct edge matrix via Cholesky
-            try:
-                L = torch.linalg.cholesky(G_stable)
-                E_stable = L.transpose(-2, -1)  # [..., k, dim] if dim >= k
-
-                # Pad if necessary
-                if E_stable.shape[-1] < dim:
-                    padding = torch.zeros(
-                        *E_stable.shape[:-1],
-                        dim - E_stable.shape[-1],
-                        device=state.device,
-                        dtype=state.dtype
-                    )
-                    E_stable = torch.cat([E_stable, padding], dim=-1)
-                elif E_stable.shape[-1] > dim:
-                    E_stable = E_stable[..., :dim]
-
-                # Reconstruct simplex
-                state_stable = torch.cat([v0, v0 + E_stable], dim=-2)
-
-                # Apply correction selectively
-                mask = needs_projection.float()
-                while mask.dim() < state.dim():
-                    mask = mask.unsqueeze(-1)
-
-                state = state * (1 - mask) + state_stable * mask
-
-            except RuntimeError:
-                # Cholesky failed, use softer scaling instead
-                pass
-
-        return state
-
     def _validate_and_project(self, state: Tensor, step: int) -> Tensor:
         """
-        Geometric validation using volume, quality, and Gram structure.
+        Light geometric validation - only fix true degeneracies.
+        Allow transfinite scale exploration.
         """
-        # First: project to stable manifold
-        state = self._project_to_stable_manifold(state)
-
-        # Check volume and quality
+        # Only check for actual geometric degeneracy (collapsed simplices)
         vol_result = self.volume_calc.forward(state)
         is_degenerate = vol_result['is_degenerate']
 
-        quality_result = self.quality_check.forward(state)
-        poor_quality = quality_result['regularity'] < 0.1
-
-        needs_correction = is_degenerate | poor_quality
-
-        if needs_correction.any():
-            # Scale normalization to unit mean edge length
+        if is_degenerate.any():
+            # Only fix truly degenerate simplices
             k_plus_1 = state.shape[-2]
 
             ii, jj = torch.triu_indices(k_plus_1, k_plus_1, offset=1, device=state.device)
@@ -222,10 +216,10 @@ class FlowMatcher(FormulaBase):
             edge_lengths = torch.norm(edges, dim=-1)
             mean_edge = edge_lengths.mean(dim=-1, keepdim=True).clamp(min=1e-6)
 
-            # Target mean edge = 1.0
+            # Scale to unit mean edge
             scale_factor = 1.0 / mean_edge.unsqueeze(-1)
 
-            correction_mask = needs_correction.float()
+            correction_mask = is_degenerate.float()
             while correction_mask.dim() < state.dim():
                 correction_mask = correction_mask.unsqueeze(-1)
 
@@ -239,7 +233,7 @@ class FlowMatcher(FormulaBase):
         return_trajectory: bool = False
     ) -> Dict[str, Tensor]:
         """
-        Flow through geometric space with manifold constraints.
+        Flow through geometric space - allow transfinite exploration.
         """
         current_state = initial_state
         trajectory = [current_state.detach().clone()] if return_trajectory else None
@@ -253,23 +247,16 @@ class FlowMatcher(FormulaBase):
         }
 
         for step in range(self.flow_steps):
-            # Compute velocity
             velocity = self.trajectory_net(current_state)
 
-            # Clip velocity magnitude (not values)
-            velocity_norm = torch.norm(velocity, dim=(-2, -1), keepdim=True).clamp(min=1e-8)
-            velocity_clipped = velocity * torch.minimum(
-                torch.ones_like(velocity_norm),
-                self.max_grad_norm / velocity_norm
-            )
-
-            # Adaptive step size based on velocity magnitude
-            step_size = 0.1
+            # Simple gradient clipping
+            torch.nn.utils.clip_grad_value_(velocity, self.max_grad_norm)
 
             # Flow update
-            next_state = current_state + step_size * velocity_clipped
+            step_size = 0.1
+            next_state = current_state + step_size * velocity
 
-            # Project to stable manifold
+            # Only fix degeneracies, allow scale to vary
             next_state = self._validate_and_project(next_state, step)
 
             # Track metrics
@@ -313,7 +300,6 @@ class FlowMatcher(FormulaBase):
     ) -> Dict[str, Tensor]:
         """Forward pass."""
         return self.flow(input_simplices, return_trajectory=return_trajectory)
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TESTING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

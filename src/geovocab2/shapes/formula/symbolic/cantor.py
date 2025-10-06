@@ -474,8 +474,8 @@ class CantorFunction(FormulaBase):
         # Clamp to [0, 1]
         t = torch.clamp(t, 0.0, 1.0)
 
-        # Initialize output
-        values = torch.zeros_like(t)
+        ## Initialize output
+        #values = torch.zeros_like(t)
 
         # Vectorized: create mask for all intervals at once
         n_intervals = self.cantor_intervals.shape[0]
