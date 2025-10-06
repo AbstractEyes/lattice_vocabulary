@@ -45,10 +45,6 @@ class PatchEmbedding(nn.Module):
         return x
 
 
-
-
-
-
 class PentachoronFlowNetwork(nn.Module):
     """Complete geometric flow architecture."""
 
@@ -69,7 +65,10 @@ class PentachoronFlowNetwork(nn.Module):
             num_origins=config.num_origins,
             origin_dim=config.origin_dim,
             embed_dim=config.embed_dim,
-            init_strategy=config.init_strategy
+            init_strategy=config.init_strategy,
+            temperature=1.0,
+            quality_threshold=0.5,
+            max_init_attempts=10
         )
 
         self.noise_collector = NoiseCollector(
@@ -89,10 +88,11 @@ class PentachoronFlowNetwork(nn.Module):
         self.validator = CayleyMengerValidator(config)
 
         self.classification_head = GeometricClassificationHead(
-            num_origins=config.num_origins,
-            origin_dim=config.origin_dim,
             embed_dim=config.embed_dim,
-            num_classes=config.num_classes
+            num_classes=config.num_classes,
+            use_attention=config.use_attention,
+            attention_heads=config.attention_heads,
+            dropout_rate=config.dropout_rate
         )
 
     def forward(

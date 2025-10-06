@@ -21,7 +21,10 @@ class PentachoronFlowConfig:
         hidden_scale: int = 4,
         max_grad_norm: float = 1.0,
         validation_weights: Dict[str, float] = None,
-        sample_size: float = 0.15
+        sample_size: float = 0.15,
+        use_attention: bool = True,
+        attention_heads: int = 8,
+        dropout_rate: float = 0.1
     ):
         self.num_classes = num_classes
         self.input_channels = input_channels
@@ -38,6 +41,9 @@ class PentachoronFlowConfig:
         self.hidden_scale = hidden_scale
         self.max_grad_norm = max_grad_norm
         self.sample_size = sample_size
+        self.use_attention = use_attention
+        self.attention_heads = attention_heads
+        self.dropout_rate = dropout_rate
 
         if validation_weights is None:
             self.validation_weights = {'rose': 0.5, 'quality': 0.3, 'volume': 0.2}
