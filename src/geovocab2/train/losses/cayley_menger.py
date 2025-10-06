@@ -17,7 +17,6 @@ class CayleyMengerValidator(nn.Module):
 
     def compute_loss(self, predicted_simplices: Tensor) -> Dict[str, Tensor]:
         """Memory-efficient geometric loss with sampling."""
-        assert predicted_simplices.is_cuda, "Input not on CUDA!"
         batch_size = predicted_simplices.shape[0]
         num_origins = predicted_simplices.shape[1]
         k_plus_1 = predicted_simplices.shape[2]
