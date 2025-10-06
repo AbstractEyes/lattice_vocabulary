@@ -22,31 +22,34 @@ class GeometricTrajectoryNet(nn.Module):
     """
     Learn velocity field in geometric space.
 
-    Replaces: Linear → Activation → Linear
-    Uses: Geometric constraints + vertex attention
+    Simplified version without attention - processes each vertex independently
+    with global context via mean pooling.
     """
 
     def __init__(self, simplex_dim: int, hidden_scale: int = 4, num_heads: int = 4):
         super().__init__()
+        # attention disabled
 
         self.simplex_dim = simplex_dim
 
-        # Encode simplex structure
-        self.edge_encoder = nn.Sequential(
+        # Encode individual vertices
+        self.vertex_encoder = nn.Sequential(
             nn.Linear(simplex_dim, simplex_dim * hidden_scale),
             nn.GELU(),
             nn.LayerNorm(simplex_dim * hidden_scale)
         )
 
-        # Geometric attention over simplex vertices
-        self.vertex_attention = nn.MultiheadAttention(
-            embed_dim=simplex_dim,
-            num_heads=num_heads,
-            batch_first=True
+        # Global context encoder (processes mean of all vertices)
+        self.context_encoder = nn.Sequential(
+            nn.Linear(simplex_dim, simplex_dim * hidden_scale),
+            nn.GELU(),
+            nn.LayerNorm(simplex_dim * hidden_scale)
         )
 
-        # Project to velocity
+        # Combine local + global to produce velocity
         self.velocity_proj = nn.Sequential(
+            nn.Linear(simplex_dim * hidden_scale * 2, simplex_dim * hidden_scale),
+            nn.GELU(),
             nn.Linear(simplex_dim * hidden_scale, simplex_dim),
             nn.LayerNorm(simplex_dim)
         )
@@ -65,33 +68,30 @@ class GeometricTrajectoryNet(nn.Module):
         k_plus_1 = orig_shape[-2]
         dim = orig_shape[-1]
 
-        # Flatten batch dimensions for attention: [batch_total, k+1, dim]
-        simplex_flat = simplex_state.reshape(-1, k_plus_1, dim)
+        # Flatten batch dimensions: [batch_total, k+1, dim]
+        batch_total = 1
+        for d in batch_dims:
+            batch_total *= d
+        simplex_flat = simplex_state.reshape(batch_total, k_plus_1, dim)
 
-        # Encode edges
-        encoded = self.edge_encoder(simplex_flat)
+        # Encode each vertex independently
+        vertex_features = self.vertex_encoder(simplex_flat)  # [B, k+1, hidden]
 
-        # Self-attention over vertices (geometric routing)
-        # Now input is [batch_total, k+1, dim] which is 3D
-        attn_out, _ = self.vertex_attention(
-            simplex_flat, simplex_flat, simplex_flat
-        )
+        # Compute global context (mean pooling over vertices)
+        global_context = simplex_flat.mean(dim=-2, keepdim=True)  # [B, 1, dim]
+        global_features = self.context_encoder(global_context)  # [B, 1, hidden]
+        global_features = global_features.expand(-1, k_plus_1, -1)  # [B, k+1, hidden]
 
-        # Combine with encoding
-        # Repeat attn_out to match encoded dimension
-        attn_repeated = attn_out.repeat_interleave(
-            encoded.shape[-1] // attn_out.shape[-1], dim=-1
-        )
-        combined = encoded + attn_repeated
+        # Combine local vertex features with global context
+        combined = torch.cat([vertex_features, global_features], dim=-1)  # [B, k+1, 2*hidden]
 
         # Project to velocity
-        velocity = self.velocity_proj(combined)
+        velocity = self.velocity_proj(combined)  # [B, k+1, dim]
 
         # Reshape back to original batch dimensions
         velocity = velocity.reshape(*batch_dims, k_plus_1, dim)
 
         return velocity
-
 
 class FlowMatcher(FormulaBase):
     """
