@@ -27,7 +27,7 @@ class PentachoronFlowConfig:
         use_attention: bool = True,
         attention_heads: int = 8,
         dropout_rate: float = 0.1,
-        temperature: float = 1.0,
+        temperature: float = 0.1,
         quality_threshold: float = 0.5,
         max_init_attempts: int = 10,
         trajectory_attention_heads: int = 4,
