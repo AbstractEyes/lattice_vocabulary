@@ -198,11 +198,8 @@ class FractalSimplexInitializer(FormulaBase):
         # Base regular simplex (learnable)
         base = torch.eye(self.k_plus_1)
         centroid = base.mean(dim=0, keepdim=True)
-        # Use register_parameter to ensure it moves with .to(device)
-        self.register_parameter(
-            'base_simplex',
-            torch.nn.Parameter(base - centroid, requires_grad=True)
-        )
+
+        self.register_parameter('base_simplex', torch.nn.Parameter(base - centroid, requires_grad=True))
 
         # Projection to embedding space
         self.projection = torch.nn.Linear(self.k_plus_1, embedding_dim, bias=False)
