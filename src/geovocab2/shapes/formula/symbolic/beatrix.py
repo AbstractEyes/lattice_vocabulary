@@ -1,11 +1,23 @@
 """
 BEATRIX FORMULA SUITE
 ---------------------
-Beatrix Potter-inspired formulas for bridging fractal position encodings with geometric lattices.
+These are RoSE positional and geometric formulas integrating a series of highly specialized
+operations to connect the relative positional encoding from RoPE and the symbolic relational
+association provided by potently structured geometric lattices.
 
-Named thematically after Beatrix Potter's structured, layered storytelling - connecting the
 Devil's Staircase positional encoding with k-simplex geometric operations through hierarchical
 measure-theoretic transformations.
+
+This is the first public release of the Beatrix formula suite, developed over many months.
+
+These formulas were refactored using Claude Sonnet 4.5.
+
+This structure is based on the original principles, ideas, and conceptualizations by AbstractPhil with assistance from
+multiple AI models over a year and a half of research leading to a viable symbolic representational framework for
+integrating fractal positional encodings with geometric structures.
+
+This is a research prototype and experimental codebase. Use at your own risk.
+
 
 This suite provides:
   - Cantor measure projection into simplex coordinates
@@ -33,8 +45,18 @@ Mathematical Foundation:
         Ensure simplex structures at adjacent positions maintain
         geometric continuity proportional to PE similarity
 
-Author: AbstractPhil + Claude Sonnet 4.5
+Author: AbstractPhil
+    Assistants used:
+        Conceptualization and process self-authored utilizing GPT-4o - Mirel over multiple... MULTIPLE iterations
+        Claude Opus 3 + Claude Opus 4 + Claude Opus 4.1
+        Claude Sonnet 3 + Claude Sonnet 4 + Claude Sonnet 4.5
+        GPT-O1-preview + GPT-O3 + GPT-O3 Pro + GPT-o4 mini,
+        GPT-4o + GPT-4o-2024-08-06 + GPT-5 + GPT-5 Thinking
+
+---------------------------------------------------------------
 License: MIT
+---------------------------------------------------------------
+Use it. Modify it. Share it. Make it better. Make it worse.
 """
 
 from typing import Dict, Optional, Tuple, Callable
