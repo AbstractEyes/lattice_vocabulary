@@ -187,7 +187,6 @@ class FractalSimplexInitializer(FormulaBase):
         embedding_dim: Target embedding dimension (default: 512)
         use_pdf_proxy: Use entropy-based features (default: True)
     """
-
     def __init__(self, k_simplex: int = 5, embedding_dim: int = 512,
                  use_pdf_proxy: bool = True):
         super().__init__("fractal_simplex_init", "f.beatrix.fractal_init")
@@ -199,7 +198,11 @@ class FractalSimplexInitializer(FormulaBase):
         # Base regular simplex (learnable)
         base = torch.eye(self.k_plus_1)
         centroid = base.mean(dim=0, keepdim=True)
-        self.base_simplex = torch.nn.Parameter(base - centroid, requires_grad=True)
+        # Use register_parameter to ensure it moves with .to(device)
+        self.register_parameter(
+            'base_simplex',
+            torch.nn.Parameter(base - centroid, requires_grad=True)
+        )
 
         # Projection to embedding space
         self.projection = torch.nn.Linear(self.k_plus_1, embedding_dim, bias=False)
