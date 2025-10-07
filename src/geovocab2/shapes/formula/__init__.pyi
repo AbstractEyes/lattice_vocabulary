@@ -110,6 +110,16 @@ from .experimental.origin_sampler import (
 from .simple.add import (
     AddFormula as AddFormula,
 )
+from .symbolic.beatrix import (
+    BeatrixIntegratedLoss as BeatrixIntegratedLoss,
+    CantorToBarycentric as CantorToBarycentric,
+    CayleyMengerFromSimplex as CayleyMengerFromSimplex,
+    FlowAlignmentLoss as FlowAlignmentLoss,
+    FractalSimplexInitializer as FractalSimplexInitializer,
+    HierarchicalCoherence as HierarchicalCoherence,
+    MultiScaleConsistency as MultiScaleConsistency,
+    SimplexEdges as SimplexEdges,
+)
 from .symbolic.cantor import (
     BoxCountingDimension as BoxCountingDimension,
     CantorDiagonalization as CantorDiagonalization,
