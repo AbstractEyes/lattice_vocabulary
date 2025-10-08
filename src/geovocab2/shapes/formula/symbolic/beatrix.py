@@ -183,11 +183,11 @@ class FractalSimplexInitializer(FormulaBase):
     control vertex spread, orientation, and local deformations.
 
     Args:
-        k_simplex: Simplex dimension (default: 5)
+        k_simplex: Simplex dimension (default: 4)
         embedding_dim: Target embedding dimension (default: 512)
         use_pdf_proxy: Use entropy-based features (default: True)
     """
-    def __init__(self, k_simplex: int = 5, embedding_dim: int = 512,
+    def __init__(self, k_simplex: int = 4, embedding_dim: int = 512,
                  use_pdf_proxy: bool = True):
         super().__init__("fractal_simplex_init", "f.beatrix.fractal_init")
         self.k = k_simplex

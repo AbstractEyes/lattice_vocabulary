@@ -259,7 +259,7 @@ class SimplifiedGeometricClassifier(nn.Module):
         self.embed_dim = embed_dim
         self.k_simplex = k_simplex
         self.num_patches = (img_size // patch_size) ** 2
-        self.simplex_weight = simplex_feature_weight
+        self.simplex_feature_weight = simplex_feature_weight
 
         # Patch embedding
         self.patch_embed = nn.Conv2d(
@@ -423,7 +423,7 @@ class SimplifiedGeometricClassifier(nn.Module):
         geom_embed = self.geom_proj(geom_features)  # [B, D]
 
         # Inject into CLS token (weighted addition)
-        x[:, 0] = x[:, 0] + self.simplex_weight * geom_embed
+        x[:, 0] = x[:, 0] + self.simplex_feature_weight * geom_embed
 
         # Standard transformer processing
         for block in self.blocks:
