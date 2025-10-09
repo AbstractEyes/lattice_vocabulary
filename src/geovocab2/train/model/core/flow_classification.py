@@ -11,19 +11,16 @@ from typing import Dict, Optional
 import torch
 from torch import Tensor
 import torch.nn as nn
-import math
 
 from geovocab2.train.config.pentachoron_flow import PentachoronFlowConfig
 from geovocab2.train.losses.cayley_menger import CayleyMengerValidator
 from geovocab2.train.model.heads.classification import GeometricClassificationHead
 
-from geovocab2.train.model.flow_matcher import FlowMatcher
+from geovocab2.train.model.core.flow_matcher import FlowMatcher
 
 from geovocab2.shapes.formula import (
     GeometricOriginSampler,
-    NoiseCollector,
-    SimplexQuality,
-    SimplexVolumeExtended
+    NoiseCollector
 )
 
 

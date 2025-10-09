@@ -20,7 +20,7 @@ from typing import Dict, Optional
 from torch import Tensor
 
 from geovocab2.train.config.pentachoron_flow import PentachoronFlowConfig
-from geovocab2.train.model.flow_classification import PentachoronFlowNetwork
+from geovocab2.train.model.core.flow_classification import PentachoronFlowNetwork
 
 class ProfiledPentachoronFlow(torch.nn.Module):
     """Profiling wrapper for PentachoronFlowNetwork."""
