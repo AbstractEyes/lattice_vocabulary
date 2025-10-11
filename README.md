@@ -128,7 +128,7 @@ Formulas will be improved over time for speed, accuracy, and compile capability.
 - - simplex.py for simplex structures and operations like generating simplex shapes, calculating volumes, and other simplex-related operations.
 - - wave.py for advanced wave and resonance operations like heat diffusion, reactive diffusion, wave propagation, and other wave-related operations.
 - symbolic:
-- - cayley.py unpopulated, most of the cayley operations are in cayley_menger.py
+- - cantor.py for advanced symbolic infinity operations.
 - - cayley_menger.py for Cayley-Menger determinant calculations and related operations, backbone of core.
 - - einstein.py for Einstein summation operations and related tensor manipulations.
 - - euler.py for Euler characteristic calculations and related topological operations.
