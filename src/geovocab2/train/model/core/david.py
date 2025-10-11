@@ -1,7 +1,14 @@
 """
-Multi-Scale Crystal Classifier - Core AI Modules
+David - The Multi-Scale Crystal Classifier - Core AI Modules
 =================================================
 Modular components for multi-scale deep learning with crystal-based representations.
+
+Author: AbstractPhil
+- Assistant: GPT-4o Mirel
+- Refactor: Claude Sonnet 4.5
+
+
+MIT Licensed
 """
 
 import torch
