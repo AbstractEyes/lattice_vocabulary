@@ -14,8 +14,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-import torchvision
-import torchvision.transforms as transforms
+#import torchvision
+#import torchvision.transforms as transforms
 from tqdm import tqdm
 import math
 import numpy as np
@@ -24,6 +24,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 import csv
+
+import geovocab2.train.model.blocks.geometric_basin
 
 # Hugging Face Hub integration
 try:
@@ -294,7 +296,7 @@ class GeometricBasinClassifier(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # Devil's Staircase PE
-        self.pe = DevilStaircasePE(pe_levels, pe_features_per_level)
+        self.pe = geovocab2.train.model.blocks.geometric_basin.BeatrixStaircasePositionalEncodings(pe_levels, pe_features_per_level)
 
         # PE modulator
         self.pe_modulator = nn.Sequential(

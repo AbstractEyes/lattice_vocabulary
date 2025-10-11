@@ -7,6 +7,8 @@ Maximizes inter-class separation, minimizes intra-class variance.
 Key insight: Geometry should preserve 3D salient forms (faces, animals, vehicles)
 and ignore flat/generic objects (furniture, plates).
 
+These have proven fruitless.
+
 Author: AbstractPhil + Claude Sonnet 4.5
 License: MIT
 """

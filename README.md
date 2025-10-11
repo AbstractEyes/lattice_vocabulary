@@ -21,16 +21,21 @@
 
 The package is still in active development. Many components are functional, but some advanced features and optimizations are still pending.
 
-Each system is independently testable and usable, but the full system is not yet complete.
+Each system is independently testable and usable, but the full system is not yet complete. The validation tests at the bottom of each formula file can be run to ensure the integrity and correctness of the formulas. This does not guarantee every configuration or every setting just yet, but it's a strong start.
 
-The validation tests at the bottom of each formula file can be run to ensure the integrity and correctness of the formulas. This does not guarantee every configuration or every setting just yet, but it's a strong start.
+It's messy still, but the organization will improve over time as I refine and expand the codebase.
 
 
+# Proofs
+```
+# import geovocab2.proofs.beatrix_staircase
+```
+Each proof file is individually self-proving, so they require only running them to validate if they work or not.
+They are primarily targeting a quick-run on colab, and require no dependencies from this repo to function, just the independent script and the correct torch and python versions.
 
-### Resolved immediate issues 10/4/2025
-- Importing from geovocab2 may be problematic due to the change in structure and organization.
-- Relative imports now work properly and the pyi files are present for autocomplete.
-- The factories, formulas, and synthesizers are now properly organized and accessible.
+1. Cayley-Menger determinants are validated against known values for 1-simplex, 2-simplex, and 3-simplex are available and valid to nth k-simplex with some higher dimension limitations due to numerical instability and floating-point precision limitations.
+2. Cantor Stairs are validated against known values for 1-simplex and 2-simplex, with higher dimensions requiring further validation and are testing as potential PositionalEncoding replacements for large language models, classification models, and other transformer-based architectures.
+
 
 ## Current Access Import Structure:
 
@@ -112,7 +117,9 @@ They are AI friendly and human-readable, so they can be easily understood and mo
 
 All formulas are now package-friendly and import at the geovocab2.shapes.formula level. The current implementation has these directories and files for the formula playground:
 
-`geovocab2.shapes.formula`
+Formulas will be improved over time for speed, accuracy, and compile capability. I will be avoiding python loops and overhead as much as possible for efficiency, which can be a train killer if I don't.
+
+```geovocab2.shapes.formula```
 - engineering: 
 - - atomic.py for basic atomic operations and structures, not so useful on its own but foundational if necessary.
 - - fundamental.py for more advanced basic operations like atan2, vector norms, and other basic mathematical operations.
@@ -121,15 +128,12 @@ All formulas are now package-friendly and import at the geovocab2.shapes.formula
 - - simplex.py for simplex structures and operations like generating simplex shapes, calculating volumes, and other simplex-related operations.
 - - wave.py for advanced wave and resonance operations like heat diffusion, reactive diffusion, wave propagation, and other wave-related operations.
 - symbolic:
-- - cantor.py for advanced symbolic infinity operations.
 - - cayley.py unpopulated, most of the cayley operations are in cayley_menger.py
 - - cayley_menger.py for Cayley-Menger determinant calculations and related operations, backbone of core.
 - - einstein.py for Einstein summation operations and related tensor manipulations.
 - - euler.py for Euler characteristic calculations and related topological operations.
-- - graham.py unpopulated
 - - hawking.py for Hawking radiation and black hole related symbolic operations.
 - - hooke.py for Hooke's law and related elastic deformation operations.
-- - menger.py unpopulated
 - - newton.py for Newtonian mechanics and related physical operations.
 - - nikola.py for Nikola Tesla's resonance, frequency, and energy operations.
 
@@ -140,17 +144,51 @@ All formulas are now package-friendly and import at the geovocab2.shapes.formula
 # Factories
 The factories are designed to produce specific types of symbolic lattice structures based on the provided configuration.
 
-`geovocab2.shapes.factory`
-- factory_base.py for the base factory class and common methods.
-- simplex_factory.py for generating simplex-shaped symbolic lattice structures.
-- legacy_factory.py for direct 1:1 compatibility with the original geovocab structures, almost ready.
-- factory_dataloaders.py for loading datasets and vocabularies into the factories.
+```geovocab2.shapes.factory```
+## Factory Progress
+1. factory_base.py for the base factory class and common methods. 
+2. simplex_factory.py for generating simplex-shaped symbolic lattice structures. 
+3. legacy_factory.py for direct 1:1 compatibility with the original geovocab structures, almost ready. 
+4. factory_dataloaders.py for loading datasets and vocabularies into the factories.
+
+
+## Factory Todo
+1. Implement more factory types for different symbolic lattice structures including cantor stairs and other complex structures.
+2. Build support to load a model's prepared vocabulary from multiple types of tokenizers
+3. Optimize performance for large-scale vocabularies with flags for preloading, caching, batching
+
+
 
 # Synthesis
 
 These are specifically curated to synthesize complex symbolic lattice structures from vocabularies and shapes interconnected.
 Meant to be independent and reusable for various synthesis tasks.
 
+## Synthesis Progress
+```
+# absolute import path: from geovocab2.shapes.fusion.composition_base import CompositionBase
+# absolute import path: from geovocab2.shapes.fusion import LexicalSimplexSynthesizer
+# absolute import path: from geovocab2.shapes.fusion import WordNetSynthes
+```
+### Lexical Progress
+1. Package stubs generate but there aren't very many synthesizers.
+2. CompositionBase is functional and serves as the base class for all synthesizers, providing common methods and properties.
+2. LexicalSimplexSynthesizer is functional and can synthesize lexical simplex structures from vocab data and shapes, basically legacy with more power and a better interface.
+3. WordNetSynthesizer is a placeholder for future development, can be made work with a tweak or two but might be broken.
+
+### Lexical Todo
+1. Implement more synthesis methods and options for different types of vocabularies and shapes.
+2. Integrate with more datasets and vocabularies for broader applicability.
+3. Optimize performance for large-scale vocabularies with flags for preloading, caching, batching
+
+### Image Progress
+1. Basically nothing implemented yet, everything can be generated using the factory structure but image + text synthesis isn't implemented yet.
+
+### Image Todo
+1. Implement image-based synthesis methods for generating symbolic lattice structures from images for advanced embedding and multimodal applications.
+2. Integrate with image datasets and vocabularies for broader applicability including multiple standard types of datasets like cifar100 for ease of access.
+3. Optimize performance for large-scale image datasets with flags for preloading, caching, batching, workers, devices, and compression methods.
+4. Develop multiple visualization tools for exploring and analyzing the geometric structures of the vocabulary.
 
 `geovocab2.fusion`
 - composition_base.py for the base composition class and common character embedding synthesis methods.
@@ -164,19 +202,19 @@ Meant to be independent and reusable for various synthesis tasks.
 - X Structure refitting for baseline new structure established
 - Trainer module not yet implemented
 
-## V2 Todo
+## V2 Lexical Todo
 - Implement the missing formulas and transformations
   - X Formula bank established for housing the formulas as they are implemented.
   - X Synthesize and test Nikola-Menger resonance axiom formula structures with finite and infinite lattice structures
-  - Chaos theory controllers for dynamic adjustments
+  - X Chaos theory controllers for dynamic adjustments
   - X Chaos-Menger transformations for dynamic structural adjustments
-  - Implement the Rose score magnitude and trajectory-based loss functions
+  - X Implement the Rose score magnitude and trajectory-based loss functions
   - Integrate with existing symbolic loss functions for NLP tasks
   - X Implement Graham infinite and finite transformations with masking capabilities
   - RoPE-like theta controllers and rotational adjustments for dynamic synthesis pre and post-processing
-  - RoSE controllers for advanced resonance and alignment tuning
-    - Multi-structural adjustments for targeting specific resonance patterns and alignments
-    - Multi-dimensional adjustments for cross-contrastive synthesis and transformations
+  - X RoSE controllers for advanced resonance and alignment tuning
+    - X Multi-structural adjustments for targeting specific resonance patterns and alignments
+    - X Multi-dimensional adjustments for cross-contrastive synthesis and transformations
 - X Advanced lexical controllers for fine-tuning synthesis parameters
   - Currently they are rigid and nonconformant to datasets and vocabularies
 - X Implement more control over sparse and enriched content types
@@ -207,12 +245,29 @@ Meant to be independent and reusable for various synthesis tasks.
 
 I work fast as anyone who observes knows - I will be pushing updates frequently as I refine and expand the codebase.
 
-## The Trainer is coming.
-
+## Trainer Todo
+```
+# absolute import path: from geovocab2.trainer.trainer_base import TrainerBase
+# Currently unimplemented for hierarchy will be supported.
+```
 This exposes the more complex symbolic lattice operations that I've been researching and advancing.
 Some aren't perfect yet, but this code is available for experimentation and further development.
 
+### Current powerful features implemented
+1. There's a ton of model architectures available for experimentation and expansion, if you feel like picking the pieces out and working with them. This will be streamlined and uniformied into an ease-of-access system like formulas are.
+2. Multiple loss functions that may or may not help, with a few that guarantee full cohesive assistance with some variations of models. These aren't generic enough and require formula solidification.
+3. ModelBase is partially implemented and requires expansion.
+4. TrainerBase is partially implemented and requires expansion.
+5. LossBase is partially implemented and requires expansion.
 
+### Missing important features
+1. Logger isn't implemented yet, but will be added later. Will likely use TensorBoard and keep a manifest in a repo shared by multiple models for easy access and comparison.
+2. Checkpointing is whatever, janky and working for my current trainer. Needs proper implementation - likely discarding PT and moving directly to safetensors only.
+3. AdamW and SGD optimizers have specific settings for cantor, cayley-menger, and other symbolic lattice operations. These need to be refined and expanded for more complex operations and presets for layers.
+4. Schedulers don't seem to matter yet unless they are directly tied to multiple LR for multiple types of layers. This will be expanded and refined through experimentation.
+5. Mixed precision training currently has little to no impact on performance, but this will require further testing and refinement.
+6. Distributed training is not yet implemented, but will be added later as one of the primary goals for multi-gpu.
+7. There is no GUI and likely never will be in this repo. This is meant to be used as a library and integrated into existing pipelines and workflows.
 
 ## 📖 License
 

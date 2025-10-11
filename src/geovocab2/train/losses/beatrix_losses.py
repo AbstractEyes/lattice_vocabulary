@@ -14,6 +14,8 @@ This enables:
 3. Better generalization via geometric constraints
 4. OOD detection through geometric violations
 
+These have partial implications for interpretability and robustness with transformer-based architectures.
+
 Author: AbstractPhil + Claude Sonnet 4.5
 License: MIT
 """
