@@ -1,577 +1,23 @@
 """
-David - The Multi-Scale Crystal Classifier - Core AI Modules
-=================================================
-Modular components for multi-scale deep learning with crystal-based representations.
+David - Multi-Scale Crystal Classifier
+========================================
+Model implementation for multi-scale deep learning with crystal representations.
 
 Author: AbstractPhil
-- Assistant: GPT-4o Mirel
-- Refactor: Claude Sonnet 4.5
-
-
-MIT Licensed
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional, Union
-from enum import Enum
 import math
 
-
-# ============================================================================
-# CONFIGURATION ENUMS
-# ============================================================================
-
-class SharingMode(Enum):
-    """Parameter sharing strategies across scales."""
-    FULLY_SHARED = "fully_shared"      # All scales share feature extractor
-    PARTIAL_SHARED = "partial_shared"  # Shared base + scale-specific heads
-    DECOUPLED = "decoupled"            # Independent parameters per scale
-    HIERARCHICAL = "hierarchical"      # Progressive refinement across scales
-
-
-class FusionMode(Enum):
-    """Multi-scale prediction fusion strategies."""
-    WEIGHTED_SUM = "weighted_sum"          # Learnable weighted combination
-    ATTENTION = "attention"                # Attention-based fusion
-    GATED = "gated"                        # Gated mixture of experts
-    HIERARCHICAL_TREE = "hierarchical_tree"  # Tree-structured gating
-    DEEP_EFFICIENCY = "deep_efficiency"    # Efficient multi-expert gating
-    MAX_CONFIDENCE = "max_confidence"      # Select highest confidence scale
-    PROGRESSIVE = "progressive"            # Fixed progressive weighting
-
-
-"""
-David Configuration System - Add this to the top of david.py after imports
-"""
-
-import json
-from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional
-from pathlib import Path
-
-
-# ============================================================================
-# DAVID CONFIGURATION
-# ============================================================================
-
-@dataclass
-class DavidArchitectureConfig:
-    """
-    Configuration for David's architecture.
-
-    This config handles all architectural decisions for the multi-scale
-    crystal classifier, including scale sizes, sharing strategies, fusion
-    methods, and progressive training schedules.
-    """
-
-    # Core architecture
-    feature_dim: int = 512
-    num_classes: int = 1000
-    scales: List[int] = field(default_factory=lambda: [256, 512, 768, 1024])
-    sharing_mode: str = "partial_shared"  # fully_shared, partial_shared, decoupled, hierarchical
-    fusion_mode: str = "hierarchical_tree"  # attention, gated, hierarchical_tree, deep_efficiency, etc.
-
-    # Projection head configuration
-    use_belly: bool = True  # Use 2x expansion bottleneck in projection heads
-    belly_expand: float = 2.0  # Expansion factor for belly (if use_belly=True)
-
-    # Shared feature extraction (for FULLY_SHARED and PARTIAL_SHARED modes)
-    shared_feature_dim: int = 768
-    shared_layers: int = 2
-    shared_dropout: float = 0.1
-
-    # Fusion configuration
-    fusion_temperature: float = 1.0  # Temperature for attention/gated fusion
-    fusion_dropout: float = 0.1
-
-    # Hierarchical tree gating (when fusion_mode="hierarchical_tree")
-    tree_depth: int = 3
-
-    # Deep efficiency gating (when fusion_mode="deep_efficiency")
-    num_experts: int = 3
-    compression_ratio: int = 4
-
-    # Progressive training
-    progressive_training: bool = True
-    scale_warmup_epochs: Optional[Dict[int, int]] = None
-
-    def __post_init__(self):
-        """Validate and set defaults."""
-        # Auto-generate warmup schedule if not provided
-        if self.scale_warmup_epochs is None and self.progressive_training:
-            self.scale_warmup_epochs = {}
-            for i, scale in enumerate(self.scales):
-                # First scale active immediately, others stagger by 3 epochs
-                self.scale_warmup_epochs[scale] = i * 3
-
-        # Validate modes
-        valid_sharing = ["fully_shared", "partial_shared", "decoupled", "hierarchical"]
-        if self.sharing_mode not in valid_sharing:
-            raise ValueError(f"sharing_mode must be one of {valid_sharing}")
-
-        valid_fusion = [
-            "attention", "gated", "hierarchical_tree", "deep_efficiency",
-            "weighted_sum", "max_confidence", "progressive"
-        ]
-        if self.fusion_mode not in valid_fusion:
-            raise ValueError(f"fusion_mode must be one of {valid_fusion}")
-
-        # Validate scales
-        if not self.scales:
-            raise ValueError("scales cannot be empty")
-        if not all(isinstance(s, int) and s > 0 for s in self.scales):
-            raise ValueError("All scales must be positive integers")
-
-    @classmethod
-    def from_json(cls, path: str) -> 'DavidArchitectureConfig':
-        """Load config from JSON file."""
-        with open(path, 'r') as f:
-            data = json.load(f)
-        # Convert string keys back to ints for scale_warmup_epochs
-        if 'scale_warmup_epochs' in data and data['scale_warmup_epochs']:
-            data['scale_warmup_epochs'] = {
-                int(k): v for k, v in data['scale_warmup_epochs'].items()
-            }
-        return cls(**data)
-
-    def to_json(self, path: str):
-        """Save config to JSON file."""
-        data = asdict(self)
-        # Convert int keys to strings for JSON serialization
-        if data['scale_warmup_epochs']:
-            data['scale_warmup_epochs'] = {
-                str(k): v for k, v in data['scale_warmup_epochs'].items()
-            }
-        with open(path, 'w') as f:
-            json.dump(data, f, indent=2)
-
-    def to_dict(self) -> dict:
-        """Convert config to dictionary."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> 'DavidArchitectureConfig':
-        """Create config from dictionary."""
-        return cls(**data)
-
-    def __repr__(self):
-        return (
-            f"DavidArchitectureConfig(\n"
-            f"  feature_dim={self.feature_dim},\n"
-            f"  num_classes={self.num_classes},\n"
-            f"  scales={self.scales},\n"
-            f"  sharing_mode='{self.sharing_mode}',\n"
-            f"  fusion_mode='{self.fusion_mode}',\n"
-            f"  use_belly={self.use_belly},\n"
-            f"  progressive_training={self.progressive_training}\n"
-            f")"
-        )
-
-
-# ============================================================================
-# PRESET CONFIGURATIONS
-# ============================================================================
-
-class DavidPresets:
-    """
-    Collection of preset configurations for different use cases.
-    """
-
-    @staticmethod
-    def small_fast() -> DavidArchitectureConfig:
-        """
-        Small, fast model for quick iteration.
-        Best for: Prototyping, limited compute
-        """
-        return DavidArchitectureConfig(
-            feature_dim=512,
-            num_classes=1000,
-            scales=[256, 512],
-            sharing_mode="fully_shared",
-            fusion_mode="weighted_sum",
-            use_belly=False,
-            shared_feature_dim=512,
-            shared_layers=1,
-            progressive_training=False,
-        )
-
-    @staticmethod
-    def balanced() -> DavidArchitectureConfig:
-        """
-        Balanced configuration - good accuracy/speed tradeoff.
-        Best for: General use, ImageNet classification
-        """
-        return DavidArchitectureConfig(
-            feature_dim=512,
-            num_classes=1000,
-            scales=[256, 512, 768, 1024],
-            sharing_mode="partial_shared",
-            fusion_mode="hierarchical_tree",
-            use_belly=True,
-            belly_expand=2.0,
-            shared_feature_dim=768,
-            shared_layers=2,
-            tree_depth=3,
-            progressive_training=True,
-        )
-
-    @staticmethod
-    def high_accuracy() -> DavidArchitectureConfig:
-        """
-        Maximum accuracy configuration.
-        Best for: Final models, competitions
-        """
-        return DavidArchitectureConfig(
-            feature_dim=512,
-            num_classes=1000,
-            scales=[256, 512, 768, 1024, 1280],
-            sharing_mode="decoupled",
-            fusion_mode="deep_efficiency",
-            use_belly=True,
-            belly_expand=2.5,
-            num_experts=5,
-            compression_ratio=2,
-            progressive_training=True,
-            scale_warmup_epochs={256: 0, 512: 3, 768: 6, 1024: 9, 1280: 12}
-        )
-
-    @staticmethod
-    def hierarchical_refinement() -> DavidArchitectureConfig:
-        """
-        Hierarchical mode - coarse to fine refinement.
-        Best for: Tasks requiring progressive refinement
-        """
-        return DavidArchitectureConfig(
-            feature_dim=512,
-            num_classes=1000,
-            scales=[256, 512, 768, 1024],
-            sharing_mode="hierarchical",
-            fusion_mode="progressive",
-            use_belly=True,
-            progressive_training=True,
-        )
-
-    @staticmethod
-    def clip_vit_b16() -> DavidArchitectureConfig:
-        """CLIP ViT-B/16 optimized config."""
-        return DavidArchitectureConfig(
-            feature_dim=512,
-            num_classes=1000,
-            scales=[256, 512, 768, 1024],
-            sharing_mode="partial_shared",
-            fusion_mode="hierarchical_tree",
-            use_belly=True,
-            progressive_training=True,
-        )
-
-    @staticmethod
-    def clip_vit_l14() -> DavidArchitectureConfig:
-        """CLIP ViT-L/14 optimized config."""
-        return DavidArchitectureConfig(
-            feature_dim=768,
-            num_classes=1000,
-            scales=[384, 768, 1024, 1280],
-            sharing_mode="partial_shared",
-            fusion_mode="deep_efficiency",
-            use_belly=True,
-            shared_feature_dim=1024,
-            num_experts=4,
-            progressive_training=True,
-        )
-
-    @staticmethod
-    def clip_vit_h14() -> DavidArchitectureConfig:
-        """CLIP ViT-H/14 optimized config."""
-        return DavidArchitectureConfig(
-            feature_dim=1024,
-            num_classes=1000,
-            scales=[512, 768, 1024, 1536],
-            sharing_mode="partial_shared",
-            fusion_mode="deep_efficiency",
-            use_belly=True,
-            shared_feature_dim=1280,
-            num_experts=5,
-            compression_ratio=3,
-            progressive_training=True,
-        )
-
-
-# ============================================================================
-# MODIFIED DAVID CLASS WITH CONFIG SUPPORT
-# ============================================================================
-
-# Add this method to the David class (after __init__):
-
-def __init__(
-        self,
-        feature_dim: Optional[int] = None,
-        num_classes: Optional[int] = None,
-        scales: Optional[List[int]] = None,
-        sharing_mode: Optional[SharingMode] = None,
-        fusion_mode: Optional[FusionMode] = None,
-        shared_feature_dim: Optional[int] = None,
-        shared_layers: Optional[int] = None,
-        shared_dropout: Optional[float] = None,
-        fusion_temperature: Optional[float] = None,
-        fusion_dropout: Optional[float] = None,
-        tree_depth: Optional[int] = None,
-        num_experts: Optional[int] = None,
-        compression_ratio: Optional[int] = None,
-        progressive_training: Optional[bool] = None,
-        scale_warmup_epochs: Optional[Dict[int, int]] = None,
-        use_belly: Optional[bool] = None,
-        belly_expand: Optional[float] = None,
-        config: Optional[DavidArchitectureConfig] = None
-):
-    """
-    Initialize David with multi-scale architecture.
-
-    Can be initialized either:
-    1. From explicit parameters (backward compatible)
-    2. From a DavidArchitectureConfig object
-    3. Mix of both (config provides defaults, explicit params override)
-
-    Args:
-        config: DavidArchitectureConfig object (if provided, serves as defaults)
-        ... (all other parameters same as before)
-    """
-    super().__init__()
-
-    # If config provided, use it as defaults
-    if config is not None:
-        feature_dim = feature_dim or config.feature_dim
-        num_classes = num_classes or config.num_classes
-        scales = scales or config.scales
-
-        # Convert string modes to enums if needed
-        if sharing_mode is None:
-            sharing_mode = getattr(SharingMode, config.sharing_mode.upper())
-        if fusion_mode is None:
-            fusion_mode = getattr(FusionMode, config.fusion_mode.upper())
-
-        shared_feature_dim = shared_feature_dim or config.shared_feature_dim
-        shared_layers = shared_layers or config.shared_layers
-        shared_dropout = shared_dropout or config.shared_dropout
-        fusion_temperature = fusion_temperature or config.fusion_temperature
-        fusion_dropout = fusion_dropout or config.fusion_dropout
-        tree_depth = tree_depth or config.tree_depth
-        num_experts = num_experts or config.num_experts
-        compression_ratio = compression_ratio or config.compression_ratio
-        progressive_training = progressive_training if progressive_training is not None else config.progressive_training
-        scale_warmup_epochs = scale_warmup_epochs or config.scale_warmup_epochs
-        use_belly = use_belly if use_belly is not None else config.use_belly
-        belly_expand = belly_expand or config.belly_expand
-    else:
-        # Set defaults if no config and no explicit values
-        feature_dim = feature_dim or 512
-        num_classes = num_classes or 1000
-        scales = scales or [256, 512, 768, 1024]
-        sharing_mode = sharing_mode or SharingMode.PARTIAL_SHARED
-        fusion_mode = fusion_mode or FusionMode.GATED
-        shared_feature_dim = shared_feature_dim or 768
-        shared_layers = shared_layers or 2
-        shared_dropout = shared_dropout or 0.1
-        fusion_temperature = fusion_temperature or 1.0
-        fusion_dropout = fusion_dropout or 0.1
-        tree_depth = tree_depth or 3
-        num_experts = num_experts or 3
-        compression_ratio = compression_ratio or 4
-        progressive_training = progressive_training if progressive_training is not None else True
-        scale_warmup_epochs = scale_warmup_epochs or {s: 0 for s in scales}
-        use_belly = use_belly if use_belly is not None else True
-        belly_expand = belly_expand or 2.0
-
-    self.feature_dim = feature_dim
-    self.num_classes = num_classes
-    self.scales = scales
-    self.sharing_mode = sharing_mode
-    self.fusion_mode = fusion_mode
-    self.progressive_training = progressive_training
-    self.scale_warmup_epochs = scale_warmup_epochs
-    self.use_belly = use_belly
-    self.belly_expand = belly_expand
-
-    # David's memory
-    self.current_epoch = 0
-    self.scale_accuracies = {s: [] for s in self.scales}
-
-    # Build David's neural architecture
-    self._build_architecture(
-        shared_feature_dim=shared_feature_dim,
-        shared_layers=shared_layers,
-        shared_dropout=shared_dropout
-    )
-
-    # Build David's fusion strategy
-    self._build_fusion(
-        shared_feature_dim=shared_feature_dim,
-        temperature=fusion_temperature,
-        dropout=fusion_dropout,
-        tree_depth=tree_depth,
-        num_experts=num_experts,
-        compression_ratio=compression_ratio
-    )
-
-    # David's confidence in each scale
-    self.register_buffer(
-        "scale_weights",
-        torch.tensor([1.0 for _ in self.scales])
-    )
-
-
-# Add these class methods to David:
-
-@classmethod
-def from_config(cls, config: DavidArchitectureConfig) -> 'David':
-    """
-    Create David from a configuration object.
-
-    Args:
-        config: DavidArchitectureConfig instance
-
-    Returns:
-        Initialized David model
-
-    Example:
-        >>> config = DavidPresets.balanced()
-        >>> david = David.from_config(config)
-    """
-    return cls(config=config)
-
-
-@classmethod
-def from_preset(cls, preset_name: str) -> 'David':
-    """
-    Create David from a named preset.
-
-    Args:
-        preset_name: One of 'small_fast', 'balanced', 'high_accuracy',
-                    'hierarchical_refinement', 'clip_vit_b16', 'clip_vit_l14',
-                    'clip_vit_h14'
-
-    Returns:
-        Initialized David model
-
-    Example:
-        >>> david = David.from_preset('balanced')
-    """
-    preset_map = {
-        'small_fast': DavidPresets.small_fast,
-        'balanced': DavidPresets.balanced,
-        'high_accuracy': DavidPresets.high_accuracy,
-        'hierarchical_refinement': DavidPresets.hierarchical_refinement,
-        'clip_vit_b16': DavidPresets.clip_vit_b16,
-        'clip_vit_l14': DavidPresets.clip_vit_l14,
-        'clip_vit_h14': DavidPresets.clip_vit_h14,
-    }
-
-    if preset_name not in preset_map:
-        raise ValueError(
-            f"Unknown preset '{preset_name}'. "
-            f"Available presets: {list(preset_map.keys())}"
-        )
-
-    config = preset_map[preset_name]()
-    return cls.from_config(config)
-
-
-def get_config(self) -> DavidArchitectureConfig:
-    """
-    Extract current configuration from the model.
-
-    Returns:
-        DavidArchitectureConfig representing current model configuration
-    """
-    return DavidArchitectureConfig(
-        feature_dim=self.feature_dim,
-        num_classes=self.num_classes,
-        scales=self.scales,
-        sharing_mode=self.sharing_mode.value,
-        fusion_mode=self.fusion_mode.value,
-        use_belly=self.use_belly,
-        belly_expand=self.belly_expand,
-        progressive_training=self.progressive_training,
-        scale_warmup_epochs=self.scale_warmup_epochs,
-    )
-
-
-# Update _build_architecture to use self.use_belly and self.belly_expand:
-
-def _build_architecture(self, shared_feature_dim: int,
-                        shared_layers: int, shared_dropout: float):
-    """Build David's processing architecture based on sharing mode."""
-
-    if self.sharing_mode == SharingMode.FULLY_SHARED:
-        # David shares everything - maximum parameter efficiency
-        self.shared_extractor = SharedFeatureExtractor(
-            self.feature_dim,
-            shared_feature_dim,
-            shared_layers,
-            shared_dropout
-        )
-        self.heads = nn.ModuleDict({
-            str(scale): ScaleSpecificHead(
-                shared_feature_dim,
-                scale,
-                use_belly=self.use_belly,
-                belly_expand=self.belly_expand
-            )
-            for scale in self.scales
-        })
-
-    elif self.sharing_mode == SharingMode.PARTIAL_SHARED:
-        # David shares a base, then specializes - balanced approach
-        self.shared_base = nn.Linear(self.feature_dim, shared_feature_dim)
-        self.heads = nn.ModuleDict({
-            str(scale): ScaleSpecificHead(
-                shared_feature_dim,
-                scale,
-                use_belly=self.use_belly,
-                belly_expand=self.belly_expand
-            )
-            for scale in self.scales
-        })
-
-    elif self.sharing_mode == SharingMode.DECOUPLED:
-        # David keeps scales independent - maximum flexibility
-        self.heads = nn.ModuleDict({
-            str(scale): ScaleSpecificHead(
-                self.feature_dim,
-                scale,
-                use_belly=self.use_belly,
-                belly_expand=self.belly_expand
-            )
-            for scale in self.scales
-        })
-
-    elif self.sharing_mode == SharingMode.HIERARCHICAL:
-        # David refines progressively - coarse to fine
-        for i, scale in enumerate(self.scales):
-            if i == 0:
-                # First scale processes directly
-                setattr(self, f'head_{scale}',
-                        ScaleSpecificHead(
-                            self.feature_dim, scale,
-                            use_belly=self.use_belly,
-                            belly_expand=self.belly_expand
-                        ))
-            else:
-                # Later scales refine previous outputs
-                prev_scale = self.scales[i - 1]
-                setattr(self, f'refine_{scale}', nn.Sequential(
-                    nn.Linear(prev_scale + self.feature_dim, scale),
-                    nn.ReLU()
-                ))
-                setattr(self, f'head_{scale}',
-                        ScaleSpecificHead(
-                            scale, scale,
-                            use_belly=self.use_belly,
-                            belly_expand=self.belly_expand
-                        ))
-
-
+from geovocab2.train.config.david_config import (
+    DavidArchitectureConfig,
+    DavidPresets,
+    SharingMode,
+    FusionMode
+)
 
 
 # ============================================================================
@@ -579,12 +25,7 @@ def _build_architecture(self, shared_feature_dim: int,
 # ============================================================================
 
 class RoseLoss(nn.Module):
-    """
-    Rose Loss with pentachora role weighting.
-
-    Implements a margin-based loss using crystal vertex roles (anchor, need,
-    relation, purpose, observer) with temperature scaling.
-    """
+    """Rose Loss with pentachora role weighting."""
 
     def __init__(self, margin: float = 3.0, temperature: float = 0.71,
                  role_weights: Optional[Dict[str, float]] = None):
@@ -612,27 +53,15 @@ class RoseLoss(nn.Module):
 
     def forward(self, z: torch.Tensor, crystals: torch.Tensor,
                 targets: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            z: Normalized embeddings [B, D]
-            crystals: Crystal vertices [C, 5, D]
-            targets: Target class indices [B]
-
-        Returns:
-            Scalar loss value
-        """
         crystals = crystals.to(z.device)
         role_weights = self.role_weights.to(z.device)
 
-        # Normalize and compute cosine similarities
         crystals_norm = F.normalize(crystals, dim=-1)
         cos_sim = torch.einsum("bd,cvd->bcv", z, crystals_norm)
 
-        # Apply role weighting and temperature
         rose_scores = (cos_sim * role_weights.view(1, 1, 5)).sum(dim=-1)
         rose_scores = rose_scores / self.temperature
 
-        # Margin-based loss
         true_scores = rose_scores.gather(1, targets.view(-1, 1)).squeeze(1)
         mask = torch.zeros_like(rose_scores, dtype=torch.bool)
         mask.scatter_(1, targets.view(-1, 1), True)
@@ -643,25 +72,11 @@ class RoseLoss(nn.Module):
 
 
 class CayleyChaosLoss(nn.Module):
-    """
-    Batched Cayley-Menger chaos loss for geometric regularization.
+    """Batched Cayley-Menger chaos loss for geometric regularization."""
 
-    Penalizes degenerate or chaotic pentachora by measuring:
-    - Volume (via Cayley-Menger determinant)
-    - Edge length uniformity
-    - Gram matrix condition number
-
-    Fully vectorized for efficient batch processing across multiple scales.
-    """
-
-    def __init__(
-            self,
-            volume_floor: float = 1e-4,
-            chaos_scale: float = 1.0,
-            edge_dev_weight: float = 0.5,
-            gram_weight: float = 0.1,
-            use_sqrt_volume: bool = True
-    ):
+    def __init__(self, volume_floor: float = 1e-4, chaos_scale: float = 1.0,
+                 edge_dev_weight: float = 0.5, gram_weight: float = 0.1,
+                 use_sqrt_volume: bool = True):
         super().__init__()
         self.volume_floor = volume_floor
         self.chaos_scale = chaos_scale
@@ -669,12 +84,10 @@ class CayleyChaosLoss(nn.Module):
         self.gram_weight = gram_weight
         self.use_sqrt_volume = use_sqrt_volume
 
-        # Pre-compute upper triangular indices for edge extraction (cached)
         self.register_buffer('_triu_i', None)
         self.register_buffer('_triu_j', None)
 
     def _get_triu_indices(self, device: torch.device):
-        """Cache upper triangular indices for edge extraction."""
         if self._triu_i is None or self._triu_i.device != device:
             indices = torch.triu_indices(5, 5, offset=1, device=device)
             self._triu_i = indices[0]
@@ -682,158 +95,49 @@ class CayleyChaosLoss(nn.Module):
         return self._triu_i, self._triu_j
 
     def compute_cayley_menger_volume(self, X: torch.Tensor) -> torch.Tensor:
-        """
-        Compute volume using Cayley-Menger determinant.
-
-        Args:
-            X: Pentachora vertices [B, 5, D]
-
-        Returns:
-            volumes: [B] tensor of volumes (or volume^2 if not using sqrt)
-        """
         B, N, D = X.shape
-
-        # Compute pairwise squared distances [B, 5, 5]
-        # More efficient than using nested unsqueeze
-        diff = X.unsqueeze(2) - X.unsqueeze(1)  # [B, 5, 5, D]
-        distsq = (diff * diff).sum(dim=-1)  # [B, 5, 5]
-
-        # Build Cayley-Menger determinant matrix [B, 6, 6]
-        # | 0  1  1  1  1  1 |
-        # | 1 d01 d02 d03 d04|
-        # | 1 d10 d12 d13 d14|
-        # | 1 d20 d21 d23 d24|
-        # | 1 d30 d31 d32 d34|
-        # | 1 d40 d41 d42 d43|
-
-        M = torch.zeros((B, 6, 6), dtype=X.dtype, device=X.device)
-
-        # Fill first row and column with 1s (except top-left)
-        M[:, 0, 1:] = 1.0
-        M[:, 1:, 0] = 1.0
-
-        # Fill distance square matrix
-        M[:, 1:, 1:] = distsq
-
-        # Compute determinant [B]
-        det = torch.linalg.det(M)
-
-        # Volume formula: V^2 = -det(CM) / 288 for 4-simplex
-        # For pentachora (4-simplex): -det / 9216 = -det / (288 * 32)
-        volume_sq = (-det / 9216.0).clamp(min=0.0)
-
-        if self.use_sqrt_volume:
-            volume = volume_sq.sqrt()
-        else:
-            volume = volume_sq
-
-        return volume
-
-    def compute_edge_uniformity(self, X: torch.Tensor) -> torch.Tensor:
-        """
-        Compute edge length uniformity penalty.
-
-        Args:
-            X: Pentachora vertices [B, 5, D]
-
-        Returns:
-            edge_dev: [B] tensor of edge deviation scores
-        """
-        # Pairwise distances [B, 5, 5]
         diff = X.unsqueeze(2) - X.unsqueeze(1)
         distsq = (diff * diff).sum(dim=-1)
 
-        # Extract upper triangular edges (10 edges per pentachora)
+        M = torch.zeros((B, 6, 6), dtype=X.dtype, device=X.device)
+        M[:, 0, 1:] = 1.0
+        M[:, 1:, 0] = 1.0
+        M[:, 1:, 1:] = distsq
+
+        det = torch.linalg.det(M)
+        volume_sq = (-det / 9216.0).clamp(min=0.0)
+
+        return volume_sq.sqrt() if self.use_sqrt_volume else volume_sq
+
+    def compute_edge_uniformity(self, X: torch.Tensor) -> torch.Tensor:
+        diff = X.unsqueeze(2) - X.unsqueeze(1)
+        distsq = (diff * diff).sum(dim=-1)
+
         triu_i, triu_j = self._get_triu_indices(X.device)
-        edge_lengths = distsq[:, triu_i, triu_j]  # [B, 10]
+        edge_lengths = distsq[:, triu_i, triu_j]
 
-        # Compute coefficient of variation (std / mean)
-        edge_mean = edge_lengths.mean(dim=1)  # [B]
-        edge_std = edge_lengths.std(dim=1)  # [B]
-
-        # Normalize by mean (coefficient of variation)
+        edge_mean = edge_lengths.mean(dim=1)
+        edge_std = edge_lengths.std(dim=1)
         edge_dev = edge_std / edge_mean.clamp(min=1e-6)
 
         return edge_dev
 
     def compute_gram_condition(self, X: torch.Tensor) -> torch.Tensor:
-        """
-        Compute Gram matrix condition penalty.
-
-        Args:
-            X: Pentachora vertices [B, 5, D]
-
-        Returns:
-            gram_penalty: [B] tensor of condition penalties
-        """
-        # Center the vertices [B, 5, D]
         centered = X - X.mean(dim=1, keepdim=True)
-
-        # Compute Gram matrix [B, 5, 5]
         gram = torch.bmm(centered, centered.transpose(1, 2))
 
-        # Trace (sum of eigenvalues) [B]
         gram_trace = torch.diagonal(gram, dim1=1, dim2=2).sum(dim=1)
-
-        # Determinant (product of eigenvalues) [B]
         gram_det = torch.linalg.det(gram)
 
-        # Condition penalty: want det ≈ trace (well-conditioned)
-        # Penalize when det << trace (ill-conditioned)
         condition = gram_det / gram_trace.clamp(min=1e-6)
         gram_penalty = F.relu(1.0 - condition)
 
         return gram_penalty
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        """
-        Compute batched chaos loss.
-
-        Args:
-            X: Pentachora vertices [B, 5, D]
-
-        Returns:
-            Scalar loss value
-        """
         B, N, D = X.shape
-        assert N == 5, f"Expected 5 vertices (pentachora), got {N}"
+        assert N == 5, f"Expected 5 vertices, got {N}"
 
-        # 1. Volume penalty (degeneracy)
-        volumes = self.compute_cayley_menger_volume(X)  # [B]
-        chaos_penalty = F.relu(self.volume_floor - volumes)  # [B]
-        chaos_loss = chaos_penalty.mean()
-
-        # 2. Edge uniformity penalty
-        edge_dev = self.compute_edge_uniformity(X)  # [B]
-        edge_loss = edge_dev.mean()
-
-        # 3. Gram matrix condition penalty
-        if self.gram_weight > 0:
-            gram_penalty = self.compute_gram_condition(X)  # [B]
-            gram_loss = gram_penalty.mean()
-        else:
-            gram_loss = 0.0
-
-        # Combine losses
-        total_loss = (
-                self.chaos_scale * chaos_loss +
-                self.edge_dev_weight * edge_loss +
-                self.gram_weight * gram_loss
-        )
-
-        return total_loss
-
-    def forward_detailed(self, X: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """
-        Compute loss with detailed component breakdown.
-
-        Returns:
-            Dictionary with individual loss components
-        """
-        B, N, D = X.shape
-        assert N == 5, f"Expected 5 vertices (pentachora), got {N}"
-
-        # Compute all components
         volumes = self.compute_cayley_menger_volume(X)
         chaos_penalty = F.relu(self.volume_floor - volumes)
         chaos_loss = chaos_penalty.mean()
@@ -847,397 +151,22 @@ class CayleyChaosLoss(nn.Module):
             gram_loss = gram_penalty.mean()
 
         total_loss = (
-                self.chaos_scale * chaos_loss +
-                self.edge_dev_weight * edge_loss +
-                self.gram_weight * gram_loss
+            self.chaos_scale * chaos_loss +
+            self.edge_dev_weight * edge_loss +
+            self.gram_weight * gram_loss
         )
 
-        return {
-            'total': total_loss,
-            'chaos': chaos_loss,
-            'edge_uniformity': edge_loss,
-            'gram_condition': gram_loss,
-            'mean_volume': volumes.mean(),
-            'min_volume': volumes.min(),
-            'max_volume': volumes.max()
-        }
+        return total_loss
 
-# ============================================================================
-# MODEL BUILDING BLOCKS
-# ============================================================================
-class SharedFeatureExtractor(nn.Module):
-    """Shared feature extraction layers for multi-scale processing."""
-
-    def __init__(self, input_dim: int,
-                 output_dim: int,
-                 num_layers: int = 2,
-                 dropout: float = 0.1):
-        super().__init__()
-
-        layers = []
-        hidden_dim = (input_dim + output_dim) // 2
-
-        # Input layer
-        layers.extend([
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        ])
-
-        # Hidden layers
-        for _ in range(num_layers - 2):
-            layers.extend([
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout)
-            ])
-
-        # Output layer
-        if num_layers > 1:
-            layers.extend([
-                nn.Linear(hidden_dim, output_dim),
-                nn.LayerNorm(output_dim)
-            ])
-
-        self.extractor = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.extractor(x)
-
-
-class ScaleSpecificHead(nn.Module):
-    """
-    Scale-specific projection head with optional bottleneck.
-
-    Projects features to crystal embedding space at a specific scale.
-    """
-
-    def __init__(self,
-                 input_dim: int,
-                 crystal_dim: int,
-                 use_belly: bool = True,
-                 belly_expand: float = 2.0):
-        super().__init__()
-        self.crystal_dim = crystal_dim
-
-        if use_belly:
-            # Bottleneck projection
-            belly_dim = int(crystal_dim * belly_expand)
-            self.projection = nn.Sequential(
-                nn.Linear(input_dim, belly_dim),
-                nn.ReLU(),
-                nn.Dropout(1.0 / math.sqrt(crystal_dim)),
-                nn.Linear(belly_dim, crystal_dim, bias=False)
-            )
-        else:
-            # Direct projection
-            self.projection = nn.Linear(input_dim, crystal_dim, bias=False)
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for layer in self.projection.modules():
-            if isinstance(layer, nn.Linear):
-                nn.init.normal_(layer.weight, std=0.02)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-    def forward(self, features: torch.Tensor,
-                anchors: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            features: Input features [B, D_in]
-            anchors: Crystal anchors [C, D_crystal]
-
-        Returns:
-            logits: Classification logits [B, C]
-            z: Normalized embeddings [B, D_crystal]
-        """
-        z = self.projection(features)
-        z = F.normalize(z, dim=-1)
-        logits = (z @ anchors.T) / 0.03  # Temperature scaling
-        return logits, z
-
-
-# ============================================================================
-# FUSION MECHANISMS
-# ============================================================================
-
-class AttentionFusion(nn.Module):
-    """Attention-based fusion of multi-scale predictions."""
-
-    def __init__(self, feature_dim: int, num_scales: int,
-                 temperature: float = 1.0, dropout: float = 0.1):
-        super().__init__()
-        self.query = nn.Linear(feature_dim, num_scales)
-        self.temperature = temperature
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, features: torch.Tensor,
-                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            features: Shared features [B, D]
-            logits_list: List of scale logits, each [B, C]
-
-        Returns:
-            combined: Fused logits [B, C]
-            weights: Attention weights [B, num_scales]
-        """
-        attn_logits = self.query(features)
-        attn_weights = F.softmax(attn_logits / self.temperature, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        combined = torch.zeros_like(logits_list[0])
-        for i, logits in enumerate(logits_list):
-            combined += attn_weights[:, i:i+1] * logits
-
-        return combined, attn_weights
-
-
-class GatedFusion(nn.Module):
-    """Gated mixture of experts fusion."""
-
-    def __init__(self, feature_dim: int, num_scales: int):
-        super().__init__()
-        self.gate = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim // 2),
-            nn.ReLU(),
-            nn.Linear(feature_dim // 2, num_scales),
-            nn.Softmax(dim=-1)
-        )
-
-    def forward(self, features: torch.Tensor,
-                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            features: Shared features [B, D]
-            logits_list: List of scale logits, each [B, C]
-
-        Returns:
-            combined: Fused logits [B, C]
-            gates: Gate weights [B, num_scales]
-        """
-        gates = self.gate(features)
-        combined = torch.zeros_like(logits_list[0])
-        for i, logits in enumerate(logits_list):
-            combined += gates[:, i:i+1] * logits
-        return combined, gates
-
-
-class HierarchicalTreeGating(nn.Module):
-    """
-    Tree-based hierarchical gating for multi-scale fusion.
-
-    Uses a binary tree structure to learn hierarchical scale selection
-    with a depth-controlled architecture.
-    """
-
-    def __init__(self, feature_dim: int, num_scales: int = 5, depth: int = 3):
-        super().__init__()
-        self.num_scales = num_scales
-        self.depth = depth
-
-        # Build tree nodes (binary decisions at each level)
-        self.tree_nodes = nn.ModuleList()
-        for level in range(depth):
-            num_nodes = 2 ** level
-            level_nodes = nn.ModuleList([
-                nn.Sequential(
-                    nn.Linear(feature_dim, 64),
-                    nn.LayerNorm(64),
-                    nn.GELU(),
-                    nn.Dropout(0.1),
-                    nn.Linear(64, 2)
-                ) for _ in range(num_nodes)
-            ])
-            self.tree_nodes.append(level_nodes)
-
-        # Map leaf probabilities to scale weights
-        num_leaves = 2 ** depth
-        self.leaf_to_scale = nn.Sequential(
-            nn.Linear(num_leaves, num_scales * 2),
-            nn.GELU(),
-            nn.Linear(num_scales * 2, num_scales)
-        )
-
-        # Direct gating path (shortcut)
-        self.direct_gate = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim // 4),
-            nn.GELU(),
-            nn.Linear(feature_dim // 4, num_scales)
-        )
-
-        self.combine_weight = nn.Parameter(torch.tensor(0.7))
-
-    def forward(self, features: torch.Tensor,
-                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            features: Input features [B, D]
-            logits_list: List of scale logits, each [B, C]
-
-        Returns:
-            combined: Fused logits [B, C]
-            gates: Final gate weights [B, num_scales]
-        """
-        batch_size = features.shape[0]
-        device = features.device
-
-        # Traverse tree to compute path probabilities
-        path_probs = [torch.ones(batch_size, 1, device=device)]
-
-        for level in range(self.depth):
-            next_probs = []
-            num_nodes = 2 ** level
-
-            for node_idx in range(num_nodes):
-                parent_prob = path_probs[0] if level == 0 else path_probs[node_idx]
-
-                # Binary decision at this node
-                node_logits = self.tree_nodes[level][node_idx](features)
-                node_probs = F.softmax(node_logits / 0.5, dim=-1)
-
-                left_prob = parent_prob * node_probs[:, 0:1]
-                right_prob = parent_prob * node_probs[:, 1:2]
-                next_probs.extend([left_prob, right_prob])
-
-            path_probs = next_probs
-
-        # Convert leaf probabilities to scale gates
-        leaf_probs = torch.cat(path_probs, dim=1)
-        tree_gates = F.softmax(self.leaf_to_scale(leaf_probs), dim=-1)
-
-        # Combine with direct gating
-        direct_gates = F.softmax(self.direct_gate(features), dim=-1)
-        gates = torch.sigmoid(self.combine_weight) * tree_gates + \
-                (1 - torch.sigmoid(self.combine_weight)) * direct_gates
-        gates = gates / gates.sum(dim=-1, keepdim=True)
-
-        # Fuse predictions
-        combined = torch.zeros_like(logits_list[0])
-        for i, logits in enumerate(logits_list):
-            if i < gates.shape[1]:
-                combined += gates[:, i:i+1] * logits
-
-        return combined, gates
-
-
-class DeepEfficiencyGating(nn.Module):
-    """
-    Ultra-efficient gating with cross-attention and sparsity.
-
-    Uses multiple expert pathways with cross-attention aggregation
-    and optional sparse gating for inference efficiency.
-    """
-
-    def __init__(self,
-                 feature_dim: int,
-                 num_scales: int = 5,
-                 compression_ratio: int = 4,
-                 num_experts: int = 3,
-                 expert_dropout: float = 0.1,
-                 attention_dropout: float = 0.1):
-        super().__init__()
-        self.num_scales = num_scales
-        self.num_experts = num_experts
-
-        self.temperature = nn.Parameter(torch.ones(1) * 0.5)
-
-        bottleneck_dim = max(num_scales * 8, feature_dim // compression_ratio)
-
-        # Expert pathways
-        self.experts = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(feature_dim, bottleneck_dim),
-                nn.LayerNorm(bottleneck_dim),
-                nn.GELU(),
-                nn.Dropout(expert_dropout)
-            ) for _ in range(num_experts)
-        ])
-
-        # Cross-attention aggregation
-        self.cross_attention = nn.MultiheadAttention(
-            bottleneck_dim,
-            num_heads=min(8, bottleneck_dim // 8),
-            batch_first=True,
-            dropout=attention_dropout
-        )
-
-        # Multiple gate heads for ensemble
-        self.gate_heads = nn.ModuleList([
-            nn.Linear(bottleneck_dim * num_experts, num_scales)
-            for _ in range(3)
-        ])
-
-        self.head_weights = nn.Parameter(torch.ones(3) / 3)
-        self.scale_bias = nn.Parameter(torch.zeros(num_scales))
-        self.sparsity_threshold = nn.Parameter(torch.tensor(0.1))
-
-    def forward(self,
-                features: torch.Tensor,
-                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            features: Input features [B, D]
-            logits_list: List of scale logits, each [B, C]
-
-        Returns:
-            combined: Fused logits [B, C]
-            gates: Gate weights [B, num_scales] (sparse in eval mode)
-        """
-        # Process through expert pathways
-        expert_outputs = [expert(features) for expert in self.experts]
-        stacked = torch.stack(expert_outputs, dim=1)
-
-        # Cross-attention aggregation
-        attended, _ = self.cross_attention(stacked, stacked, stacked)
-        flattened = attended.reshape(features.shape[0], -1)
-
-        # Ensemble of gate heads
-        gate_outputs = [head(flattened) for head in self.gate_heads]
-        head_weights = F.softmax(self.head_weights, dim=0)
-        combined_gates = sum(w * g for w, g in zip(head_weights, gate_outputs))
-
-        # Temperature-scaled softmax
-        gate_logits = (combined_gates + self.scale_bias) / self.temperature.abs()
-        gates = F.softmax(gate_logits, dim=-1)
-
-        # Sparse gating during inference
-        if not self.training:
-            mask = gates > self.sparsity_threshold
-            sparse_gates = gates * mask
-            sparse_gates = sparse_gates / (sparse_gates.sum(dim=-1, keepdim=True) + 1e-8)
-        else:
-            sparse_gates = gates
-
-        # Fuse predictions
-        combined = torch.zeros_like(logits_list[0])
-        for i, logits in enumerate(logits_list):
-            if i < sparse_gates.shape[1]:
-                combined += sparse_gates[:, i:i+1] * logits
-
-        return combined, sparse_gates
-
-
-# ============================================================================
-# MULTI-SCALE LOSS AGGREGATION
-# ============================================================================
 
 class MultiScaleCrystalLoss(nn.Module):
-    """
-    Aggregate loss across scales with configurable weighting.
-
-    Combines cross-entropy, Rose loss, and Cayley chaos penalties
-    with per-scale balancing and adaptive scheduling.
-    """
+    """Aggregate loss across scales."""
 
     def __init__(self, scales: List[int], num_classes: int = 1000,
                  use_rose_loss: bool = True, use_cayley_loss: bool = True,
                  rose_initial_weight: float = 0.1, rose_max_weight: float = 0.5,
-                 cayley_weight: float = 0.05, scale_loss_balance: Optional[Dict[int, float]] = None):
+                 cayley_weight: float = 0.05,
+                 scale_loss_balance: Optional[Dict[int, float]] = None):
         super().__init__()
 
         self.scales = scales
@@ -1249,7 +178,6 @@ class MultiScaleCrystalLoss(nn.Module):
         self.cayley_weight = cayley_weight
 
         self.scale_balance = scale_loss_balance or {s: 1.0 for s in scales}
-
         self.ce_loss = nn.CrossEntropyLoss()
 
         if use_rose_loss:
@@ -1267,55 +195,38 @@ class MultiScaleCrystalLoss(nn.Module):
                 targets: torch.Tensor,
                 crystals_dict: Dict[int, torch.Tensor],
                 epoch: int = 0) -> Dict[str, torch.Tensor]:
-        """
-        Args:
-            combined_logits: Fused predictions [B, C]
-            scale_logits: Per-scale predictions, list of [B, C]
-            scale_features: Per-scale embeddings, list of [B, D_scale]
-            targets: Ground truth labels [B]
-            crystals_dict: Crystal vertices per scale {scale: [C, 5, D_scale]}
-            epoch: Current training epoch
-
-        Returns:
-            Dictionary of loss components
-        """
         losses = {}
 
-        # Main cross-entropy
         ce_main = self.ce_loss(combined_logits, targets)
         losses['ce_main'] = ce_main
 
-        # Per-scale losses
         total_scale_loss = 0
-        for i, (scale, logits, features) in enumerate(zip(self.scales, scale_logits, scale_features)):
+        for i, (scale, logits, features) in enumerate(
+            zip(self.scales, scale_logits, scale_features)
+        ):
             scale_weight = self.scale_balance.get(scale, 1.0)
 
-            # Scale CE loss
             ce_scale = self.ce_loss(logits, targets)
             losses[f'ce_{scale}'] = ce_scale
             total_scale_loss += scale_weight * ce_scale
 
-            # Rose loss
             if self.use_rose_loss and scale in crystals_dict:
                 rose_loss = self.rose_losses[str(scale)](
                     features, crystals_dict[scale], targets
                 )
                 losses[f'rose_{scale}'] = rose_loss
 
-                # Adaptive weighting
-                progress = epoch / 100  # Assumes max 100 epochs
+                progress = epoch / 100
                 current_weight = self.rose_weight + \
-                                (self.rose_max_weight - self.rose_weight) * progress
+                    (self.rose_max_weight - self.rose_weight) * progress
                 total_scale_loss += current_weight * rose_loss
 
-            # Cayley chaos loss
             if self.use_cayley_loss:
                 batch_crystals = crystals_dict[scale][targets]
                 cayley_loss = self.cayley_loss(batch_crystals)
                 losses[f'cayley_{scale}'] = cayley_loss
                 total_scale_loss += self.cayley_weight * cayley_loss
 
-        # Total loss
         total_loss = ce_main + total_scale_loss / len(self.scales)
         losses['total'] = total_loss
 
@@ -1323,207 +234,426 @@ class MultiScaleCrystalLoss(nn.Module):
 
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# MODEL COMPONENTS
 # ============================================================================
 
-def resize_crystal_anchors(anchors: torch.Tensor, target_dim: int,
-                          method: str = "linear") -> torch.Tensor:
-    """
-    Resize crystal anchors to target dimension via interpolation.
+class SharedFeatureExtractor(nn.Module):
+    """Shared feature extraction layers."""
 
-    Args:
-        anchors: Input anchors [C, D_in]
-        target_dim: Target dimension D_out
-        method: Interpolation method ('linear')
+    def __init__(self, input_dim: int, output_dim: int,
+                 num_layers: int = 2, dropout: float = 0.1):
+        super().__init__()
 
-    Returns:
-        Resized anchors [C, D_out]
-    """
-    C, vocab_dim = anchors.shape
-    device = anchors.device
+        layers = []
+        hidden_dim = (input_dim + output_dim) // 2
 
-    if vocab_dim == target_dim:
-        return anchors
+        layers.extend([
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        ])
 
-    if method == "linear":
-        if target_dim < vocab_dim:
-            # Subsample
-            indices = torch.linspace(0, vocab_dim - 1, target_dim, dtype=torch.long)
-            resized = anchors[:, indices]
+        for _ in range(num_layers - 2):
+            layers.extend([
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ])
+
+        if num_layers > 1:
+            layers.extend([
+                nn.Linear(hidden_dim, output_dim),
+                nn.LayerNorm(output_dim)
+            ])
+
+        self.extractor = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.extractor(x)
+
+
+class ScaleSpecificHead(nn.Module):
+    """Scale-specific projection head with optional bottleneck."""
+
+    def __init__(self, input_dim: int, crystal_dim: int,
+                 use_belly: bool = True, belly_expand: float = 2.0):
+        super().__init__()
+        self.crystal_dim = crystal_dim
+
+        if use_belly:
+            belly_dim = int(crystal_dim * belly_expand)
+            self.projection = nn.Sequential(
+                nn.Linear(input_dim, belly_dim),
+                nn.ReLU(),
+                nn.Dropout(1.0 / math.sqrt(crystal_dim)),
+                nn.Linear(belly_dim, crystal_dim, bias=False)
+            )
         else:
-            # Interpolate
-            resized = F.interpolate(
-                anchors.unsqueeze(1),
-                size=target_dim,
-                mode='linear',
-                align_corners=True
-            ).squeeze(1)
+            self.projection = nn.Linear(input_dim, crystal_dim, bias=False)
 
-    # Re-normalize
-    resized = F.normalize(resized, dim=-1)
-    return resized
+        self._init_weights()
+
+    def _init_weights(self):
+        for layer in self.projection.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.normal_(layer.weight, std=0.02)
+                if layer.bias is not None:
+                    nn.init.zeros_(layer.bias)
+
+    def forward(self, features: torch.Tensor,
+                anchors: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        z = self.projection(features)
+        z = F.normalize(z, dim=-1)
+        logits = (z @ anchors.T) / 0.03
+        return logits, z
 
 
 # ============================================================================
-# DAVID - THE MULTI-SCALE ORCHESTRATOR
+# FUSION MECHANISMS
+# ============================================================================
+
+class AttentionFusion(nn.Module):
+    """Attention-based fusion."""
+
+    def __init__(self, feature_dim: int, num_scales: int,
+                 temperature: float = 1.0, dropout: float = 0.1):
+        super().__init__()
+        self.query = nn.Linear(feature_dim, num_scales)
+        self.temperature = temperature
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, features: torch.Tensor,
+                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        attn_logits = self.query(features)
+        attn_weights = F.softmax(attn_logits / self.temperature, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        combined = torch.zeros_like(logits_list[0])
+        for i, logits in enumerate(logits_list):
+            combined += attn_weights[:, i:i+1] * logits
+
+        return combined, attn_weights
+
+
+class GatedFusion(nn.Module):
+    """Gated mixture of experts."""
+
+    def __init__(self, feature_dim: int, num_scales: int):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim // 2),
+            nn.ReLU(),
+            nn.Linear(feature_dim // 2, num_scales),
+            nn.Softmax(dim=-1)
+        )
+
+    def forward(self, features: torch.Tensor,
+                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        gates = self.gate(features)
+        combined = torch.zeros_like(logits_list[0])
+        for i, logits in enumerate(logits_list):
+            combined += gates[:, i:i+1] * logits
+        return combined, gates
+
+
+class HierarchicalTreeGating(nn.Module):
+    """Tree-based hierarchical gating."""
+
+    def __init__(self, feature_dim: int, num_scales: int = 5, depth: int = 3):
+        super().__init__()
+        self.num_scales = num_scales
+        self.depth = depth
+
+        self.tree_nodes = nn.ModuleList()
+        for level in range(depth):
+            num_nodes = 2 ** level
+            level_nodes = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(feature_dim, 64),
+                    nn.LayerNorm(64),
+                    nn.GELU(),
+                    nn.Dropout(0.1),
+                    nn.Linear(64, 2)
+                ) for _ in range(num_nodes)
+            ])
+            self.tree_nodes.append(level_nodes)
+
+        num_leaves = 2 ** depth
+        self.leaf_to_scale = nn.Sequential(
+            nn.Linear(num_leaves, num_scales * 2),
+            nn.GELU(),
+            nn.Linear(num_scales * 2, num_scales)
+        )
+
+        self.direct_gate = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim // 4),
+            nn.GELU(),
+            nn.Linear(feature_dim // 4, num_scales)
+        )
+
+        self.combine_weight = nn.Parameter(torch.tensor(0.7))
+
+    def forward(self, features: torch.Tensor,
+                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size = features.shape[0]
+        device = features.device
+
+        path_probs = [torch.ones(batch_size, 1, device=device)]
+
+        for level in range(self.depth):
+            next_probs = []
+            num_nodes = 2 ** level
+
+            for node_idx in range(num_nodes):
+                parent_prob = path_probs[0] if level == 0 else path_probs[node_idx]
+
+                node_logits = self.tree_nodes[level][node_idx](features)
+                node_probs = F.softmax(node_logits / 0.5, dim=-1)
+
+                left_prob = parent_prob * node_probs[:, 0:1]
+                right_prob = parent_prob * node_probs[:, 1:2]
+                next_probs.extend([left_prob, right_prob])
+
+            path_probs = next_probs
+
+        leaf_probs = torch.cat(path_probs, dim=1)
+        tree_gates = F.softmax(self.leaf_to_scale(leaf_probs), dim=-1)
+
+        direct_gates = F.softmax(self.direct_gate(features), dim=-1)
+        gates = torch.sigmoid(self.combine_weight) * tree_gates + \
+                (1 - torch.sigmoid(self.combine_weight)) * direct_gates
+        gates = gates / gates.sum(dim=-1, keepdim=True)
+
+        combined = torch.zeros_like(logits_list[0])
+        for i, logits in enumerate(logits_list):
+            if i < gates.shape[1]:
+                combined += gates[:, i:i+1] * logits
+
+        return combined, gates
+
+
+class DeepEfficiencyGating(nn.Module):
+    """Ultra-efficient gating with cross-attention."""
+
+    def __init__(self, feature_dim: int, num_scales: int = 5,
+                 compression_ratio: int = 4, num_experts: int = 3,
+                 expert_dropout: float = 0.1, attention_dropout: float = 0.1):
+        super().__init__()
+        self.num_scales = num_scales
+        self.num_experts = num_experts
+
+        self.temperature = nn.Parameter(torch.ones(1) * 0.5)
+        bottleneck_dim = max(num_scales * 8, feature_dim // compression_ratio)
+
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(feature_dim, bottleneck_dim),
+                nn.LayerNorm(bottleneck_dim),
+                nn.GELU(),
+                nn.Dropout(expert_dropout)
+            ) for _ in range(num_experts)
+        ])
+
+        self.cross_attention = nn.MultiheadAttention(
+            bottleneck_dim,
+            num_heads=min(8, bottleneck_dim // 8),
+            batch_first=True,
+            dropout=attention_dropout
+        )
+
+        self.gate_heads = nn.ModuleList([
+            nn.Linear(bottleneck_dim * num_experts, num_scales)
+            for _ in range(3)
+        ])
+
+        self.head_weights = nn.Parameter(torch.ones(3) / 3)
+        self.scale_bias = nn.Parameter(torch.zeros(num_scales))
+        self.sparsity_threshold = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, features: torch.Tensor,
+                logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        expert_outputs = [expert(features) for expert in self.experts]
+        stacked = torch.stack(expert_outputs, dim=1)
+
+        attended, _ = self.cross_attention(stacked, stacked, stacked)
+        flattened = attended.reshape(features.shape[0], -1)
+
+        gate_outputs = [head(flattened) for head in self.gate_heads]
+        head_weights = F.softmax(self.head_weights, dim=0)
+        combined_gates = sum(w * g for w, g in zip(head_weights, gate_outputs))
+
+        gate_logits = (combined_gates + self.scale_bias) / self.temperature.abs()
+        gates = F.softmax(gate_logits, dim=-1)
+
+        if not self.training:
+            mask = gates > self.sparsity_threshold
+            sparse_gates = gates * mask
+            sparse_gates = sparse_gates / (sparse_gates.sum(dim=-1, keepdim=True) + 1e-8)
+        else:
+            sparse_gates = gates
+
+        combined = torch.zeros_like(logits_list[0])
+        for i, logits in enumerate(logits_list):
+            if i < sparse_gates.shape[1]:
+                combined += sparse_gates[:, i:i+1] * logits
+
+        return combined, sparse_gates
+
+
+# ============================================================================
+# DAVID MODEL
 # ============================================================================
 
 class David(nn.Module):
     """
     David: Multi-Scale Crystal Classifier
-    ======================================
 
-    The behavioral curator for multi-scale deep learning. David orchestrates
-    parallel processing across multiple embedding scales, dynamically fusing
-    their insights through learned attention or gating mechanisms.
-
-    Personality traits:
-    - Progressive: Scales activate gradually during training
-    - Adaptive: Can freeze high-performing scales
-    - Collaborative: Shares knowledge across scales (configurable)
-    - Strategic: Chooses fusion strategy based on task complexity
+    Orchestrates parallel processing across multiple embedding scales.
     """
 
     def __init__(
         self,
-        feature_dim: int = 512,
-        num_classes: int = 1000,
-        scales: List[int] = None,
-        sharing_mode: SharingMode = SharingMode.PARTIAL_SHARED,
-        fusion_mode: FusionMode = FusionMode.GATED,
-        shared_feature_dim: int = 768,
-        shared_layers: int = 2,
-        shared_dropout: float = 0.1,
-        fusion_temperature: float = 1.0,
-        fusion_dropout: float = 0.1,
-        tree_depth: int = 3,
-        num_experts: int = 3,
-        compression_ratio: int = 4,
-        progressive_training: bool = True,
+        config: Optional[DavidArchitectureConfig] = None,
+        # Optional overrides
+        feature_dim: Optional[int] = None,
+        num_classes: Optional[int] = None,
+        scales: Optional[List[int]] = None,
+        sharing_mode: Optional[str] = None,
+        fusion_mode: Optional[str] = None,
+        use_belly: Optional[bool] = None,
+        belly_expand: Optional[float] = None,
+        shared_feature_dim: Optional[int] = None,
+        shared_layers: Optional[int] = None,
+        shared_dropout: Optional[float] = None,
+        fusion_temperature: Optional[float] = None,
+        fusion_dropout: Optional[float] = None,
+        tree_depth: Optional[int] = None,
+        num_experts: Optional[int] = None,
+        compression_ratio: Optional[int] = None,
+        expert_dropout: Optional[float] = None,
+        attention_dropout: Optional[float] = None,
+        progressive_training: Optional[bool] = None,
         scale_warmup_epochs: Optional[Dict[int, int]] = None
     ):
         """
-        Initialize David with multi-scale architecture.
+        Initialize David from config with optional parameter overrides.
 
         Args:
-            feature_dim: Input feature dimension
-            num_classes: Number of output classes
-            scales: List of crystal embedding dimensions (e.g., [256, 512, 768, 1024])
-            sharing_mode: How to share parameters across scales
-            fusion_mode: How to combine multi-scale predictions
-            shared_feature_dim: Dimension of shared feature space
-            shared_layers: Number of shared extraction layers
-            shared_dropout: Dropout in shared layers
-            fusion_temperature: Temperature for fusion softmax
-            fusion_dropout: Dropout in fusion module
-            tree_depth: Depth for hierarchical tree gating
-            num_experts: Number of experts for deep efficiency gating
-            compression_ratio: Compression for deep efficiency gating
-            progressive_training: Whether to progressively activate scales
-            scale_warmup_epochs: When each scale becomes active {scale: epoch}
+            config: DavidArchitectureConfig (if None, uses defaults)
+            All other args: Optional overrides for config values
         """
         super().__init__()
 
-        self.feature_dim = feature_dim
-        self.num_classes = num_classes
-        self.scales = scales or [256, 512, 768, 1024]
-        self.sharing_mode = sharing_mode
-        self.fusion_mode = fusion_mode
-        self.progressive_training = progressive_training
-        self.scale_warmup_epochs = scale_warmup_epochs or {s: 0 for s in self.scales}
+        # Use config as base, override with explicit params
+        if config is None:
+            config = DavidArchitectureConfig()
 
-        # David's memory
+        self.feature_dim = feature_dim or config.feature_dim
+        self.num_classes = num_classes or config.num_classes
+        self.scales = scales or config.scales
+        self.use_belly = use_belly if use_belly is not None else config.use_belly
+        self.belly_expand = belly_expand or config.belly_expand
+        self.progressive_training = progressive_training if progressive_training is not None else config.progressive_training
+        self.scale_warmup_epochs = scale_warmup_epochs or config.scale_warmup_epochs
+
+        # Convert string modes to enums
+        sharing_str = sharing_mode or config.sharing_mode
+        self.sharing_mode = SharingMode(sharing_str)
+
+        fusion_str = fusion_mode or config.fusion_mode
+        self.fusion_mode = FusionMode(fusion_str)
+
+        # Extract other params
+        _shared_feature_dim = shared_feature_dim or config.shared_feature_dim
+        _shared_layers = shared_layers or config.shared_layers
+        _shared_dropout = shared_dropout or config.shared_dropout
+        _fusion_temperature = fusion_temperature or config.fusion_temperature
+        _fusion_dropout = fusion_dropout or config.fusion_dropout
+        _tree_depth = tree_depth or config.tree_depth
+        _num_experts = num_experts or config.num_experts
+        _compression_ratio = compression_ratio or config.compression_ratio
+        _expert_dropout = expert_dropout or config.expert_dropout
+        _attention_dropout = attention_dropout or config.attention_dropout
+
+        # State tracking
         self.current_epoch = 0
         self.scale_accuracies = {s: [] for s in self.scales}
 
-        # Build David's neural architecture
-        self._build_architecture(
-            shared_feature_dim=shared_feature_dim,
-            shared_layers=shared_layers,
-            shared_dropout=shared_dropout
-        )
+        # Build architecture
+        self._build_architecture(_shared_feature_dim, _shared_layers, _shared_dropout)
+        self._build_fusion(_shared_feature_dim, _fusion_temperature, _fusion_dropout,
+                          _tree_depth, _num_experts, _compression_ratio,
+                          _expert_dropout, _attention_dropout)
 
-        # Build David's fusion strategy
-        self._build_fusion(
-            shared_feature_dim=shared_feature_dim,
-            temperature=fusion_temperature,
-            dropout=fusion_dropout,
-            tree_depth=tree_depth,
-            num_experts=num_experts,
-            compression_ratio=compression_ratio
-        )
-
-        # David's confidence in each scale
-        self.register_buffer(
-            "scale_weights",
-            torch.tensor([1.0 for _ in self.scales])
-        )
+        self.register_buffer("scale_weights", torch.tensor([1.0 for _ in self.scales]))
 
     def _build_architecture(self, shared_feature_dim: int,
                            shared_layers: int, shared_dropout: float):
-        """Build David's processing architecture based on sharing mode."""
+        """Build processing architecture based on sharing mode."""
 
         if self.sharing_mode == SharingMode.FULLY_SHARED:
-            # David shares everything - maximum parameter efficiency
             self.shared_extractor = SharedFeatureExtractor(
-                self.feature_dim,
-                shared_feature_dim,
-                shared_layers,
-                shared_dropout
+                self.feature_dim, shared_feature_dim, shared_layers, shared_dropout
             )
             self.heads = nn.ModuleDict({
                 str(scale): ScaleSpecificHead(
-                    shared_feature_dim,
-                    scale,
-                    use_belly=False
+                    shared_feature_dim, scale,
+                    use_belly=self.use_belly,
+                    belly_expand=self.belly_expand
                 )
                 for scale in self.scales
             })
 
         elif self.sharing_mode == SharingMode.PARTIAL_SHARED:
-            # David shares a base, then specializes - balanced approach
             self.shared_base = nn.Linear(self.feature_dim, shared_feature_dim)
             self.heads = nn.ModuleDict({
                 str(scale): ScaleSpecificHead(
-                    shared_feature_dim,
-                    scale,
-                    use_belly=True
+                    shared_feature_dim, scale,
+                    use_belly=self.use_belly,
+                    belly_expand=self.belly_expand
                 )
                 for scale in self.scales
             })
 
         elif self.sharing_mode == SharingMode.DECOUPLED:
-            # David keeps scales independent - maximum flexibility
             self.heads = nn.ModuleDict({
                 str(scale): ScaleSpecificHead(
-                    self.feature_dim,
-                    scale,
-                    use_belly=True
+                    self.feature_dim, scale,
+                    use_belly=self.use_belly,
+                    belly_expand=self.belly_expand
                 )
                 for scale in self.scales
             })
 
         elif self.sharing_mode == SharingMode.HIERARCHICAL:
-            # David refines progressively - coarse to fine
             for i, scale in enumerate(self.scales):
                 if i == 0:
-                    # First scale processes directly
                     setattr(self, f'head_{scale}',
-                           ScaleSpecificHead(self.feature_dim, scale))
+                           ScaleSpecificHead(
+                               self.feature_dim, scale,
+                               use_belly=self.use_belly,
+                               belly_expand=self.belly_expand
+                           ))
                 else:
-                    # Later scales refine previous outputs
                     prev_scale = self.scales[i-1]
                     setattr(self, f'refine_{scale}', nn.Sequential(
                         nn.Linear(prev_scale + self.feature_dim, scale),
                         nn.ReLU()
                     ))
                     setattr(self, f'head_{scale}',
-                           ScaleSpecificHead(scale, scale))
+                           ScaleSpecificHead(
+                               scale, scale,
+                               use_belly=self.use_belly,
+                               belly_expand=self.belly_expand
+                           ))
 
     def _build_fusion(self, shared_feature_dim: int, temperature: float,
                      dropout: float, tree_depth: int, num_experts: int,
-                     compression_ratio: int):
-        """Build David's fusion strategy."""
+                     compression_ratio: int, expert_dropout: float,
+                     attention_dropout: float):
+        """Build fusion strategy."""
 
         fusion_input_dim = (
             shared_feature_dim
@@ -1548,7 +678,9 @@ class David(nn.Module):
             self.fusion = DeepEfficiencyGating(
                 fusion_input_dim, len(self.scales),
                 compression_ratio=compression_ratio,
-                num_experts=num_experts
+                num_experts=num_experts,
+                expert_dropout=expert_dropout,
+                attention_dropout=attention_dropout
             )
 
         elif self.fusion_mode == FusionMode.WEIGHTED_SUM:
@@ -1557,19 +689,18 @@ class David(nn.Module):
             )
 
         elif self.fusion_mode == FusionMode.PROGRESSIVE:
-            # Fixed progressive weighting: earlier scales get less weight
             weights = torch.tensor([0.1, 0.15, 0.25, 0.25, 0.25])
             self.register_buffer("progressive_weights", weights[:len(self.scales)])
 
     def _should_use_scale(self, scale: int) -> bool:
-        """David decides if this scale should be active yet."""
+        """Check if scale should be active."""
         if not self.progressive_training:
             return True
         warmup_epoch = self.scale_warmup_epochs.get(scale, 0)
         return self.current_epoch >= warmup_epoch
 
     def _extract_base_features(self, x: torch.Tensor) -> torch.Tensor:
-        """David extracts base features according to sharing mode."""
+        """Extract base features according to sharing mode."""
         if self.sharing_mode == SharingMode.FULLY_SHARED:
             return self.shared_extractor(x)
         elif self.sharing_mode == SharingMode.PARTIAL_SHARED:
@@ -1578,11 +709,9 @@ class David(nn.Module):
             return x
 
     def _hierarchical_forward(
-        self,
-        x: torch.Tensor,
-        anchors_dict: Dict[int, torch.Tensor]
+        self, x: torch.Tensor, anchors_dict: Dict[int, torch.Tensor]
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        """David's hierarchical refinement process."""
+        """Hierarchical refinement process."""
         logits_list = []
         features_list = []
         prev_features = None
@@ -1592,12 +721,10 @@ class David(nn.Module):
                 continue
 
             if i == 0:
-                # First scale processes directly
                 head = getattr(self, f'head_{scale}')
                 logits, features = head(x, anchors_dict[scale])
                 prev_features = features
             else:
-                # Refine using previous scale's output
                 refine = getattr(self, f'refine_{scale}')
                 head = getattr(self, f'head_{scale}')
                 refined = refine(torch.cat([prev_features, x], dim=-1))
@@ -1610,19 +737,16 @@ class David(nn.Module):
         return logits_list, features_list
 
     def _parallel_forward(
-        self,
-        base_features: torch.Tensor,
-        anchors_dict: Dict[int, torch.Tensor]
+        self, base_features: torch.Tensor, anchors_dict: Dict[int, torch.Tensor]
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        """David's parallel multi-scale processing."""
+        """Parallel multi-scale processing."""
         logits_list = []
         features_list = []
 
         for scale in self.scales:
             if self._should_use_scale(scale):
                 logits, features = self.heads[str(scale)](
-                    base_features,
-                    anchors_dict[scale]
+                    base_features, anchors_dict[scale]
                 )
                 logits_list.append(logits)
                 features_list.append(features)
@@ -1630,17 +754,13 @@ class David(nn.Module):
         return logits_list, features_list
 
     def _fuse_predictions(
-        self,
-        features: torch.Tensor,
-        logits_list: List[torch.Tensor]
+        self, features: torch.Tensor, logits_list: List[torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """David combines multi-scale predictions."""
+        """Combine multi-scale predictions."""
 
         if len(logits_list) == 1:
-            # Single scale active - no fusion needed
             return logits_list[0], torch.ones(1, device=features.device)
 
-        # Use configured fusion strategy
         if self.fusion_mode in [FusionMode.ATTENTION, FusionMode.GATED,
                                 FusionMode.HIERARCHICAL_TREE, FusionMode.DEEP_EFFICIENCY]:
             return self.fusion(features, logits_list)
@@ -1651,7 +771,6 @@ class David(nn.Module):
             return combined, weights
 
         elif self.fusion_mode == FusionMode.MAX_CONFIDENCE:
-            # Choose the most confident scale
             confidences = [
                 F.softmax(logits, dim=-1).max(dim=-1)[0].mean()
                 for logits in logits_list
@@ -1674,35 +793,27 @@ class David(nn.Module):
     ) -> Union[Tuple[torch.Tensor, torch.Tensor],
                Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor], torch.Tensor]]:
         """
-        David's forward pass - the behavioral curation of multi-scale processing.
+        Forward pass.
 
         Args:
             x: Input features [B, D]
-            anchors_dict: Crystal anchors for each scale {scale: [C, D_scale]}
-            return_all_scales: Whether to return all intermediate outputs
+            anchors_dict: Crystal anchors {scale: [C, D_scale]}
+            return_all_scales: Return all intermediate outputs
 
         Returns:
             If return_all_scales=False:
-                combined_logits: Fused predictions [B, C]
-                features: Primary scale features [B, D_scale]
-
+                combined_logits, features
             If return_all_scales=True:
-                combined_logits: Fused predictions [B, C]
-                logits_list: Per-scale predictions, list of [B, C]
-                features_list: Per-scale embeddings, list of [B, D_scale]
-                fusion_weights: Scale contribution weights [B, num_scales]
+                combined_logits, logits_list, features_list, fusion_weights
         """
 
         if self.sharing_mode == SharingMode.HIERARCHICAL:
-            # David refines progressively
             logits_list, features_list = self._hierarchical_forward(x, anchors_dict)
-            base_features = x  # Use original features for fusion
+            base_features = x
         else:
-            # David processes in parallel
             base_features = self._extract_base_features(x)
             logits_list, features_list = self._parallel_forward(base_features, anchors_dict)
 
-        # David combines the multi-scale insights
         combined, fusion_weights = self._fuse_predictions(base_features, logits_list)
 
         if return_all_scales:
@@ -1711,63 +822,104 @@ class David(nn.Module):
             return combined, features_list[0] if features_list else base_features
 
     # ========================================================================
-    # DAVID'S ADAPTIVE BEHAVIORS
+    # CLASS METHODS
+    # ========================================================================
+
+    @classmethod
+    def from_config(cls, config: DavidArchitectureConfig, **kwargs) -> 'David':
+        """
+        Create David from config with optional overrides.
+
+        Args:
+            config: DavidArchitectureConfig instance
+            **kwargs: Optional parameter overrides
+
+        Example:
+            config = DavidPresets.balanced()
+            david = David.from_config(config, num_classes=100)
+        """
+        return cls(config=config, **kwargs)
+
+    @classmethod
+    def from_preset(cls, preset_name: str, **kwargs) -> 'David':
+        """
+        Create David from preset name with optional overrides.
+
+        Args:
+            preset_name: Name of preset ('balanced', 'small_fast', etc.)
+            **kwargs: Optional parameter overrides
+
+        Example:
+            david = David.from_preset('balanced', num_classes=100)
+        """
+        config = DavidPresets.get_preset(preset_name)
+        return cls(config=config, **kwargs)
+
+    @classmethod
+    def from_json(cls, path: str, **kwargs) -> 'David':
+        """
+        Load David from JSON config file with optional overrides.
+
+        Args:
+            path: Path to JSON config file
+            **kwargs: Optional parameter overrides
+
+        Example:
+            david = David.from_json('my_config.json', num_classes=100)
+        """
+        config = DavidArchitectureConfig.from_json(path)
+        return cls(config=config, **kwargs)
+
+    def get_config(self) -> DavidArchitectureConfig:
+        """Extract current configuration from model."""
+        return DavidArchitectureConfig(
+            feature_dim=self.feature_dim,
+            num_classes=self.num_classes,
+            scales=self.scales,
+            sharing_mode=self.sharing_mode.value,
+            fusion_mode=self.fusion_mode.value,
+            use_belly=self.use_belly,
+            belly_expand=self.belly_expand,
+            progressive_training=self.progressive_training,
+            scale_warmup_epochs=self.scale_warmup_epochs,
+        )
+
+    # ========================================================================
+    # ADAPTIVE BEHAVIORS
     # ========================================================================
 
     def update_epoch(self, epoch: int):
-        """Update David's internal clock for progressive training."""
+        """Update internal clock for progressive training."""
         self.current_epoch = epoch
 
     def get_active_scales(self) -> List[int]:
-        """Get list of scales David is currently using."""
+        """Get currently active scales."""
         return [s for s in self.scales if self._should_use_scale(s)]
 
-    def get_scale_parameters(self, scale: int) -> List[nn.Parameter]:
-        """Get parameters for a specific scale."""
+    def freeze_scale(self, scale: int):
+        """Freeze a specific scale."""
         if self.sharing_mode == SharingMode.HIERARCHICAL:
-            if scale not in self.scales:
-                return []
-
-            scale_idx = self.scales.index(scale)
-            params = []
-
             head = getattr(self, f'head_{scale}', None)
             if head:
-                params.extend(head.parameters())
-
-            if scale_idx > 0:
-                refine = getattr(self, f'refine_{scale}', None)
-                if refine:
-                    params.extend(refine.parameters())
-
-            return params
+                for param in head.parameters():
+                    param.requires_grad = False
         else:
-            return list(self.heads[str(scale)].parameters())
-
-    def freeze_scale(self, scale: int):
-        """Freeze a scale - David stops learning for this scale."""
-        for param in self.get_scale_parameters(scale):
-            param.requires_grad = False
-        print(f"[David] ❄️  Frozen scale {scale}")
+            for param in self.heads[str(scale)].parameters():
+                param.requires_grad = False
 
     def unfreeze_scale(self, scale: int):
-        """Unfreeze a scale - David resumes learning for this scale."""
-        for param in self.get_scale_parameters(scale):
-            param.requires_grad = True
-        print(f"[David] 🔥 Unfrozen scale {scale}")
-
-    def freeze_all_scales(self):
-        """David freezes all scale-specific parameters."""
-        for scale in self.scales:
-            self.freeze_scale(scale)
-
-    def unfreeze_all_scales(self):
-        """David unfreezes all scale-specific parameters."""
-        for scale in self.scales:
-            self.unfreeze_scale(scale)
+        """Unfreeze a specific scale."""
+        if self.sharing_mode == SharingMode.HIERARCHICAL:
+            head = getattr(self, f'head_{scale}', None)
+            if head:
+                for param in head.parameters():
+                    param.requires_grad = True
+        else:
+            for param in self.heads[str(scale)].parameters():
+                param.requires_grad = True
 
     def get_model_info(self) -> Dict[str, any]:
-        """Get David's configuration and status."""
+        """Get model configuration and status."""
         return {
             "name": "David",
             "feature_dim": self.feature_dim,
@@ -1794,538 +946,44 @@ class David(nn.Module):
 
 
 # ============================================================================
-# TEST SUITE - DAVID'S BEHAVIORAL VALIDATION
+# USAGE EXAMPLES
 # ============================================================================
 
 if __name__ == "__main__":
-    import sys
-
     print("="*80)
-    print("🧪 DAVID - MULTI-SCALE CRYSTAL CLASSIFIER TEST SUITE")
+    print("David Model - Usage Examples")
     print("="*80)
 
-    # Test configuration
-    batch_size = 4
-    feature_dim = 512
-    num_classes = 1000
-    scales = [256, 512, 768, 1024]
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Method 1: From preset
+    print("\n[1] From Preset:")
+    david = David.from_preset('balanced')
+    print(f"  {david}")
+
+    # Method 2: From preset with overrides
+    print("\n[2] From Preset with Overrides:")
+    david = David.from_preset('balanced', num_classes=100, use_belly=False)
+    print(f"  Num classes: {david.num_classes}")
+    print(f"  Use belly: {david.use_belly}")
+
+    # Method 3: From config object
+    print("\n[3] From Config Object:")
+    config = DavidPresets.get_preset('small_fast')
+    david = David.from_config(config, num_classes=10)
+    print(f"  {david}")
+
+    # Method 4: From JSON
+    print("\n[4] From JSON:")
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        path = f.name
+
+    config = DavidPresets.balanced()
+    config.to_json(path)
+    david = David.from_json(path, num_classes=50)
+    print(f"  Loaded from: {path}")
+    print(f"  Num classes: {david.num_classes}")
+
+    import os
+    os.unlink(path)
 
-    print(f"\n📍 Running on: {device}")
-    print(f"   Batch size: {batch_size}")
-    print(f"   Feature dim: {feature_dim}")
-    print(f"   Scales: {scales}")
-
-    # ========================================================================
-    # TEST 1: Crystal Anchor Resizing
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 1: Crystal Anchor Resizing")
-    print("-"*80)
-
-    try:
-        base_anchors = torch.randn(num_classes, 512).to(device)
-        base_anchors = F.normalize(base_anchors, dim=-1)
-
-        for target_scale in scales:
-            resized = resize_crystal_anchors(base_anchors, target_scale)
-            assert resized.shape == (num_classes, target_scale), \
-                f"Expected shape ({num_classes}, {target_scale}), got {resized.shape}"
-
-            # Check normalization
-            norms = torch.norm(resized, dim=-1)
-            assert torch.allclose(norms, torch.ones_like(norms), atol=1e-5), \
-                "Anchors not properly normalized"
-
-        print("✅ Crystal anchor resizing works correctly")
-        print(f"   Tested scales: {scales}")
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        sys.exit(1)
-
-    # ========================================================================
-    # TEST 2: Rose Loss
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 2: Rose Loss Computation")
-    print("-"*80)
-
-    try:
-        rose_loss = RoseLoss(margin=3, temperature=0.71).to(device)
-
-        # Create test data
-        z = F.normalize(torch.randn(batch_size, 256).to(device), dim=-1)
-        crystals = F.normalize(torch.randn(num_classes, 5, 256).to(device), dim=-1)
-        targets = torch.randint(0, num_classes, (batch_size,)).to(device)
-
-        loss = rose_loss(z, crystals, targets)
-
-        assert loss.ndim == 0, "Loss should be scalar"
-        assert loss.item() >= 0, "Loss should be non-negative"
-        assert not torch.isnan(loss), "Loss contains NaN"
-
-        print("✅ Rose loss computation successful")
-        print(f"   Loss value: {loss.item():.4f}")
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        sys.exit(1)
-
-    # ========================================================================
-    # TEST 3: Cayley Chaos Loss
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 3: Cayley Chaos Loss Computation")
-    print("-"*80)
-
-    try:
-        cayley_loss = CayleyChaosLoss(volume_floor=1e-4).to(device)
-
-        # Create test pentachora
-        pentachora = torch.randn(batch_size, 5, 256).to(device)
-
-        loss = cayley_loss(pentachora)
-
-        assert loss.ndim == 0, "Loss should be scalar"
-        assert loss.item() >= 0, "Loss should be non-negative"
-        assert not torch.isnan(loss), "Loss contains NaN"
-
-        print("✅ Cayley chaos loss computation successful")
-        print(f"   Loss value: {loss.item():.4f}")
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        sys.exit(1)
-
-    # ========================================================================
-    # TEST 4: David with Different Sharing Modes
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 4: David's Sharing Modes")
-    print("-"*80)
-
-    sharing_modes = [
-        SharingMode.FULLY_SHARED,
-        SharingMode.PARTIAL_SHARED,
-        SharingMode.DECOUPLED,
-        SharingMode.HIERARCHICAL
-    ]
-
-    for sharing_mode in sharing_modes:
-        try:
-            david = David(
-                feature_dim=feature_dim,
-                num_classes=num_classes,
-                scales=scales,
-                sharing_mode=sharing_mode,
-                fusion_mode=FusionMode.GATED,
-                progressive_training=False
-            ).to(device)
-
-            # Create dummy input and anchors
-            x = torch.randn(batch_size, feature_dim).to(device)
-            anchors_dict = {
-                scale: F.normalize(torch.randn(num_classes, scale).to(device), dim=-1)
-                for scale in scales
-            }
-
-            # Forward pass
-            logits, features = david(x, anchors_dict, return_all_scales=False)
-
-            assert logits.shape == (batch_size, num_classes), \
-                f"Expected logits shape ({batch_size}, {num_classes}), got {logits.shape}"
-
-            print(f"✅ {sharing_mode.value:20s} - Parameters: {sum(p.numel() for p in david.parameters()):,}")
-
-        except Exception as e:
-            print(f"❌ FAILED ({sharing_mode.value}): {e}")
-            sys.exit(1)
-
-    # ========================================================================
-    # TEST 5: David with Different Fusion Modes
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 5: David's Fusion Strategies")
-    print("-"*80)
-
-    fusion_modes = [
-        FusionMode.ATTENTION,
-        FusionMode.GATED,
-        FusionMode.HIERARCHICAL_TREE,
-        FusionMode.DEEP_EFFICIENCY,
-        FusionMode.WEIGHTED_SUM,
-        FusionMode.MAX_CONFIDENCE,
-        FusionMode.PROGRESSIVE
-    ]
-
-    x = torch.randn(batch_size, feature_dim).to(device)
-    anchors_dict = {
-        scale: F.normalize(torch.randn(num_classes, scale).to(device), dim=-1)
-        for scale in scales
-    }
-
-    for fusion_mode in fusion_modes:
-        try:
-            david = David(
-                feature_dim=feature_dim,
-                num_classes=num_classes,
-                scales=scales,
-                sharing_mode=SharingMode.PARTIAL_SHARED,
-                fusion_mode=fusion_mode,
-                progressive_training=False
-            ).to(device)
-
-            # Forward pass with all scales
-            combined, logits_list, features_list, fusion_weights = david(
-                x, anchors_dict, return_all_scales=True
-            )
-
-            assert combined.shape == (batch_size, num_classes), \
-                f"Expected combined shape ({batch_size}, {num_classes})"
-            assert len(logits_list) == len(scales), \
-                f"Expected {len(scales)} scale outputs, got {len(logits_list)}"
-
-            print(f"✅ {fusion_mode.value:25s} - Weights shape: {fusion_weights.shape}")
-
-        except Exception as e:
-            print(f"❌ FAILED ({fusion_mode.value}): {e}")
-            sys.exit(1)
-
-    # ========================================================================
-    # TEST 6: Progressive Training
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 6: David's Progressive Scale Activation")
-    print("-"*80)
-
-    try:
-        scale_warmup = {256: 0, 512: 5, 768: 10, 1024: 15}
-
-        david = David(
-            feature_dim=feature_dim,
-            num_classes=num_classes,
-            scales=scales,
-            sharing_mode=SharingMode.DECOUPLED,
-            fusion_mode=FusionMode.GATED,
-            progressive_training=True,
-            scale_warmup_epochs=scale_warmup
-        ).to(device)
-
-        test_epochs = [0, 5, 10, 15, 20]
-
-        for epoch in test_epochs:
-            david.update_epoch(epoch)
-            active_scales = david.get_active_scales()
-
-            # Verify correct scales are active
-            expected_active = [s for s in scales if scale_warmup[s] <= epoch]
-            assert active_scales == expected_active, \
-                f"Epoch {epoch}: Expected {expected_active}, got {active_scales}"
-
-            print(f"✅ Epoch {epoch:2d}: Active scales {active_scales}")
-
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        sys.exit(1)
-
-    # ========================================================================
-    # TEST 7: Freeze/Unfreeze Mechanics
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 7: David's Adaptive Freeze/Unfreeze")
-    print("-"*80)
-
-    try:
-        david = David(
-            feature_dim=feature_dim,
-            num_classes=num_classes,
-            scales=scales,
-            sharing_mode=SharingMode.DECOUPLED,
-            fusion_mode=FusionMode.GATED,
-            progressive_training=False
-        ).to(device)
-
-        # Get initial trainable params
-        initial_trainable = sum(p.numel() for p in david.parameters() if p.requires_grad)
-
-        # Freeze scale 512
-        david.freeze_scale(512)
-        after_freeze = sum(p.numel() for p in david.parameters() if p.requires_grad)
-
-        assert after_freeze < initial_trainable, "Freezing should reduce trainable params"
-
-        # Unfreeze scale 512
-        david.unfreeze_scale(512)
-        after_unfreeze = sum(p.numel() for p in david.parameters() if p.requires_grad)
-
-        assert after_unfreeze == initial_trainable, "Unfreezing should restore trainable params"
-
-        print(f"✅ Freeze/unfreeze mechanics working correctly")
-        print(f"   Initial: {initial_trainable:,} params")
-        print(f"   After freeze: {after_freeze:,} params")
-        print(f"   After unfreeze: {after_unfreeze:,} params")
-
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        sys.exit(1)
-
-    # ========================================================================
-    # TEST 8: Multi-Scale Loss Integration
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 8: Multi-Scale Loss Integration")
-    print("-"*80)
-
-    try:
-        david = David(
-            feature_dim=feature_dim,
-            num_classes=num_classes,
-            scales=scales,
-            sharing_mode=SharingMode.PARTIAL_SHARED,
-            fusion_mode=FusionMode.GATED,
-            progressive_training=False
-        ).to(device)
-
-        loss_fn = MultiScaleCrystalLoss(
-            scales=scales,
-            num_classes=num_classes,
-            use_rose_loss=True,
-            use_cayley_loss=True
-        ).to(device)
-
-        # Create test data
-        x = torch.randn(batch_size, feature_dim).to(device)
-        targets = torch.randint(0, num_classes, (batch_size,)).to(device)
-
-        anchors_dict = {}
-        crystals_dict = {}
-
-        for scale in scales:
-            anchors_dict[scale] = F.normalize(
-                torch.randn(num_classes, scale).to(device), dim=-1
-            )
-            crystals_dict[scale] = F.normalize(
-                torch.randn(num_classes, 5, scale).to(device), dim=-1
-            )
-
-        # Forward pass
-        combined, logits_list, features_list, _ = david(
-            x, anchors_dict, return_all_scales=True
-        )
-
-        # Compute loss
-        losses = loss_fn(
-            combined, logits_list, features_list, targets, crystals_dict, epoch=10
-        )
-
-        assert 'total' in losses, "Loss dict should contain 'total'"
-        assert 'ce_main' in losses, "Loss dict should contain 'ce_main'"
-
-        total_loss = losses['total']
-        assert not torch.isnan(total_loss), "Total loss contains NaN"
-        assert total_loss.item() >= 0, "Total loss should be non-negative"
-
-        print(f"✅ Multi-scale loss computation successful")
-        print(f"   Total loss: {total_loss.item():.4f}")
-        print(f"   Loss components: {list(losses.keys())}")
-
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        sys.exit(1)
-
-    # ========================================================================
-    # TEST 9: David's Self-Awareness
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 9: David's Introspection")
-    print("-"*80)
-
-    try:
-        david = David(
-            feature_dim=feature_dim,
-            num_classes=num_classes,
-            scales=[256, 512, 768],
-            sharing_mode=SharingMode.HIERARCHICAL,
-            fusion_mode=FusionMode.DEEP_EFFICIENCY,
-            progressive_training=True,
-            scale_warmup_epochs={256: 0, 512: 5, 768: 10}
-        ).to(device)
-
-        david.update_epoch(7)
-
-        info = david.get_model_info()
-
-        assert info['name'] == 'David', "Name should be David"
-        assert info['feature_dim'] == feature_dim, "Feature dim mismatch"
-        assert info['num_classes'] == num_classes, "Num classes mismatch"
-        assert info['current_epoch'] == 7, "Epoch tracking broken"
-        assert info['sharing_mode'] == 'hierarchical', "Sharing mode mismatch"
-        assert info['fusion_mode'] == 'deep_efficiency', "Fusion mode mismatch"
-
-        print("✅ David's introspection working correctly")
-        print(f"   {david}")
-
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        sys.exit(1)
-
-    # ========================================================================
-    # TEST 10: Full Training Step Simulation
-    # ========================================================================
-    print("\n" + "-"*80)
-    print("TEST 10: Full Training Step Simulation")
-    print("-"*80)
-
-    try:
-        david = David(
-            feature_dim=feature_dim,
-            num_classes=num_classes,
-            scales=scales,
-            sharing_mode=SharingMode.PARTIAL_SHARED,
-            fusion_mode=FusionMode.HIERARCHICAL_TREE,
-            progressive_training=False,
-            tree_depth=2
-        ).to(device)
-
-        optimizer = torch.optim.AdamW(david.parameters(), lr=1e-4)
-
-        loss_fn = MultiScaleCrystalLoss(
-            scales=scales,
-            num_classes=num_classes,
-            use_rose_loss=True,
-            use_cayley_loss=True,
-            scale_loss_balance={256: 1.5, 512: 1.2, 768: 1.0, 1024: 0.8}
-        ).to(device)
-
-        # Simulate one training step
-        david.train()
-
-        x = torch.randn(batch_size, feature_dim).to(device)
-        targets = torch.randint(0, num_classes, (batch_size,)).to(device)
-
-        anchors_dict = {}
-        crystals_dict = {}
-        for scale in scales:
-            anchors_dict[scale] = F.normalize(
-                torch.randn(num_classes, scale).to(device), dim=-1
-            )
-            crystals_dict[scale] = F.normalize(
-                torch.randn(num_classes, 5, scale).to(device), dim=-1
-            )
-
-        # Forward
-        combined, logits_list, features_list, fusion_weights = david(
-            x, anchors_dict, return_all_scales=True
-        )
-
-        # Loss
-        losses = loss_fn(
-            combined, logits_list, features_list, targets, crystals_dict, epoch=0
-        )
-
-        # Backward
-        optimizer.zero_grad()
-        losses['total'].backward()
-
-        # Check gradients exist
-        has_grads = any(p.grad is not None for p in david.parameters() if p.requires_grad)
-        assert has_grads, "No gradients computed"
-
-        # Optimizer step
-        optimizer.step()
-
-        # Check predictions
-        _, predicted = torch.max(combined, 1)
-        accuracy = (predicted == targets).float().mean().item() * 100
-
-        print(f"✅ Full training step successful")
-        print(f"   Loss: {losses['total'].item():.4f}")
-        print(f"   Accuracy: {accuracy:.2f}%")
-        print(f"   Fusion weights: {fusion_weights.mean(0).cpu().tolist()}")
-
-    except Exception as e:
-        print(f"❌ FAILED: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-    print("=" * 80)
-    print("David Configuration System Examples")
-    print("=" * 80)
-
-    # Example 1: Using presets
-    print("\n1️⃣ Using Presets:")
-    david_balanced = David.from_preset('balanced')
-    print(f"   Loaded 'balanced' preset: {david_balanced.get_model_info()['total_parameters']:,} params")
-
-    david_small = David.from_preset('small_fast')
-    print(f"   Loaded 'small_fast' preset: {david_small.get_model_info()['total_parameters']:,} params")
-
-    # Example 2: Custom config
-    print("\n2️⃣ Custom Configuration:")
-    custom_config = DavidArchitectureConfig(
-        feature_dim=512,
-        num_classes=100,  # CIFAR-100
-        scales=[128, 256, 512],
-        sharing_mode="decoupled",
-        fusion_mode="attention",
-        use_belly=True,
-        belly_expand=2.5,
-        progressive_training=False
-    )
-    david_custom = David.from_config(custom_config)
-    print(f"   Custom config: {david_custom.get_model_info()['total_parameters']:,} params")
-
-    # Example 3: Save/load config
-    print("\n3️⃣ Save/Load Configuration:")
-    config_path = "/tmp/david_config.json"
-    custom_config.to_json(config_path)
-    print(f"   Saved config to {config_path}")
-
-    loaded_config = DavidArchitectureConfig.from_json(config_path)
-    david_loaded = David.from_config(loaded_config)
-    print(f"   Loaded config: {david_loaded.get_model_info()['total_parameters']:,} params")
-
-    # Example 4: Mixed initialization (config + overrides)
-    print("\n4️⃣ Mixed Initialization (Config + Overrides):")
-    base_config = DavidPresets.balanced()
-    david_mixed = David(
-        config=base_config,
-        num_classes=100,  # Override for CIFAR-100
-        use_belly=False  # Override to disable belly
-    )
-    print(f"   Mixed init: {david_mixed.get_model_info()['total_parameters']:,} params")
-    print(f"   Num classes: {david_mixed.num_classes} (overridden)")
-    print(f"   Use belly: {david_mixed.use_belly} (overridden)")
-
-    # Example 5: Extract config from existing model
-    print("\n5️⃣ Extract Configuration from Model:")
-    extracted_config = david_mixed.get_config()
-    print(f"   Extracted config:")
-    print(f"   {extracted_config}")
-
-    print("\n" + "=" * 80)
-    print("✅ All configuration examples completed successfully!")
-    print("=" * 80)
-    # ========================================================================
-    # FINAL REPORT
-    # ========================================================================
     print("\n" + "="*80)
-    print("🎉 ALL TESTS PASSED - DAVID IS READY FOR DEPLOYMENT")
-    print("="*80)
-
-    final_david = David(
-        feature_dim=512,
-        num_classes=1000,
-        scales=[256, 512, 768, 1024],
-        sharing_mode=SharingMode.PARTIAL_SHARED,
-        fusion_mode=FusionMode.GATED,
-        progressive_training=True
-    ).to(device)
-
-    print("\n📊 Final Configuration:")
-    print(final_david)
-    print(f"\n✨ David is operational and ready to classify!")
-    print(f"   Device: {device}")
-    print(f"   Total tests: 10")
-    print(f"   All passed: ✅")
-    print("="*80)
-
-
