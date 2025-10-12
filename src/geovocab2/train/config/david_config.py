@@ -359,7 +359,7 @@ class DavidPresets:
             use_belly=True,
             shared_feature_dim=1280,
             num_experts=8,
-            compression_ratio=3,
+            compression_ratio=2,
             progressive_training=False,
         )
 
