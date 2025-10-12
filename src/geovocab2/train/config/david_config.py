@@ -7,7 +7,7 @@ Follows ConfigBase pattern: Simple dataclass configs with minimal boilerplate.
 import json
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
-from geovocab2.core.config_base import ConfigBase
+from geovocab2.train.config.config_base import ConfigBase
 
 
 # ============================================================================
