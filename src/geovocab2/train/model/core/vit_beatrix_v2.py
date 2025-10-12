@@ -1,8 +1,10 @@
 """
-ViT-Beatrix V1 - This basin is FROZEN unless bug fixes are required.
+ViT-Beatrix V2
 -------------------------------------
 Directly influenced by ViT-Zana: https://huggingface.co/AbstractPhil/penta-vit-experiments
-    All weights are trained from scratch unless otherwise directly noted and the processes hosted openly.
+    All weights are trained from scratch unless otherwise directly noted the processes hosted openly.
+    As of today the only from_pretrained were either based on direct beatrix weights or
+    testing imagenet pretrained resnets using geo-beatrix.
 
 Author: AbstractPhil
     GPT-4o + GPT-5

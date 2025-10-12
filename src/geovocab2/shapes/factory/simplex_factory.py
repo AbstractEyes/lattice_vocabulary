@@ -178,7 +178,7 @@ class SimplexFactory(FactoryBase):
         self,
         *,
         device: str = "cpu",
-        dtype: Optional["torch.dtype"] = None,
+        dtype: Optional["torch.dtype"] = torch.float32, # defaulted fp32 for cayley-menger compatibility
         seed: Optional[int] = None,
         **kwargs
     ) -> "torch.Tensor":
