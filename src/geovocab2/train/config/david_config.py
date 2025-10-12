@@ -347,6 +347,23 @@ class DavidPresets:
         )
 
     @staticmethod
+    def clip_vit_bigG() -> DavidArchitectureConfig:
+        """CLIP ViT-H/14 optimized."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_bigg14",
+            uid="c.david.clip_vit_bigg14",
+            feature_dim=1280,
+            scales=[512, 768, 1024, 1280, 1536, 1792, 2048],
+            sharing_mode="partial_shared",
+            fusion_mode="deep_efficiency",
+            use_belly=True,
+            shared_feature_dim=1280,
+            num_experts=7,
+            compression_ratio=3,
+            progressive_training=False,
+        )
+
+    @staticmethod
     def get_preset(name: str) -> DavidArchitectureConfig:
         """Get preset by name."""
         presets = {
@@ -360,6 +377,7 @@ class DavidPresets:
             'clip_vit_l14_very_deep': DavidPresets.clip_vit_l14_very_deep,
             'clip_vit_l14_ultra_deep': DavidPresets.clip_vit_l14_ultra_deep,
             'clip_vit_h14': DavidPresets.clip_vit_h14,
+            'clip_vit_bigg14': DavidPresets.clip_vit_bigG,
         }
         if name not in presets:
             raise ValueError(
