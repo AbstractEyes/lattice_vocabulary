@@ -4,6 +4,8 @@ David Configuration System
 Configuration and presets for David multi-scale crystal classifier.
 Separated from model implementation for clean architecture.
 
+Should be placed at: geovocab2/train/config/david_config.py
+
 Author: AbstractPhil
 """
 
@@ -12,8 +14,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
 from pathlib import Path
-
-from geovocab2.train.config.config_base import ConfigBase
 
 
 # ============================================================================
@@ -44,7 +44,7 @@ class FusionMode(Enum):
 # ============================================================================
 
 @dataclass
-class DavidArchitectureConfig(ConfigBase):
+class DavidArchitectureConfig:
     """
     Complete configuration for David's architecture.
 
@@ -67,6 +67,7 @@ class DavidArchitectureConfig(ConfigBase):
     # Projection head configuration
     use_belly: bool = True
     belly_expand: float = 2.0
+    projection_temperature: float = 0.07  # Temperature for logit scaling (CLIP default)
 
     # Shared feature extraction (FULLY_SHARED/PARTIAL_SHARED modes)
     shared_feature_dim: int = 768
