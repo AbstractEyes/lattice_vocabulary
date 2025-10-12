@@ -269,6 +269,67 @@ class DavidPresets:
         )
 
     @staticmethod
+    def clip_vit_l14_deep() -> DavidArchitectureConfig:
+        """CLIP ViT-L/14 with deeper shared layers."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_l14_deep",
+            uid="c.david.clip_vit_l14_deep",
+            feature_dim=768,
+            scales=[256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560],
+            sharing_mode="partial_shared",
+            fusion_mode="deep_efficiency",
+            use_belly=True,
+            shared_feature_dim=1024,
+            shared_layers=4,
+            num_experts=4,
+            progressive_training=True,
+        )
+
+    @staticmethod
+    def clip_vit_l14_very_deep() -> DavidArchitectureConfig:
+        """CLIP ViT-L/14 with very deep architecture."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_l14_very_deep",
+            uid="c.david.clip_vit_l14_very_deep",
+            feature_dim=768,
+            scales=[256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560],
+            sharing_mode="partial_shared",
+            fusion_mode="deep_efficiency",
+            use_belly=True,
+            belly_expand=2.5,
+            shared_feature_dim=1536,  # Richer shared space
+            shared_layers=8,  # Much deeper
+            num_experts=8,  # One expert per 1.25 scales
+            progressive_training=True,
+            scale_warmup_epochs={
+                256: 0, 512: 1, 768: 2, 1024: 3, 1280: 4,
+                1536: 5, 1792: 6, 2048: 7, 2304: 8, 2560: 9
+            }
+        )
+
+    @staticmethod
+    def clip_vit_l14_ultra_deep() -> DavidArchitectureConfig:
+        """CLIP ViT-L/14 with ultra-deep architecture - GO BIG."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_l14_ultra_deep",
+            uid="c.david.clip_vit_l14_ultra_deep",
+            feature_dim=768,
+            scales=[256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560],
+            sharing_mode="partial_shared",
+            fusion_mode="deep_efficiency",
+            use_belly=True,
+            belly_expand=3.0,  # Maximum expansion
+            shared_feature_dim=2048,  # HUGE shared representation
+            shared_layers=12,  # ResNet-level depth
+            num_experts=10,  # One expert per scale
+            progressive_training=True,
+            scale_warmup_epochs={
+                256: 0, 512: 1, 768: 2, 1024: 3, 1280: 4,
+                1536: 5, 1792: 6, 2048: 7, 2304: 8, 2560: 9
+            }
+        )
+
+    @staticmethod
     def clip_vit_h14() -> DavidArchitectureConfig:
         """CLIP ViT-H/14 optimized."""
         return DavidArchitectureConfig(
@@ -295,6 +356,9 @@ class DavidPresets:
             'hierarchical_refinement': DavidPresets.hierarchical_refinement,
             'clip_vit_b16': DavidPresets.clip_vit_b16,
             'clip_vit_l14': DavidPresets.clip_vit_l14,
+            'clip_vit_l14_deep': DavidPresets.clip_vit_l14_deep,
+            'clip_vit_l14_very_deep': DavidPresets.clip_vit_l14_very_deep,
+            'clip_vit_l14_ultra_deep': DavidPresets.clip_vit_l14_ultra_deep,
             'clip_vit_h14': DavidPresets.clip_vit_h14,
         }
         if name not in presets:
