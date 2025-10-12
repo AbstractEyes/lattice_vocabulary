@@ -3,6 +3,8 @@ David - Multi-Scale Crystal Classifier
 ========================================
 Model implementation for multi-scale deep learning with crystal representations.
 
+Should be placed at: geovocab2/train/model/core/david.py
+
 Author: AbstractPhil
 """
 
@@ -27,7 +29,7 @@ from geovocab2.train.config.david_config import (
 class RoseLoss(nn.Module):
     """Rose Loss with pentachora role weighting."""
 
-    def __init__(self, margin: float = 3.0, temperature: float = 0.71,
+    def __init__(self, margin: float = 1.0, temperature: float = 0.07,
                  role_weights: Optional[Dict[str, float]] = None):
         super().__init__()
         self.margin = margin
@@ -165,6 +167,7 @@ class MultiScaleCrystalLoss(nn.Module):
     def __init__(self, scales: List[int], num_classes: int = 1000,
                  use_rose_loss: bool = True, use_cayley_loss: bool = True,
                  rose_initial_weight: float = 0.1, rose_max_weight: float = 0.5,
+                 rose_margin: float = 1.0, rose_temperature: float = 0.07,
                  cayley_weight: float = 0.05,
                  scale_loss_balance: Optional[Dict[int, float]] = None):
         super().__init__()
@@ -182,7 +185,7 @@ class MultiScaleCrystalLoss(nn.Module):
 
         if use_rose_loss:
             self.rose_losses = nn.ModuleDict({
-                str(scale): RoseLoss(margin=3, temperature=0.71)
+                str(scale): RoseLoss(margin=rose_margin, temperature=rose_temperature)
                 for scale in scales
             })
 
@@ -278,9 +281,11 @@ class ScaleSpecificHead(nn.Module):
     """Scale-specific projection head with optional bottleneck."""
 
     def __init__(self, input_dim: int, crystal_dim: int,
-                 use_belly: bool = True, belly_expand: float = 2.0):
+                 use_belly: bool = True, belly_expand: float = 2.0,
+                 temperature: float = 0.07):  # CONFIGURABLE temperature
         super().__init__()
         self.crystal_dim = crystal_dim
+        self.temperature = temperature
 
         if use_belly:
             belly_dim = int(crystal_dim * belly_expand)
@@ -298,7 +303,8 @@ class ScaleSpecificHead(nn.Module):
     def _init_weights(self):
         for layer in self.projection.modules():
             if isinstance(layer, nn.Linear):
-                nn.init.normal_(layer.weight, std=0.02)
+                # Better initialization for gradient flow
+                nn.init.xavier_uniform_(layer.weight, gain=0.5)
                 if layer.bias is not None:
                     nn.init.zeros_(layer.bias)
 
@@ -306,7 +312,8 @@ class ScaleSpecificHead(nn.Module):
                 anchors: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         z = self.projection(features)
         z = F.normalize(z, dim=-1)
-        logits = (z @ anchors.T) / 0.03
+        # Use learnable/configurable temperature, not hardcoded 0.03
+        logits = (z @ anchors.T) / self.temperature
         return logits, z
 
 
@@ -555,6 +562,7 @@ class David(nn.Module):
         self.scales = scales or config.scales
         self.use_belly = use_belly if use_belly is not None else config.use_belly
         self.belly_expand = belly_expand or config.belly_expand
+        self.projection_temperature = config.projection_temperature
         self.progressive_training = progressive_training if progressive_training is not None else config.progressive_training
         self.scale_warmup_epochs = scale_warmup_epochs or config.scale_warmup_epochs
 
@@ -601,7 +609,8 @@ class David(nn.Module):
                 str(scale): ScaleSpecificHead(
                     shared_feature_dim, scale,
                     use_belly=self.use_belly,
-                    belly_expand=self.belly_expand
+                    belly_expand=self.belly_expand,
+                    temperature=self.projection_temperature
                 )
                 for scale in self.scales
             })
@@ -612,7 +621,8 @@ class David(nn.Module):
                 str(scale): ScaleSpecificHead(
                     shared_feature_dim, scale,
                     use_belly=self.use_belly,
-                    belly_expand=self.belly_expand
+                    belly_expand=self.belly_expand,
+                    temperature=self.projection_temperature
                 )
                 for scale in self.scales
             })
@@ -622,7 +632,8 @@ class David(nn.Module):
                 str(scale): ScaleSpecificHead(
                     self.feature_dim, scale,
                     use_belly=self.use_belly,
-                    belly_expand=self.belly_expand
+                    belly_expand=self.belly_expand,
+                    temperature=self.projection_temperature
                 )
                 for scale in self.scales
             })
@@ -634,7 +645,8 @@ class David(nn.Module):
                            ScaleSpecificHead(
                                self.feature_dim, scale,
                                use_belly=self.use_belly,
-                               belly_expand=self.belly_expand
+                               belly_expand=self.belly_expand,
+                               temperature=self.projection_temperature
                            ))
                 else:
                     prev_scale = self.scales[i-1]
@@ -646,7 +658,8 @@ class David(nn.Module):
                            ScaleSpecificHead(
                                scale, scale,
                                use_belly=self.use_belly,
-                               belly_expand=self.belly_expand
+                               belly_expand=self.belly_expand,
+                               temperature=self.projection_temperature
                            ))
 
     def _build_fusion(self, shared_feature_dim: int, temperature: float,
