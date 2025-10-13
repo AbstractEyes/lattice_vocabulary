@@ -219,5 +219,13 @@ from .symbolic.nikola import (
     ResonantFrequency as ResonantFrequency,
     StandingWavePattern as StandingWavePattern,
 )
+from .validation.shape_validation import (
+    ShapeClassifier as ShapeClassifier,
+    ShapeQualityMetrics as ShapeQualityMetrics,
+    ShapeSurfaceAreaEstimator as ShapeSurfaceAreaEstimator,
+    ShapeTransformValidator as ShapeTransformValidator,
+    ShapeValidator as ShapeValidator,
+    ShapeVolumeEstimator as ShapeVolumeEstimator,
+)
 
 __all__: list[str]
