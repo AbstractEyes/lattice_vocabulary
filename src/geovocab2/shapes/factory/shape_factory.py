@@ -25,10 +25,7 @@ License: MIT
 import numpy as np
 from typing import Optional, Tuple, Union, Literal, Dict, Any
 
-try:
-    from .factory_base import FactoryBase, HAS_TORCH
-except ImportError:
-    from factory_base import FactoryBase, HAS_TORCH
+from geovocab2.shapes.factory.factory_base import FactoryBase, HAS_TORCH
 
 if HAS_TORCH:
     import torch
@@ -36,17 +33,14 @@ if HAS_TORCH:
 ShapeType = Literal["cube", "sphere", "cylinder", "pyramid", "cone"]
 
 # Import validation formulas
-try:
-    from ..formula.engineering.shape_validation import (
-        ShapeVolumeEstimator,
-        ShapeSurfaceAreaEstimator,
-        ShapeQualityMetrics,
-        ShapeValidator,
-        ShapeClassifier
-    )
-    HAS_VALIDATION = True
-except ImportError:
-    HAS_VALIDATION = False
+from geovocab2.shapes.formula import (
+    ShapeVolumeEstimator,
+    ShapeSurfaceAreaEstimator,
+    ShapeQualityMetrics,
+    ShapeValidator,
+    ShapeClassifier
+)
+
 
 
 class SimpleShapeFactory(FactoryBase):
@@ -97,7 +91,7 @@ class SimpleShapeFactory(FactoryBase):
         self.max_retries = max_retries
 
         # Initialize validators if available
-        if HAS_VALIDATION and validate_output:
+        if validate_output:
             self.volume_estimator = ShapeVolumeEstimator(method="analytical")
             self.area_estimator = ShapeSurfaceAreaEstimator(method="analytical")
             self.quality_metrics = ShapeQualityMetrics()
@@ -526,7 +520,7 @@ class SimpleShapeFactory(FactoryBase):
                 - validation: Validation results dict
                 - classification: Classification results dict
         """
-        if not HAS_VALIDATION:
+        if not self.validate_output:
             return {
                 "validation_available": False,
                 "message": "Validation formulas not available"
@@ -635,7 +629,7 @@ class SimpleShapeFactory(FactoryBase):
                 return False, "Points too concentrated (degenerate)"
 
         # Use advanced validation if enabled
-        if self.validate_output and HAS_VALIDATION:
+        if self.validate_output:
             metrics = self.compute_validation_metrics(output)
 
             # Check quality threshold
