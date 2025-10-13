@@ -225,6 +225,34 @@ class DavidPresets:
         )
 
     @staticmethod
+    def gated_expert_team() -> DavidArchitectureConfig:
+        """Maximum accuracy configuration."""
+        return DavidArchitectureConfig(
+            name="david_gated_expert_team",
+            uid="c.david.gated_expert_team",
+            feature_dim=512,
+            scales=[128, 256, 384, 448, 512, 576, 640, 768, 896],
+            sharing_mode="decoupled",
+            fusion_mode="deep_efficiency",
+            use_belly=True,
+            belly_expand=4,
+            num_experts=8,
+            compression_ratio=2,
+            progressive_training=True,
+            scale_warmup_epochs={
+                128: 0,
+                256: 0,
+                384: 1,
+                448: 1,
+                512: 2,
+                576: 3,
+                640: 4,
+                768: 5,
+                896: 6
+            }
+        )
+
+    @staticmethod
     def hierarchical_refinement() -> DavidArchitectureConfig:
         """Hierarchical coarse-to-fine refinement."""
         return DavidArchitectureConfig(
@@ -371,6 +399,7 @@ class DavidPresets:
             'balanced': DavidPresets.balanced,
             'high_accuracy': DavidPresets.high_accuracy,
             'hierarchical_refinement': DavidPresets.hierarchical_refinement,
+            'gated_expert_team': DavidPresets.gated_expert_team,
             'clip_vit_b16': DavidPresets.clip_vit_b16,
             'clip_vit_l14': DavidPresets.clip_vit_l14,
             'clip_vit_l14_deep': DavidPresets.clip_vit_l14_deep,
@@ -394,8 +423,13 @@ class DavidPresets:
             'balanced',
             'high_accuracy',
             'hierarchical_refinement',
+            'gated_expert_team',
             'clip_vit_b16',
             'clip_vit_l14',
+            'clip_vit_l14_deep',
+            'clip_vit_l14_very_deep',
+            'clip_vit_l14_ultra_deep',
+            'clip_vit_bigg14',
             'clip_vit_h14',
         ]
 
