@@ -92,25 +92,38 @@ class GeometricBasin(nn.Module):
         num_classes: int,
         pe_levels: int = 12,
         basin_dim: int = 20,
+        basin_projection_mult: int = 4,
         alpha_target: float = 0.50,
-        track_stability: bool = True
+        track_stability: bool = True,
+        stairs_smooth_tau: float = 0.25,
+        stairs_base_dim: int = 3,
+        stairs_features_per_level: int = 4,
+        cache_stairs: bool = True,
+
+
     ):
         super().__init__()
-
         self.input_dim = input_dim
         self.num_classes = num_classes
         self.pe_levels = pe_levels
         self.basin_dim = basin_dim
+        self.basin_projection_mult = basin_projection_mult
         self.alpha_target = alpha_target
         self.track_stability = track_stability
+
+        self.stairs_smooth_tau = stairs_smooth_tau
+        self.stairs_base_dim = stairs_base_dim
+        self.stairs_features_per_level = stairs_features_per_level
+        self.cache_stairs = cache_stairs
 
         # Beatrix Staircase: Hierarchical triadic PE
         # This is the CORRECT PE from the 67.69% experiment
         self.beatrix_pe = BeatrixStaircasePositionalEncodings(
             levels=pe_levels,
-            features_per_level=4,  # 2 base features expanded to 4
-            smooth_tau=0.25,
-            base=3
+            features_per_level=stairs_features_per_level,  # 2 base features expanded to 4
+            smooth_tau=stairs_smooth_tau,
+            base=stairs_base_dim,
+            cache_encodings=cache_stairs,
         )
 
         # Project input features to influence PE
@@ -118,7 +131,7 @@ class GeometricBasin(nn.Module):
 
         # Basin: Geometric volume constraint
         # Maps hierarchical PE to basin coordinates
-        self.basin_projection = nn.Linear(pe_levels * 4, basin_dim)
+        self.basin_projection = nn.Linear(pe_levels * basin_projection_mult, basin_dim)
 
         # Class simplex vertices (learnable)
         # Each class is a point in the geometric basin
