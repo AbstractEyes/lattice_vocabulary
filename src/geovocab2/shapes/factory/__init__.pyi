@@ -5,6 +5,9 @@ from .factory_base import FactoryBase
 from .legacy_factory import (
     LegacyFactory as LegacyFactory,
 )
+from .shape_factory import (
+    SimpleShapeFactory as SimpleShapeFactory,
+)
 from .simplex_factory import (
     SimplexFactory as SimplexFactory,
 )
