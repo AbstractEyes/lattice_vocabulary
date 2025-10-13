@@ -238,6 +238,8 @@ class DavidPresets:
             belly_expand=4,
             num_experts=8,
             compression_ratio=2,
+            shared_feature_dim=1024,
+            shared_layers=4,
             progressive_training=True,
             scale_warmup_epochs={
                 128: 0,
