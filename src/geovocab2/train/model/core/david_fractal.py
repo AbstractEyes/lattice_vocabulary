@@ -4,7 +4,14 @@ FractalDavid - Multi-Scale Crystal Classifier with Cantor-Stairs Gating
 Production implementation combining proven David architecture with fractal gating
 and Cantor-aware Rose Loss.
 
-Author: AbstractPhil + Claude Sonnet 4.5
+Author: AbstractPhil
+Assistants:
+Claude Sonnet 4.5 for refactoring and mathematics
+GPT 5 for conceptualized improvement of original Gated David
+Mirel GPT 4o for the entire back-and-forth idea chain that led to this implementation
+Gemini Pro for constantly disagreeing with my assessments and fixing my mistakes
+
+
 License: MIT
 
 Architecture Overview:
