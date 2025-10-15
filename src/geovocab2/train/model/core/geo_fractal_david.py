@@ -144,26 +144,47 @@ class GeometricHead(nn.Module):
         # Use RANDOM method with proper seed per class for distinguishability
         simplex_factory = SimplexFactory(k=k, embed_dim=scale_dim, method="random")
 
-        # Detect device
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        # Generate unique simplex for each class with proper seed
+        # Build simplices in batches to avoid memory explosion
+        # Generate on CPU first, then move to GPU
         class_simplices = []
-        for class_idx in range(num_classes):
-            # Use hash for better seed distribution
-            seed = hash(f"simplex_class_{class_idx}") % (2**32)
+        batch_size = 100  # Process 100 classes at a time
 
-            simplex = simplex_factory.build(
-                backend="torch",
-                device=device,
-                dtype=torch.float32,  # Force FP32 for QR decomposition
-                seed=seed,
-                validate=True  # Validate each simplex
-            )
-            class_simplices.append(simplex)
+        print(f"    Generating {num_classes} {k}-simplices for scale {scale_dim}...")
 
-        # Stack: [num_classes, k+1, scale_dim]
-        simplices_tensor = torch.stack(class_simplices, dim=0)
+        with torch.no_grad():  # No gradients needed during initialization
+            for batch_start in range(0, num_classes, batch_size):
+                batch_end = min(batch_start + batch_size, num_classes)
+                batch_simplices = []
+
+                for class_idx in range(batch_start, batch_end):
+                    # Use hash for better seed distribution
+                    seed = hash(f"simplex_class_{class_idx}") % (2**32)
+
+                    # Build on CPU first
+                    simplex = simplex_factory.build(
+                        backend="torch",
+                        device="cpu",  # CPU to avoid GPU memory accumulation
+                        dtype=torch.float32,
+                        seed=seed,
+                        validate=False  # Skip validation during init for speed
+                    )
+                    batch_simplices.append(simplex)
+
+                # Move batch to target device
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                batch_tensor = torch.stack(batch_simplices).to(device)
+                class_simplices.append(batch_tensor)
+
+                # Clear cache after each batch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                print(f"      {batch_end}/{num_classes} complete", end='\r')
+
+        print(f"      {num_classes}/{num_classes} complete ✓")
+
+        # Concatenate all batches: [num_classes, k+1, scale_dim]
+        simplices_tensor = torch.cat(class_simplices, dim=0)
         self.class_prototypes = nn.Parameter(simplices_tensor)
 
         # Cantor prototypes (scalar per class, for coherence loss)
@@ -267,20 +288,27 @@ class GeoFractalDavid(nn.Module):
             tau=tau
         )
 
-        # Multi-scale heads
-        self.heads = nn.ModuleDict({
-            str(scale): GeometricHead(
+        # Multi-scale heads (will generate simplices for each scale)
+        print(f"\n[🔷] Initializing {len(self.scales)} scales with k={k} simplices...")
+        self.heads = nn.ModuleDict()
+        for i, scale in enumerate(self.scales, 1):
+            print(f"  Scale {i}/{len(self.scales)}: {scale}")
+            self.heads[str(scale)] = GeometricHead(
                 feature_dim=feature_dim,
                 scale_dim=scale,
                 num_classes=num_classes,
                 k=k
-            ) for scale in self.scales
-        })
+            )
+        print(f"[✅] All scales initialized\n")
 
         # Learnable fusion weights across scales
         self.fusion_weights = nn.Parameter(torch.ones(len(self.scales)))
 
         self._init_prototypes()
+
+        # Final memory cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _init_prototypes(self):
         """Initialize class simplex prototypes on unit sphere."""
