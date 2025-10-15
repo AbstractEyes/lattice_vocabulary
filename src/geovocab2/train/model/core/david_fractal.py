@@ -137,32 +137,38 @@ class CantorSimplexGate(nn.Module):
     def forward(
         self,
         cantor_scalar: torch.Tensor,
-        crystals: torch.Tensor
+        crystals: torch.Tensor,
+        z: torch.Tensor
     ) -> torch.Tensor:
         """
-        Apply gating to crystals efficiently using broadcasting.
+        Apply gating ONLY to anchor vertex (no memory bloat, fast on CPU/GPU).
 
         Args:
             cantor_scalar: [B]
             crystals: [C, V, d]
+            z: [B, d] - normalized embeddings
 
         Returns:
-            gated_crystals: [B, C, V, d]
+            logits: [B, C]
         """
-        B = cantor_scalar.shape[0]
-        C, V, d = crystals.shape
-
         gates = self.compute_gates(cantor_scalar)  # [B, V]
 
-        # Efficient broadcasting: [C, V, d] -> [1, C, V, d], gates [B, V] -> [B, 1, V, 1]
-        # This broadcasts without the massive expand operation
-        crystals_expanded = crystals.unsqueeze(0)  # [1, C, V, d]
-        gates_expanded = gates.unsqueeze(1).unsqueeze(-1)  # [B, 1, V, 1]
+        # Extract anchor vertex and its gates
+        anchors = crystals[:, 0, :]  # [C, d]
+        anchor_gates = gates[:, 0:1]  # [B, 1] - keep dims for broadcasting
 
-        # Apply gates (broadcasting handles the expansion efficiently)
-        gated = crystals_expanded * (1e-6 + gates_expanded)  # [B, C, V, d]
+        # Normalize anchors once
+        anchors_norm = F.normalize(anchors, dim=-1)  # [C, d]
 
-        return gated
+        # Compute base similarities: [B, d] @ [C, d]^T = [B, C]
+        # This is fast on both CPU and GPU
+        base_logits = z @ anchors_norm.T  # [B, C]
+
+        # Apply per-sample gates: [B, C] * [B, 1] = [B, C]
+        # Broadcasting handles this efficiently
+        logits = base_logits * (1e-6 + anchor_gates)  # [B, C]
+
+        return logits
 
 
 # ============================================================================
@@ -238,24 +244,13 @@ class FractalScaleHead(nn.Module):
             logits: [B, C]
             z: [B, D_scale]
         """
-        B = features.shape[0]
-        C, D = anchors.shape
-
         z = self.projection(features)
         z = F.normalize(z, dim=-1)
 
         if self.enable_cantor_gate and (cantor_scalar is not None) and (crystals is not None):
-            # Apply Cantor gating to crystals
-            gated_crystals = self.cantor_gate(cantor_scalar, crystals)  # [B, C, V, D]
-
-            # Extract gated anchors (first vertex)
-            gated_anchors = gated_crystals[:, :, 0, :]  # [B, C, D]
-
-            # Normalize and compute similarities
-            gated_anchors_norm = F.normalize(gated_anchors, dim=-1)
-
-            # Efficient einsum for batched similarity: [B, D] @ [B, C, D]^T -> [B, C]
-            logits = torch.einsum('bd,bcd->bc', z, gated_anchors_norm) / self.temperature
+            # Gate only the anchor vertex and compute logits directly
+            # No [B, C, V, d] bloat!
+            logits = self.cantor_gate(cantor_scalar, crystals, z) / self.temperature
         else:
             # Simple anchor matching
             anchors_norm = F.normalize(anchors, dim=-1)
