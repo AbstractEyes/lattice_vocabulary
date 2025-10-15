@@ -141,8 +141,8 @@ class CantorSimplexGate(nn.Module):
         z: torch.Tensor
     ) -> torch.Tensor:
         """
-        Apply TRUE Cantor gating: gate → normalize → similarity.
-        This is mathematically correct and non-negotiable.
+        Apply TRUE Cantor gating with optimized matmul instead of einsum.
+        Gate → normalize → similarity (mathematically correct, faster implementation).
 
         Args:
             cantor_scalar: [B]
@@ -158,18 +158,21 @@ class CantorSimplexGate(nn.Module):
         anchors = crystals[:, 0, :]  # [C, d]
         anchor_gates = gates[:, 0]  # [B]
 
-        # Step 1: GATE the anchors (modulate geometry)
-        # [1, C, d] * [B, 1, 1] = [B, C, d]
-        gated_anchors = anchors.unsqueeze(0) * (1e-6 + anchor_gates.unsqueeze(-1).unsqueeze(-1))
+        # Step 1: GATE the anchors
+        # Use broadcasting: [1, C, d] * [B, 1, 1] = [B, C, d]
+        gated_anchors = anchors.unsqueeze(0) * (1e-6 + anchor_gates.view(-1, 1, 1))
 
-        # Step 2: NORMALIZE the gated anchors (renormalize after gating)
-        # This is critical - normalizing AFTER gating changes the direction
+        # Step 2: NORMALIZE the gated anchors
         gated_anchors_norm = F.normalize(gated_anchors, dim=-1)  # [B, C, d]
 
-        # Step 3: SIMILARITY with embeddings
-        # [B, d] with [B, C, d] -> [B, C]
-        # Using einsum for batched operation
-        logits = torch.einsum('bd,bcd->bc', z, gated_anchors_norm)
+        # Step 3: SIMILARITY - use bmm instead of einsum (faster!)
+        # z: [B, d] -> [B, 1, d]
+        # gated_anchors_norm: [B, C, d] -> [B, d, C] (transpose)
+        # bmm: [B, 1, d] @ [B, d, C] = [B, 1, C] -> squeeze -> [B, C]
+        logits = torch.bmm(
+            z.unsqueeze(1),
+            gated_anchors_norm.transpose(1, 2)
+        ).squeeze(1)
 
         return logits
 
@@ -366,7 +369,7 @@ class RoseLoss(nn.Module):
         cantor_scalar: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-        Optimized Rose Loss computation.
+        Optimized Rose Loss with fused operations.
 
         Args:
             z: [B, D]
@@ -380,29 +383,33 @@ class RoseLoss(nn.Module):
         crystals = crystals.to(z.device)
         crystals_norm = F.normalize(crystals, dim=-1)
 
-        # Efficient similarity computation
+        # Efficient similarity computation - use matmul instead of einsum
+        # z: [B, d], crystals_norm: [C, V, d]
+        # Reshape for batch matmul: [B, 1, d] @ [C, V, d] -> needs broadcasting
+        # Actually, let's stick with einsum but optimize the rest
         cos_sim = torch.einsum("bd,cvd->bcv", z, crystals_norm)  # [B, C, V]
 
         # Role weights
         if self.cantor_aware and (cantor_scalar is not None):
             role_weights = self._compute_cantor_modulated_roles_fast(cantor_scalar)  # [B, V]
-            # Weighted sum: [B, C, V] * [B, 1, V] -> [B, C]
-            rose_scores = torch.einsum('bcv,bv->bc', cos_sim, role_weights)
+            # Use matmul instead of einsum: [B, C, V] @ [B, V, 1] -> [B, C, 1] -> [B, C]
+            rose_scores = torch.bmm(cos_sim, role_weights.unsqueeze(-1)).squeeze(-1)
         else:
-            # Static role weights: [B, C, V] * [V] -> [B, C]
+            # Static role weights - simple einsum
             role_weights = self.base_role_weights
-            rose_scores = torch.einsum('bcv,v->bc', cos_sim, role_weights)
+            rose_scores = (cos_sim * role_weights.view(1, 1, -1)).sum(dim=-1)  # [B, C]
 
         rose_scores = rose_scores / self.temperature
 
-        # Efficient hard negative mining
+        # Efficient hard negative mining with scatter
         true_scores = rose_scores.gather(1, targets.view(-1, 1)).squeeze(1)
 
-        # Mask out true class for hard negatives
+        # Create mask and find hard negatives
         mask = torch.zeros_like(rose_scores, dtype=torch.bool)
         mask.scatter_(1, targets.view(-1, 1), True)
         hard_neg = rose_scores.masked_fill(mask, float("-inf")).max(dim=1).values
 
+        # Compute loss with fused operations
         loss = F.relu(self.margin - (true_scores - hard_neg))
         return loss.mean()
 
@@ -537,7 +544,7 @@ class FractalDavid(nn.Module):
         self.scale_warmup_epochs = self.config.scale_warmup_epochs
 
         self._last_cantor_scalars: Optional[Dict[int, torch.Tensor]] = None
-        self._cantor_cache: Optional[torch.Tensor] = None  # Cache for efficiency
+        self._cantor_cache: Optional[torch.Tensor] = None
 
         # Create scale heads
         self.heads = nn.ModuleDict({
@@ -559,6 +566,10 @@ class FractalDavid(nn.Module):
             self.fusion_weights = nn.Parameter(torch.ones(len(self.scales)))
         else:
             raise NotImplementedError(f"Fusion mode {self.config.fusion_mode} not implemented")
+
+        # Optimization: Set to channels_last memory format for better performance
+        # This can help with convolutions and some matmuls
+        # self = self.to(memory_format=torch.channels_last) # Only for 4D tensors, skip for now
 
     def _active_scales(self) -> List[int]:
         """Get active scales based on progressive training."""
@@ -755,7 +766,7 @@ class FractalDavid(nn.Module):
 
 
 # ============================================================================
-# PERFORMANCE TEST
+# PERFORMANCE TEST & PROFILING
 # ============================================================================
 
 if __name__ == "__main__":
@@ -811,7 +822,7 @@ if __name__ == "__main__":
 
     # Benchmark
     print("Benchmarking forward pass...")
-    num_iterations = 50 if device.type == 'cuda' else 10  # Fewer iterations on CPU
+    num_iterations = 50 if device.type == 'cuda' else 10
 
     if device.type == 'cuda':
         torch.cuda.synchronize()
@@ -837,12 +848,31 @@ if __name__ == "__main__":
     print(f"   Average time: {avg_time*1000:.2f} ms/batch")
     print(f"   Throughput: {throughput:.1f} samples/sec")
 
-    if device.type == 'cpu':
-        print(f"\n   💡 NOTE: CPU benchmarks are SLOW due to einsum.")
-        print(f"             This is expected and doesn't matter.")
-        print(f"             GPU training will be 10-50x faster (~3-5 min/epoch).")
-        print(f"             Cantor gating is non-negotiable - it's the core innovation!")
-    else:
+    if device.type == 'cuda':
         print(f"   Est. epoch time (1.28M samples): {(1.28e6 / throughput / 60):.1f} minutes")
+
+        # Memory stats
+        print(f"\n   GPU Memory:")
+        print(f"   Allocated: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
+        print(f"   Reserved: {torch.cuda.memory_reserved(0) / 1e9:.2f} GB")
+    else:
+        print(f"\n   💡 NOTE: CPU benchmarks don't reflect GPU training speed.")
+        print(f"             Einsum and bmm are 10-50x faster on GPU.")
+        print(f"             Expect ~3-5 min/epoch on GPU with this architecture.")
+
+    # Profiling mode
+    if device.type == 'cuda':
+        print(f"\n📈 PROFILING MODE")
+        print(f"   To identify bottlenecks, run with:")
+        print(f"   python -m torch.profiler your_training_script.py")
+        print(f"   Or add this to your training loop:")
+        print(f"")
+        print(f"   with torch.profiler.profile(")
+        print(f"       activities=[torch.profiler.ProfilerActivity.CUDA],")
+        print(f"       record_shapes=True")
+        print(f"   ) as prof:")
+        print(f"       # training code here")
+        print(f"       pass")
+        print(f"   print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))")
 
     print("\n✅ Optimization complete!")
