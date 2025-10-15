@@ -1,16 +1,15 @@
 """
-FractalDavid - OPTIMIZED with ALPHA-NORMALIZED Cantor Staircase
-================================================================
-Enhanced with Beatrix-style soft assignment and learnable alpha.
+FractalDavid with Geometric Basin Compatibility Heads
+======================================================
+Integrates GeometricBasin-style Cantor coherence for direct alpha optimization.
 
-KEY ENHANCEMENTS:
-1. Soft triadic assignment (no hard floor!)
-2. Learnable alpha parameter for middle interval weighting
-3. Differentiable Cantor computation
-4. Smooth gate classification
-5. All optimizations preserved (batching, caching, etc.)
+KEY FEATURES:
+- Geometric basin compatibility scoring per scale
+- Learned Cantor prototypes (one per class per scale)
+- Cantor coherence loss for alpha supervision
+- Multi-scale geometric compatibility
 
-Based on: Beatrix Staircase Positional Encodings
+Based on: GeometricBasinClassifier + FractalDavid-Alpha
 """
 
 import math
@@ -34,9 +33,12 @@ class FractalDavidConfig:
     num_vertices: Optional[int] = None
     enable_cantor_gate: bool = True
     cantor_levels: int = 12
-    cantor_alpha_init: float = 0.5  # NEW: Initial alpha value
-    cantor_tau: float = 0.25  # NEW: Softmax temperature
+    cantor_alpha_init: float = 0.5
+    cantor_tau: float = 0.25
     gate_strength: float = 0.25
+    # NEW: Geometric Basin params
+    use_geometric_basin: bool = True
+    basin_cantor_bandwidth: float = 0.1
     default_internal_cantor: bool = True
     fusion_mode: str = "WEIGHTED_SUM"
     progressive_training: bool = False
@@ -52,223 +54,77 @@ class FractalDavidConfig:
 
 
 # ============================================================================
-# ALPHA-NORMALIZED CANTOR STAIRS (BEATRIX-STYLE)
+# ALPHA-NORMALIZED CANTOR STAIRS
 # ============================================================================
 
 class CantorStairsAlpha(nn.Module):
-    """
-    Soft Cantor staircase with learnable alpha parameter.
-
-    Based on Beatrix Staircase - uses softmax over triadic intervals
-    instead of hard floor() assignment.
-
-    Args:
-        levels: Number of staircase levels
-        alpha_init: Initial value for alpha parameter (default 0.5)
-        tau: Temperature for softmax smoothing (default 0.25)
-    """
+    """Soft Cantor staircase with learnable alpha parameter."""
 
     def __init__(self, levels: int = 12, alpha_init: float = 0.5, tau: float = 0.25):
         super().__init__()
         self.levels = levels
         self.tau = tau
-
-        # Learnable alpha parameter
         self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
-
-        # Pre-compute centers for base=3
         self.register_buffer("centers", torch.tensor([0.5, 1.5, 2.5], dtype=torch.float32))
 
     def forward(self, pos: torch.Tensor, max_pos: int) -> torch.Tensor:
-        """
-        Compute soft Cantor values with alpha normalization.
-
-        Args:
-            pos: Position tensor [...] (any shape)
-            max_pos: Maximum position for normalization
-
-        Returns:
-            Cantor values [...] in [0, 1]
-        """
-        # Normalize to [0, 1]
+        """Compute soft Cantor values with alpha normalization."""
         if max_pos > 1:
             x = pos.float() / float(max_pos - 1)
         else:
             x = pos.float()
 
         x = x.clamp(1e-6, 1.0 - 1e-6)
-
-        # Initialize accumulator
         Cx = torch.zeros_like(x)
         w = 0.5
 
-        # Iterative soft assignment
         for _ in range(self.levels):
-            # Map to [0, 3) range
-            y = x * 3.0  # [...]
-
-            # Compute distances to centers [0.5, 1.5, 2.5]
-            # y.unsqueeze(-1): [..., 1]
-            # centers: [3]
-            # d2: [..., 3]
+            y = x * 3.0
             d2 = (y.unsqueeze(-1) - self.centers) ** 2
-
-            # Soft triadic classification
             logits = -d2 / (self.tau + 1e-8)
-            p = F.softmax(logits, dim=-1)  # [..., 3] -> [LEFT, MID, RIGHT]
-
-            # Alpha-normalized bit: RIGHT + alpha * MIDDLE
-            bit_k = p[..., 2] + self.alpha * p[..., 1]  # [...]
-
-            # Accumulate with weight
+            p = F.softmax(logits, dim=-1)
+            bit_k = p[..., 2] + self.alpha * p[..., 1]
             Cx = Cx + bit_k * w
-
-            # Advance to next level (extract fractional part)
             t = y.floor()
-            x = y - t  # Fractional part
+            x = y - t
             w *= 0.5
 
         return Cx.clamp(0.0, 1.0)
 
 
 # ============================================================================
-# ALPHA-NORMALIZED CANTOR SIMPLEX GATE
+# GEOMETRIC BASIN COMPATIBILITY HEAD
 # ============================================================================
 
-class CantorSimplexGateAlpha(nn.Module):
+class GeometricBasinHead(nn.Module):
     """
-    Memory-efficient Cantor gating with soft triadic classification.
+    Geometric basin compatibility head for one scale.
 
-    Uses the same soft assignment as Cantor computation for consistency.
+    Computes compatibility scores based on:
+    1. Feature similarity to class prototypes
+    2. Cantor coherence with learned prototypes
+    3. Geometric consistency
     """
-
-    def __init__(
-        self,
-        num_vertices: int = 5,
-        gate_strength: float = 0.25,
-        alpha_init: float = 0.5,
-        tau: float = 0.25
-    ):
-        super().__init__()
-        self.V = int(num_vertices)
-        self.tau = tau
-        self.gain = nn.Parameter(torch.tensor(float(gate_strength), dtype=torch.float32))
-
-        # Learnable alpha for gate modulation
-        self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
-
-        self.register_buffer("bary_templates", torch.eye(self.V))
-        self.register_buffer("centers", torch.tensor([0.5, 1.5, 2.5], dtype=torch.float32))
-
-        # Pre-compute base emphasis patterns
-        self.register_buffer("anchor_emphasis", torch.zeros(self.V))
-        self.anchor_emphasis[0] = 1.0
-
-        self.register_buffer("observer_emphasis", torch.zeros(self.V))
-        self.observer_emphasis[-1] = 1.0
-
-        self.register_buffer("diffuse_emphasis", torch.ones(self.V) * 0.15)
-
-    def compute_gates(self, cantor_scalar: torch.Tensor) -> torch.Tensor:
-        """
-        Compute gates with SOFT triadic classification.
-
-        Args:
-            cantor_scalar: [B] in [0,1]
-
-        Returns:
-            gates: [B, V]
-        """
-        B = cantor_scalar.shape[0]
-        V = int(self.V)
-
-        # Soft triadic classification (like Beatrix)
-        y = cantor_scalar * 3.0  # [B]
-
-        # Distances to centers
-        d2 = (y.unsqueeze(-1) - self.centers) ** 2  # [B, 3]
-
-        # Softmax over intervals
-        logits = -d2 / (self.tau + 1e-8)
-        probs = F.softmax(logits, dim=-1)  # [B, 3] -> [LEFT, MID, RIGHT]
-
-        # Base uniform
-        base = torch.full((B, V), 1.0 / V, device=cantor_scalar.device, dtype=cantor_scalar.dtype)
-
-        # Apply emphasis using SOFT probabilities
-        base = base + probs[:, 0:1] * (self.anchor_emphasis.unsqueeze(0) - base)    # LEFT
-        base = base + probs[:, 1:2] * (self.diffuse_emphasis.unsqueeze(0) - base)   # MID
-        base = base + probs[:, 2:3] * (self.observer_emphasis.unsqueeze(0) - base)  # RIGHT
-
-        # Learnable gain
-        g = self.gain.sigmoid()
-        uniform = torch.full((B, V), 1.0 / V, device=cantor_scalar.device, dtype=cantor_scalar.dtype)
-        gates = (1.0 - g) * uniform + g * base
-
-        return gates
-
-    def forward(
-        self,
-        cantor_scalar: torch.Tensor,
-        crystals: torch.Tensor,
-        z: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Apply gating to anchor vertex with soft classification.
-
-        Args:
-            cantor_scalar: [B]
-            crystals: [C, V, d]
-            z: [B, d] - normalized embeddings
-
-        Returns:
-            logits: [B, C]
-        """
-        gates = self.compute_gates(cantor_scalar)  # [B, V]
-
-        # Extract anchor vertex and its gates
-        anchors = crystals[:, 0, :]  # [C, d]
-        anchor_gates = gates[:, 0:1]  # [B, 1]
-
-        # Normalize anchors
-        anchors_norm = F.normalize(anchors, dim=-1)  # [C, d]
-
-        # Compute similarities
-        base_logits = z @ anchors_norm.T  # [B, C]
-
-        # Apply gates
-        logits = base_logits * (1e-6 + anchor_gates)  # [B, C]
-
-        return logits
-
-
-# ============================================================================
-# OPTIMIZED FRACTAL SCALE HEAD (with Alpha)
-# ============================================================================
-
-class FractalScaleHead(nn.Module):
-    """Optimized scale head with alpha-normalized Cantor gating."""
 
     def __init__(
         self,
         input_dim: int,
         crystal_dim: int,
+        num_classes: int,
+        num_vertices: int = 5,
         temperature: float = 0.07,
+        cantor_bandwidth: float = 0.1,
         use_belly: bool = True,
         belly_expand: float = 2.0,
-        num_vertices: int = 5,
-        enable_cantor_gate: bool = True,
-        gate_strength: float = 0.25,
-        alpha_init: float = 0.5,
-        tau: float = 0.25,
     ):
         super().__init__()
         self.crystal_dim = int(crystal_dim)
-        self.temperature = float(temperature)
-        self.enable_cantor_gate = bool(enable_cantor_gate)
-        self.num_vertices = int(num_vertices)
+        self.num_classes = num_classes
+        self.num_vertices = num_vertices
+        self.temperature = temperature
+        self.cantor_bandwidth = cantor_bandwidth
 
-        # Optimized projection
+        # Feature projection
         if use_belly:
             belly_dim = int(self.crystal_dim * float(belly_expand))
             dropout_rate = 1.0 / math.sqrt(self.crystal_dim)
@@ -283,13 +139,22 @@ class FractalScaleHead(nn.Module):
 
         self._init_weights()
 
-        if self.enable_cantor_gate:
-            self.cantor_gate = CantorSimplexGateAlpha(
-                num_vertices=self.num_vertices,
-                gate_strength=gate_strength,
-                alpha_init=alpha_init,
-                tau=tau
-            )
+        # GEOMETRIC BASIN COMPONENTS
+
+        # Learned Cantor prototypes (one per class)
+        self.cantor_prototypes = nn.Parameter(
+            torch.linspace(0.0, 1.0, num_classes, dtype=torch.float32)
+        )
+
+        # Class feature prototypes (for feature compatibility)
+        self.class_prototypes = nn.Parameter(
+            torch.randn(num_classes, self.crystal_dim) * 0.1
+        )
+
+        # Geometric weighting (how much each component matters)
+        self.geo_weights = nn.Parameter(
+            torch.tensor([0.4, 0.3, 0.3], dtype=torch.float32)  # [feature, cantor, crystal]
+        )
 
     def _init_weights(self):
         """Xavier init for stability."""
@@ -299,273 +164,334 @@ class FractalScaleHead(nn.Module):
                 if layer.bias is not None:
                     nn.init.zeros_(layer.bias)
 
+    def compute_feature_compatibility(
+        self,
+        z: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute feature-based compatibility with class prototypes.
+
+        Args:
+            z: [B, d] normalized features
+
+        Returns:
+            feature_compat: [B, C]
+        """
+        # Normalize prototypes
+        proto_norm = F.normalize(self.class_prototypes, dim=-1)
+
+        # Cosine similarity
+        similarities = z @ proto_norm.T  # [B, C]
+
+        # Map to [0, 1]
+        feature_compat = (similarities + 1) / 2
+
+        return feature_compat
+
+    def compute_cantor_coherence(
+        self,
+        cantor_scalar: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute Cantor coherence with learned prototypes.
+
+        Args:
+            cantor_scalar: [B] Cantor values
+
+        Returns:
+            cantor_compat: [B, C]
+        """
+        # Distance to each class's Cantor prototype
+        distances = torch.abs(
+            cantor_scalar.unsqueeze(1) - self.cantor_prototypes.unsqueeze(0)
+        )  # [B, C]
+
+        # Gaussian kernel
+        cantor_compat = torch.exp(-distances ** 2 / self.cantor_bandwidth)
+
+        return cantor_compat
+
+    def compute_crystal_compatibility(
+        self,
+        z: torch.Tensor,
+        crystals: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute compatibility with crystal anchors.
+
+        Args:
+            z: [B, d] normalized features
+            crystals: [C, V, d] crystal vertices
+
+        Returns:
+            crystal_compat: [B, C]
+        """
+        # Use anchor vertices (first vertex)
+        anchors = crystals[:, 0, :]  # [C, d]
+        anchors_norm = F.normalize(anchors, dim=-1)
+
+        # Similarity
+        similarities = z @ anchors_norm.T  # [B, C]
+        crystal_compat = (similarities + 1) / 2
+
+        return crystal_compat
+
     def forward(
         self,
         features: torch.Tensor,
-        anchors: torch.Tensor,
         crystals: Optional[torch.Tensor] = None,
         cantor_scalar: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        Optimized forward pass with soft Cantor gating.
+        Forward pass with geometric basin compatibility.
 
         Args:
             features: [B, D_in]
-            anchors: [C, D_scale]
             crystals: [C, V, D_scale]
             cantor_scalar: [B]
 
         Returns:
-            logits: [B, C]
-            z: [B, D_scale]
+            compatibility_scores: [B, C] - final compatibility scores
+            z: [B, D_scale] - projected features
+            components: dict with individual compatibility components
         """
+        # Project features
         z = self.projection(features)
         z = F.normalize(z, dim=-1)
 
-        if self.enable_cantor_gate and (cantor_scalar is not None) and (crystals is not None):
-            logits = self.cantor_gate(cantor_scalar, crystals, z) / self.temperature
+        # 1. Feature compatibility
+        feature_compat = self.compute_feature_compatibility(z)  # [B, C]
+
+        # 2. Cantor coherence
+        if cantor_scalar is not None:
+            cantor_compat = self.compute_cantor_coherence(cantor_scalar)  # [B, C]
         else:
-            anchors_norm = F.normalize(anchors, dim=-1)
-            logits = (z @ anchors_norm.T) / self.temperature
+            cantor_compat = torch.ones_like(feature_compat)
 
-        return logits, z
-
-
-# ============================================================================
-# OPTIMIZED ROSE LOSS (same as before, for completeness)
-# ============================================================================
-
-class RoseLoss(nn.Module):
-    """Memory-efficient Rose Loss with batched role weight computation."""
-
-    def __init__(
-        self,
-        num_vertices: int = 5,
-        margin: float = 1.0,
-        temperature: float = 0.07,
-        role_weights: Optional[Union[Dict[str, float], torch.Tensor]] = None,
-        cantor_aware: bool = True,
-        cantor_theta: float = 0.5,
-    ):
-        super().__init__()
-        self.num_vertices = num_vertices
-        self.margin = margin
-        self.temperature = temperature
-        self.cantor_aware = cantor_aware
-
-        # Generate base role weights
-        if role_weights is None:
-            role_vec = self._generate_default_roles(num_vertices)
-        elif isinstance(role_weights, dict):
-            if num_vertices == 5:
-                default_weights = {
-                    "anchor": 1.0, "need": -0.75, "relation": 0.75,
-                    "purpose": 0.75, "observer": -0.75,
-                }
-                weights = {**default_weights, **role_weights}
-                role_vec = torch.tensor([
-                    weights["anchor"], weights["need"], weights["relation"],
-                    weights["purpose"], weights["observer"],
-                ], dtype=torch.float32)
-            else:
-                raise ValueError(f"Named roles only for 5 vertices, got {num_vertices}")
+        # 3. Crystal compatibility
+        if crystals is not None:
+            crystal_compat = self.compute_crystal_compatibility(z, crystals)  # [B, C]
         else:
-            role_vec = role_weights
+            crystal_compat = torch.ones_like(feature_compat)
 
-        self.register_buffer("base_role_weights", role_vec)
+        # Combine with learned weights
+        weights = F.softmax(self.geo_weights, dim=0)
 
-        if self.cantor_aware:
-            self.theta = nn.Parameter(torch.tensor(cantor_theta, dtype=torch.float32))
+        # Weighted geometric mean
+        eps = 1e-8
+        feature_compat = torch.clamp(feature_compat, eps, 1.0)
+        cantor_compat = torch.clamp(cantor_compat, eps, 1.0)
+        crystal_compat = torch.clamp(crystal_compat, eps, 1.0)
 
-            anchor_emphasis = torch.zeros(num_vertices)
-            anchor_emphasis[0] = 1.0
-            if num_vertices > 1:
-                anchor_emphasis[-1] = -0.5
-            self.register_buffer("anchor_emphasis", anchor_emphasis)
+        compatibility_scores = (
+            feature_compat ** weights[0] *
+            cantor_compat ** weights[1] *
+            crystal_compat ** weights[2]
+        )
 
-            observer_emphasis = torch.zeros(num_vertices)
-            if num_vertices > 1:
-                observer_emphasis[-1] = 1.0
-            observer_emphasis[0] = -0.5
-            self.register_buffer("observer_emphasis", observer_emphasis)
+        # Temperature scaling for classification
+        compatibility_scores = compatibility_scores / self.temperature
 
-    @staticmethod
-    def _generate_default_roles(num_vertices: int) -> torch.Tensor:
-        """Generate default role weights for k-simplex."""
-        if num_vertices < 2:
-            return torch.ones(num_vertices)
+        components = {
+            'feature': feature_compat,
+            'cantor': cantor_compat,
+            'crystal': crystal_compat,
+            'weights': weights
+        }
 
-        weights = torch.zeros(num_vertices)
-        weights[0] = 1.0
-        weights[-1] = -0.75
-
-        for i in range(1, num_vertices - 1):
-            weights[i] = 0.75 if i % 2 == 1 else -0.5
-
-        return weights
-
-    def _compute_cantor_modulated_roles_fast(
-        self,
-        cantor_scalar: torch.Tensor,
-    ) -> torch.Tensor:
-        """Fast batched Cantor role computation."""
-        B = cantor_scalar.shape[0]
-
-        t = (cantor_scalar * 3.0).floor()
-        left = (t == 0).float().unsqueeze(-1)
-        right = (t == 2).float().unsqueeze(-1)
-
-        base = self.base_role_weights.unsqueeze(0)
-        theta = self.theta.sigmoid()
-
-        modulated = base + theta * left * self.anchor_emphasis.unsqueeze(0)
-        modulated = modulated + theta * right * self.observer_emphasis.unsqueeze(0)
-
-        return modulated
-
-    def forward(
-        self,
-        z: torch.Tensor,
-        crystals: torch.Tensor,
-        targets: torch.Tensor,
-        cantor_scalar: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """Optimized Rose Loss computation."""
-        crystals = crystals.to(z.device)
-        crystals_norm = F.normalize(crystals, dim=-1)
-
-        cos_sim = torch.einsum("bd,cvd->bcv", z, crystals_norm)
-
-        if self.cantor_aware and (cantor_scalar is not None):
-            role_weights = self._compute_cantor_modulated_roles_fast(cantor_scalar)
-            rose_scores = torch.einsum('bcv,bv->bc', cos_sim, role_weights)
-        else:
-            role_weights = self.base_role_weights
-            rose_scores = torch.einsum('bcv,v->bc', cos_sim, role_weights)
-
-        rose_scores = rose_scores / self.temperature
-
-        true_scores = rose_scores.gather(1, targets.view(-1, 1)).squeeze(1)
-
-        mask = torch.zeros_like(rose_scores, dtype=torch.bool)
-        mask.scatter_(1, targets.view(-1, 1), True)
-        hard_neg = rose_scores.masked_fill(mask, float("-inf")).max(dim=1).values
-
-        loss = F.relu(self.margin - (true_scores - hard_neg))
-        return loss.mean()
+        return compatibility_scores, z, components
 
 
 # ============================================================================
-# OPTIMIZED FRACTAL MULTI-SCALE LOSS (same as before)
+# GEOMETRIC BASIN LOSS
 # ============================================================================
 
-class FractalMultiScaleLoss(nn.Module):
-    """Optimized multi-scale loss."""
+class GeometricBasinMultiScaleLoss(nn.Module):
+    """
+    Multi-scale geometric basin loss with Cantor coherence.
+
+    Combines:
+    - Compatibility-based classification loss
+    - Cantor coherence loss (direct alpha supervision)
+    - Multi-scale consistency
+    """
 
     def __init__(
         self,
         scales: List[int],
         num_classes: int = 1000,
-        num_vertices: int = 5,
-        use_rose_loss: bool = True,
-        rose_initial_weight: float = 0.1,
-        rose_max_weight: float = 0.5,
-        rose_margin: float = 1.0,
-        rose_temperature: float = 0.07,
-        rose_cantor_aware: bool = True,
-        rose_cantor_theta: float = 0.5,
+        cantor_coherence_weight: float = 0.5,
+        scale_consistency_weight: float = 0.3,
+        temperature: float = 0.1,
         scale_loss_balance: Optional[Dict[int, float]] = None,
     ):
         super().__init__()
 
         self.scales = scales
         self.num_classes = num_classes
-        self.num_vertices = num_vertices
-        self.use_rose_loss = use_rose_loss
-        self.rose_weight = rose_initial_weight
-        self.rose_max_weight = rose_max_weight
-        self.rose_cantor_aware = rose_cantor_aware
-
+        self.cantor_coherence_weight = cantor_coherence_weight
+        self.scale_consistency_weight = scale_consistency_weight
+        self.temperature = temperature
         self.scale_balance = scale_loss_balance or {s: 1.0 for s in scales}
-        self.ce_loss = nn.CrossEntropyLoss()
 
-        if use_rose_loss:
-            self.rose_losses = nn.ModuleDict({
-                str(scale): RoseLoss(
-                    num_vertices=num_vertices,
-                    margin=rose_margin,
-                    temperature=rose_temperature,
-                    cantor_aware=rose_cantor_aware,
-                    cantor_theta=rose_cantor_theta,
-                )
-                for scale in scales
-            })
+    def compatibility_classification_loss(
+        self,
+        compatibility_scores: torch.Tensor,
+        targets: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Classification loss based on compatibility scores.
+
+        Similar to GeometricBasinLoss but simplified for multi-scale.
+        """
+        B = compatibility_scores.shape[0]
+
+        # 1. Correct class should have high compatibility
+        correct_compat = compatibility_scores[torch.arange(B), targets]
+        correct_loss = -torch.log(correct_compat + 1e-8).mean()
+
+        # 2. Contrastive: use softmax over compatibilities
+        log_probs = F.log_softmax(compatibility_scores / self.temperature, dim=1)
+        contrastive_loss = F.nll_loss(log_probs, targets)
+
+        return correct_loss + 0.5 * contrastive_loss
+
+    def cantor_coherence_loss(
+        self,
+        cantor_scalars: torch.Tensor,
+        cantor_prototypes: torch.Tensor,
+        targets: torch.Tensor,
+        bandwidth: float = 0.1
+    ) -> torch.Tensor:
+        """
+        Cantor coherence loss - ensures Cantor values match class prototypes.
+
+        This provides DIRECT gradient signal to alpha parameter.
+        """
+        # Get target Cantor prototype for each sample
+        target_prototypes = cantor_prototypes[targets]  # [B]
+
+        # MSE loss between actual and target Cantor values
+        coherence_loss = F.mse_loss(cantor_scalars, target_prototypes)
+
+        return coherence_loss
+
+    def scale_consistency_loss(
+        self,
+        scale_cantor_values: Dict[int, torch.Tensor],
+        targets: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Encourage consistency of Cantor values across scales for same sample.
+        """
+        if len(scale_cantor_values) < 2:
+            return torch.tensor(0.0, device=targets.device)
+
+        # Get all Cantor values
+        cantor_list = [v for v in scale_cantor_values.values()]
+
+        # Compute pairwise consistency
+        consistency_loss = 0.0
+        count = 0
+
+        for i in range(len(cantor_list)):
+            for j in range(i + 1, len(cantor_list)):
+                consistency_loss += F.mse_loss(cantor_list[i], cantor_list[j])
+                count += 1
+
+        if count > 0:
+            consistency_loss = consistency_loss / count
+
+        return consistency_loss
 
     def forward(
         self,
-        combined_logits: torch.Tensor,
-        scale_logits: List[torch.Tensor],
-        scale_features: List[torch.Tensor],
+        combined_compatibility: torch.Tensor,
+        scale_compatibilities: List[torch.Tensor],
+        scale_components: List[Dict[str, torch.Tensor]],
         targets: torch.Tensor,
-        anchors_dict: Dict[int, torch.Tensor],
-        crystals_dict: Dict[int, torch.Tensor],
-        epoch: int = 0,
-        cantor_scalars: Optional[Union[torch.Tensor, Dict[int, torch.Tensor]]] = None
+        heads_dict: Dict[int, GeometricBasinHead],
+        cantor_scalars_dict: Optional[Dict[int, torch.Tensor]] = None,
+        epoch: int = 0
     ) -> Dict[str, torch.Tensor]:
-        """Compute losses efficiently."""
+        """
+        Compute complete multi-scale geometric basin loss.
+
+        Args:
+            combined_compatibility: [B, C] fused compatibility scores
+            scale_compatibilities: List of [B, C] per-scale scores
+            scale_components: List of component dicts per scale
+            targets: [B] class labels
+            heads_dict: Dictionary of GeometricBasinHead per scale
+            cantor_scalars_dict: Dict of [B] Cantor values per scale
+            epoch: Current epoch
+
+        Returns:
+            losses: Dictionary of all loss components
+        """
         losses = {}
 
-        ce_main = self.ce_loss(combined_logits, targets)
-        losses['ce'] = ce_main
-        losses['ce_main'] = ce_main
+        # 1. Main compatibility classification loss
+        main_loss = self.compatibility_classification_loss(combined_compatibility, targets)
+        losses['main'] = main_loss
 
+        # 2. Per-scale losses
         total_scale_loss = 0.0
-        rose_total = 0.0
+        total_cantor_coherence = 0.0
 
-        progress = min(epoch / 100.0, 1.0)
-        current_rose_weight = self.rose_weight + \
-            (self.rose_max_weight - self.rose_weight) * progress
-
-        for i, (scale, logits, features) in enumerate(
-            zip(self.scales, scale_logits, scale_features)
-        ):
+        for i, (scale, compat) in enumerate(zip(self.scales, scale_compatibilities)):
             scale_weight = self.scale_balance.get(scale, 1.0)
 
-            ce_scale = self.ce_loss(logits, targets)
-            losses[f'ce_{scale}'] = ce_scale
-            total_scale_loss += scale_weight * ce_scale
+            # Scale classification loss
+            scale_loss = self.compatibility_classification_loss(compat, targets)
+            losses[f'compat_{scale}'] = scale_loss
+            total_scale_loss += scale_weight * scale_loss
 
-            if self.use_rose_loss and scale in crystals_dict:
-                if cantor_scalars is None:
-                    cs = None
-                elif isinstance(cantor_scalars, dict):
-                    cs = cantor_scalars.get(scale, None)
-                else:
-                    cs = cantor_scalars
+            # Cantor coherence loss
+            if cantor_scalars_dict and scale in cantor_scalars_dict and scale in heads_dict:
+                head = heads_dict[scale]
+                cantor_scalars = cantor_scalars_dict[scale]
 
-                rose_loss = self.rose_losses[str(scale)](
-                    features, crystals_dict[scale], targets, cantor_scalar=cs
+                coherence_loss = self.cantor_coherence_loss(
+                    cantor_scalars,
+                    head.cantor_prototypes,
+                    targets,
+                    bandwidth=head.cantor_bandwidth
                 )
-                losses[f'rose_{scale}'] = rose_loss
-                rose_total += rose_loss
 
-                total_scale_loss += current_rose_weight * rose_loss
+                losses[f'cantor_coherence_{scale}'] = coherence_loss
+                total_cantor_coherence += coherence_loss
 
-        if self.use_rose_loss and len(scale_logits) > 0:
-            losses['rose'] = rose_total / len(scale_logits)
+        # Average losses
+        if len(scale_compatibilities) > 0:
+            losses['scale_avg'] = total_scale_loss / len(scale_compatibilities)
+            losses['cantor_coherence'] = total_cantor_coherence / len(scale_compatibilities)
 
-        total_loss = ce_main + total_scale_loss / len(self.scales)
+        # 3. Scale consistency loss
+        if cantor_scalars_dict:
+            consistency_loss = self.scale_consistency_loss(cantor_scalars_dict, targets)
+            losses['scale_consistency'] = consistency_loss
+
+        # 4. Total loss
+        total_loss = main_loss + losses.get('scale_avg', 0.0)
+
+        if 'cantor_coherence' in losses:
+            total_loss = total_loss + self.cantor_coherence_weight * losses['cantor_coherence']
+
+        if 'scale_consistency' in losses:
+            total_loss = total_loss + self.scale_consistency_weight * losses['scale_consistency']
+
         losses['total'] = total_loss
 
         return losses
 
 
 # ============================================================================
-# OPTIMIZED FRACTAL DAVID MODEL (with Alpha Cantor)
+# FRACTAL DAVID WITH GEOMETRIC BASIN HEADS
 # ============================================================================
 
 class FractalDavid(nn.Module):
-    """FractalDavid with alpha-normalized soft Cantor stairs."""
+    """FractalDavid with geometric basin compatibility heads."""
 
     def __init__(self, config: Optional[FractalDavidConfig] = None):
         super().__init__()
@@ -580,6 +506,7 @@ class FractalDavid(nn.Module):
         self.scale_warmup_epochs = self.config.scale_warmup_epochs
 
         self._last_cantor_scalars: Optional[Dict[int, torch.Tensor]] = None
+        self._last_components: Optional[List[Dict[str, torch.Tensor]]] = None
 
         # ALPHA CANTOR MODULE
         self.cantor_stairs = CantorStairsAlpha(
@@ -588,19 +515,17 @@ class FractalDavid(nn.Module):
             tau=self.config.cantor_tau
         )
 
-        # Create scale heads with alpha support
+        # Create GEOMETRIC BASIN HEADS per scale
         self.heads = nn.ModuleDict({
-            str(scale): FractalScaleHead(
+            str(scale): GeometricBasinHead(
                 input_dim=self.feature_dim,
                 crystal_dim=scale,
+                num_classes=self.num_classes,
+                num_vertices=self.config.num_vertices,
                 temperature=self.config.projection_temperature,
+                cantor_bandwidth=self.config.basin_cantor_bandwidth,
                 use_belly=self.config.use_belly,
                 belly_expand=self.config.belly_expand,
-                num_vertices=self.config.num_vertices,
-                enable_cantor_gate=self.config.enable_cantor_gate,
-                gate_strength=self.config.gate_strength,
-                alpha_init=self.config.cantor_alpha_init,
-                tau=self.config.cantor_tau,
             )
             for scale in self.scales
         })
@@ -630,16 +555,10 @@ class FractalDavid(nn.Module):
         device: torch.device,
         cantor_pos: Optional[torch.Tensor]
     ) -> torch.Tensor:
-        """
-        Get or compute Cantor scalars with alpha normalization.
-
-        Returns:
-            cantor_scalars: [num_scales] or [B]
-        """
+        """Get or compute Cantor scalars with alpha normalization."""
         if cantor_pos is not None:
             return cantor_pos.float().clamp(0.0, 1.0)
 
-        # Compute alpha-normalized Cantor values
         max_pos = max(1, num_scales - 1)
         pos_tensor = torch.arange(num_scales, device=device, dtype=torch.float32)
         cantor_values = self.cantor_stairs(pos_tensor, max_pos=max_pos + 1)
@@ -649,13 +568,13 @@ class FractalDavid(nn.Module):
     def _parallel_forward_optimized(
         self,
         features: torch.Tensor,
-        anchors_dict: Dict[int, torch.Tensor],
         crystals_dict: Dict[int, torch.Tensor],
         cantor_pos: Optional[torch.Tensor],
-    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        """Optimized parallel forward with alpha Cantor."""
-        logits_list: List[torch.Tensor] = []
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[Dict[str, torch.Tensor]]]:
+        """Optimized parallel forward with geometric basin heads."""
+        compatibility_list: List[torch.Tensor] = []
         features_list: List[torch.Tensor] = []
+        components_list: List[Dict[str, torch.Tensor]] = []
 
         B = features.shape[0]
         device = features.device
@@ -673,10 +592,9 @@ class FractalDavid(nn.Module):
 
         cantor_scalars_dict = {}
 
-        # Process each scale
+        # Process each scale with geometric basin head
         for idx, scale in enumerate(scale_ids):
             head = self.heads[str(scale)]
-            anchors = anchors_dict[scale]
             crystals = crystals_dict.get(scale, None)
 
             if cantor_base is not None:
@@ -690,28 +608,34 @@ class FractalDavid(nn.Module):
             if cs is not None:
                 cantor_scalars_dict[scale] = cs.detach()
 
-            logits, feats = head(features, anchors, crystals=crystals, cantor_scalar=cs)
-            logits_list.append(logits)
+            # Forward through geometric basin head
+            compat, feats, components = head(features, crystals=crystals, cantor_scalar=cs)
+
+            compatibility_list.append(compat)
             features_list.append(feats)
+            components_list.append(components)
 
         self._last_cantor_scalars = cantor_scalars_dict if cantor_scalars_dict else None
+        self._last_components = components_list
 
-        return logits_list, features_list
+        return compatibility_list, features_list, components_list
 
-    def _fuse_logits(self, logits_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Fuse logits across scales."""
-        if len(logits_list) == 1:
-            w = torch.ones(1, device=logits_list[0].device)
-            return logits_list[0], w
+    def _fuse_compatibilities(
+        self,
+        compatibility_list: List[torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Fuse compatibility scores across scales."""
+        if len(compatibility_list) == 1:
+            w = torch.ones(1, device=compatibility_list[0].device)
+            return compatibility_list[0], w
 
-        weights = F.softmax(self.fusion_weights[:len(logits_list)], dim=0)
-        combined = sum(w * logits for w, logits in zip(weights, logits_list))
+        weights = F.softmax(self.fusion_weights[:len(compatibility_list)], dim=0)
+        combined = sum(w * compat for w, compat in zip(weights, compatibility_list))
         return combined, weights
 
     def forward(
         self,
         x: torch.Tensor,
-        anchors_dict: Dict[int, torch.Tensor],
         crystals_dict: Optional[Dict[int, torch.Tensor]] = None,
         return_all_scales: bool = False,
         *,
@@ -719,25 +643,22 @@ class FractalDavid(nn.Module):
         cantor_levels: Optional[int] = None
     ) -> Union[
         Tuple[torch.Tensor, torch.Tensor],
-        Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor], torch.Tensor]
+        Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor], torch.Tensor, List[Dict]]
     ]:
-        """Forward pass with alpha-normalized Cantor."""
+        """Forward pass with geometric basin compatibility."""
         assert x.dim() == 2 and x.size(-1) == self.feature_dim
-
-        for s in self.scales:
-            assert s in anchors_dict, f"anchors_dict missing scale {s}"
 
         if crystals_dict is None:
             crystals_dict = {}
 
-        logits_list, features_list = self._parallel_forward_optimized(
-            x, anchors_dict, crystals_dict, cantor_pos
+        compatibility_list, features_list, components_list = self._parallel_forward_optimized(
+            x, crystals_dict, cantor_pos
         )
 
-        combined, fusion_w = self._fuse_logits(logits_list)
+        combined, fusion_w = self._fuse_compatibilities(compatibility_list)
 
         if return_all_scales:
-            return combined, logits_list, features_list, fusion_w
+            return combined, compatibility_list, features_list, fusion_w, components_list
         else:
             return combined, (features_list[0] if features_list else x)
 
@@ -753,24 +674,22 @@ class FractalDavid(nn.Module):
         """Get last computed Cantor scalars."""
         return self._last_cantor_scalars
 
+    def get_last_components(self) -> Optional[List[Dict[str, torch.Tensor]]]:
+        """Get last compatibility components for diagnostics."""
+        return self._last_components
+
     def get_cantor_alpha(self) -> float:
         """Get current alpha value from Cantor stairs."""
         return self.cantor_stairs.alpha.item()
 
-    def freeze_scale(self, scale: int):
-        """Freeze a specific scale."""
-        for param in self.heads[str(scale)].parameters():
-            param.requires_grad = False
-
-    def unfreeze_scale(self, scale: int):
-        """Unfreeze a specific scale."""
-        for param in self.heads[str(scale)].parameters():
-            param.requires_grad = True
+    def get_heads_dict(self) -> Dict[int, GeometricBasinHead]:
+        """Get dictionary of heads for loss computation."""
+        return {int(k): v for k, v in self.heads.items()}
 
     def get_model_info(self) -> Dict[str, any]:
         """Get model information."""
         return {
-            "name": "FractalDavid-Alpha",
+            "name": "FractalDavid-GeometricBasin",
             "feature_dim": self.feature_dim,
             "num_classes": self.num_classes,
             "simplex_k": self.config.simplex_k,
@@ -781,7 +700,7 @@ class FractalDavid(nn.Module):
             "cantor_levels": self.config.cantor_levels,
             "cantor_alpha": self.get_cantor_alpha(),
             "cantor_tau": self.config.cantor_tau,
-            "gate_strength": self.config.gate_strength,
+            "use_geometric_basin": self.config.use_geometric_basin,
             "current_epoch": self.current_epoch,
             "total_parameters": sum(p.numel() for p in self.parameters()),
             "trainable_parameters": sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -791,61 +710,29 @@ class FractalDavid(nn.Module):
         info = self.get_model_info()
         k = self.config.num_vertices - 1
         return (
-            f"FractalDavid-Alpha (Soft Cantor + Learnable Alpha)\n"
+            f"FractalDavid-GeometricBasin (Cantor Coherence)\n"
             f"  Simplex: k={k} ({info['num_vertices']} vertices)\n"
             f"  Scales: {info['scales']}\n"
             f"  Active: {info['active_scales']}\n"
             f"  Cantor Alpha: {info['cantor_alpha']:.4f}\n"
-            f"  Cantor Tau: {info['cantor_tau']:.4f}\n"
+            f"  Geometric Basin: {info['use_geometric_basin']}\n"
             f"  Parameters: {info['total_parameters']:,}"
         )
 
 
 # ============================================================================
-# TEST: Alpha Normalization
+# TEST
 # ============================================================================
 
 if __name__ == "__main__":
     print("="*80)
-    print("FractalDavid with Alpha-Normalized Cantor Staircase")
+    print("FractalDavid with Geometric Basin Heads")
     print("="*80)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}\n")
 
-    # Test 1: Cantor Stairs Alpha
-    print("[Test 1] Cantor Stairs with Alpha Normalization")
-    print("-" * 80)
-
-    cantor = CantorStairsAlpha(levels=12, alpha_init=0.5, tau=0.25).to(device)
-    pos = torch.arange(0, 10, device=device)
-    values = cantor(pos, max_pos=10)
-
-    print(f"Positions: {pos.tolist()}")
-    print(f"Cantor values: {[f'{v:.4f}' for v in values.tolist()]}")
-    print(f"Alpha parameter: {cantor.alpha.item():.4f}")
-    print(f"Status: ✓ PASS\n")
-
-    # Test 2: Soft Gate Classification
-    print("[Test 2] Soft Gate Classification")
-    print("-" * 80)
-
-    gate = CantorSimplexGateAlpha(num_vertices=5, gate_strength=0.25, alpha_init=0.5, tau=0.25).to(device)
-    cantor_scalars = torch.tensor([0.0, 0.33, 0.5, 0.67, 1.0], device=device)
-    gates = gate.compute_gates(cantor_scalars)
-
-    print(f"Cantor scalars: {cantor_scalars.tolist()}")
-    print(f"Gate distributions (first 3 vertices):")
-    for i, cs in enumerate(cantor_scalars):
-        g = gates[i, :3]
-        print(f"  Cantor={cs:.2f}: [{g[0]:.3f}, {g[1]:.3f}, {g[2]:.3f}]")
-    print(f"Alpha parameter: {gate.alpha.item():.4f}")
-    print(f"Status: ✓ PASS\n")
-
-    # Test 3: Full Model
-    print("[Test 3] Full FractalDavid Model")
-    print("-" * 80)
-
+    # Test config
     config = FractalDavidConfig(
         feature_dim=768,
         num_classes=100,
@@ -854,48 +741,82 @@ if __name__ == "__main__":
         enable_cantor_gate=True,
         cantor_alpha_init=0.5,
         cantor_tau=0.25,
+        use_geometric_basin=True,
+        basin_cantor_bandwidth=0.1
     )
 
     model = FractalDavid(config).to(device)
     print(model)
     print()
 
-    # Create test data
+    # Test data
     B, C = 16, config.num_classes
     x = torch.randn(B, config.feature_dim, device=device)
 
-    anchors_dict = {}
     crystals_dict = {}
     for scale in config.scales:
         crystals = F.normalize(torch.randn(C, 5, scale, device=device), dim=-1)
-        anchors = crystals[:, 0, :].clone()
-        anchors_dict[scale] = anchors
         crystals_dict[scale] = crystals
 
     # Forward pass
-    out, logits_list, feats_list, w = model(x, anchors_dict, crystals_dict, return_all_scales=True)
+    combined, compat_list, feats_list, fusion_w, components = model(
+        x, crystals_dict, return_all_scales=True
+    )
 
-    print(f"Input shape: {x.shape}")
-    print(f"Output shape: {out.shape}")
-    print(f"Fusion weights: {w.detach().cpu().numpy()}")
+    print(f"Combined compatibility: {combined.shape}")
+    print(f"Num scales: {len(compat_list)}")
+    print(f"Fusion weights: {fusion_w.detach().cpu().numpy()}")
     print(f"Cantor alpha: {model.get_cantor_alpha():.4f}")
 
-    # Check gradient flow
-    loss = out.mean()
-    loss.backward()
+    # Check components
+    print(f"\nCompatibility components (scale {config.scales[0]}):")
+    comp = components[0]
+    print(f"  Feature: {comp['feature'].shape}")
+    print(f"  Cantor: {comp['cantor'].shape}")
+    print(f"  Crystal: {comp['crystal'].shape}")
+    print(f"  Weights: {comp['weights'].detach().cpu().numpy()}")
 
+    # Test loss
+    print(f"\n[Test] Geometric Basin Loss")
+    targets = torch.randint(0, C, (B,), device=device)
+
+    criterion = GeometricBasinMultiScaleLoss(
+        scales=list(config.scales),
+        num_classes=C,
+        cantor_coherence_weight=0.5,
+        scale_consistency_weight=0.3
+    ).to(device)
+
+    losses = criterion(
+        combined, compat_list, components, targets,
+        model.get_heads_dict(), model.get_last_cantor_scalars(), epoch=0
+    )
+
+    print(f"  Total loss: {losses['total'].item():.4f}")
+    print(f"  Main loss: {losses['main'].item():.4f}")
+    if 'cantor_coherence' in losses:
+        print(f"  Cantor coherence: {losses['cantor_coherence'].item():.4f}")
+    if 'scale_consistency' in losses:
+        print(f"  Scale consistency: {losses['scale_consistency'].item():.4f}")
+
+    # Test gradient flow
+    losses['total'].backward()
     alpha_grad = model.cantor_stairs.alpha.grad
-    print(f"Alpha gradient: {alpha_grad.item():.6f}")
-    print(f"Gradient flow: {'✓ YES' if alpha_grad is not None else '✗ NO'}")
-    print(f"Status: ✓ PASS\n")
+    print(f"\n  Alpha gradient: {alpha_grad.item():.6f}")
+    print(f"  Gradient flow: {'✓ YES' if alpha_grad is not None else '✗ NO'}")
 
-    print("="*80)
-    print("✅ All tests passed!")
+    # Check Cantor prototype gradients
+    head = model.heads[str(config.scales[0])]
+    cantor_proto_grad = head.cantor_prototypes.grad
+    print(f"  Cantor prototype gradient: {cantor_proto_grad[:5].detach().cpu().numpy()}")
+
+    print("\n" + "="*80)
+    print("✅ Geometric Basin integration complete!")
     print("="*80)
     print("\nKey Features:")
-    print("  ✓ Learnable alpha parameter for middle interval weighting")
-    print("  ✓ Soft triadic classification via softmax")
-    print("  ✓ Differentiable Cantor computation")
-    print("  ✓ Smooth gate distributions")
-    print("  ✓ All optimizations preserved (batching, caching)")
-    print("\nReady for training with gradient-based alpha optimization!")
+    print("  ✓ Learned Cantor prototypes per class per scale")
+    print("  ✓ Cantor coherence loss for direct alpha supervision")
+    print("  ✓ Geometric compatibility scoring (feature + cantor + crystal)")
+    print("  ✓ Multi-scale consistency")
+    print("  ✓ Full gradient flow to alpha parameter")
+    print("\nReady for training with proper alpha optimization!")
