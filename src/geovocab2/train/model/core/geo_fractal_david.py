@@ -1,26 +1,32 @@
 """
-GeoFractalDavid: Pure Geometric Basin Architecture
-Designed for training with geometric losses instead of cross-entropy.
+GeoFractalDavid: Pure Geometric Basin Architecture (Refactored)
+================================================================
+Compatible with pure geometric basin training (no cross-entropy).
+Uses 4 geometric loss components: coherence, separation, discretization, geometry.
+
+Author: AbstractPhil + Claude Sonnet 4.5
+License: MIT
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 
 class CantorStaircase(nn.Module):
     """
     Learnable soft Cantor staircase with alpha-normalized middle weighting.
-    Maps features to [0, 1] via soft triadic assignment.
+    Follows Beatrix paradigm: normalize to [0, 1], then apply triadic decomposition.
     """
 
-    def __init__(self, alpha_init: float = 0.5, tau: float = 0.25):
+    def __init__(self, alpha_init: float = 0.5, tau: float = 0.25, base: int = 3):
         super().__init__()
         self.alpha = nn.Parameter(torch.tensor(alpha_init))
         self.tau = tau
+        self.base = base
 
-        # Fixed centers for triadic intervals
+        # Fixed centers for triadic intervals [left, middle, right]
         self.register_buffer('centers', torch.tensor([0.5, 1.5, 2.5]))
 
     def forward(self, y: torch.Tensor) -> torch.Tensor:
@@ -34,24 +40,55 @@ class CantorStaircase(nn.Module):
         if y.dim() > 1:
             y = y.mean(dim=1, keepdim=True)  # [batch_size, 1]
 
-        # Compute distances to centers
-        d2 = (y - self.centers.unsqueeze(0)) ** 2  # [batch_size, 3]
+        # BEATRIX PARADIGM: Normalize to [0, 1] first (like positions)
+        # Use sigmoid to map features → [0, 1] (learnable mapping)
+        x = torch.sigmoid(y).squeeze(-1)  # [batch_size] in (0, 1)
+
+        # Clamp away from boundaries for numerical stability
+        x = x.clamp(1e-6, 1.0 - 1e-6)
+
+        # BEATRIX TRIADIC DECOMPOSITION
+        # Map to [0, base) range - this creates the hierarchical structure
+        y_triadic = (x * self.base) % self.base  # [batch_size] in [0, 3)
+
+        # Compute distances to centers [0.5, 1.5, 2.5]
+        d2 = (y_triadic.unsqueeze(-1) - self.centers) ** 2  # [batch_size, 3]
 
         # Soft assignment via temperature-scaled softmax
         logits = -d2 / (self.tau + 1e-8)
         p = F.softmax(logits, dim=-1)  # [batch_size, 3]
 
-        # Alpha-normalized soft assignment
-        # bit_k = p[..., 2] + alpha * p[..., 1]
-        bit_k = p[:, 2] + self.alpha * p[:, 1]
+        # Alpha-normalized soft assignment (Beatrix style)
+        # bit_k = p[left] * 0 + p[middle] * alpha + p[right] * 1
+        bit_k = p[:, 1] * self.alpha + p[:, 2]
 
-        return bit_k.squeeze()
+        return bit_k
+
+    def get_interval_distribution(self, y: torch.Tensor) -> Dict[str, float]:
+        """Get soft interval distribution for diagnostics."""
+        if y.dim() > 1:
+            y = y.mean(dim=1, keepdim=True)
+
+        # Same normalization as forward
+        x = torch.sigmoid(y).squeeze(-1)
+        x = x.clamp(1e-6, 1.0 - 1e-6)
+        y_triadic = (x * self.base) % self.base
+
+        d2 = (y_triadic.unsqueeze(-1) - self.centers) ** 2
+        logits = -d2 / (self.tau + 1e-8)
+        p = F.softmax(logits, dim=-1)
+
+        return {
+            'left': p[:, 0].mean().item(),
+            'middle': p[:, 1].mean().item(),
+            'right': p[:, 2].mean().item()
+        }
 
 
 class GeometricHead(nn.Module):
     """
     Multi-scale geometric classification head.
-    Combines feature similarity, Cantor coherence, and crystal geometry.
+    Provides components for pure geometric basin training.
     """
 
     def __init__(
@@ -76,17 +113,17 @@ class GeometricHead(nn.Module):
             nn.Linear(hidden_dim, scale_dim)
         )
 
-        # Class prototypes in scale space (k+1 vertices per class)
+        # Class prototypes in scale space (for geometry loss)
         self.class_prototypes = nn.Parameter(
             torch.randn(num_classes, scale_dim)
         )
 
-        # Cantor prototypes (scalar per class)
+        # Cantor prototypes (scalar per class, for coherence loss)
         self.cantor_prototypes = nn.Parameter(
             torch.rand(num_classes) * 0.5 + 0.25  # Initialize in [0.25, 0.75]
         )
 
-        # Geometric weights (feature, cantor, crystal)
+        # Geometric weights for inference (feature, cantor, crystal)
         self.geo_weights = nn.Parameter(torch.zeros(3))
 
     def forward(
@@ -95,6 +132,8 @@ class GeometricHead(nn.Module):
             cantor_values: torch.Tensor
     ) -> torch.Tensor:
         """
+        Inference-time forward pass combining geometric components.
+
         Args:
             features: Input features [batch_size, feature_dim]
             cantor_values: Cantor values [batch_size]
@@ -104,24 +143,24 @@ class GeometricHead(nn.Module):
         batch_size = features.size(0)
 
         # Project to scale space
-        query = self.projection(features)  # [batch_size, scale_dim]
+        query = self.projection(features)
         query = F.normalize(query, dim=-1)
 
         # 1. Feature similarity logits
         prototypes_norm = F.normalize(self.class_prototypes, dim=-1)
-        feature_logits = query @ prototypes_norm.t()  # [batch_size, num_classes]
+        feature_logits = query @ prototypes_norm.t()
 
         # 2. Cantor coherence logits
         cantor_distances = (
-                                   cantor_values.unsqueeze(1) - self.cantor_prototypes.unsqueeze(0)
-                           ) ** 2  # [batch_size, num_classes]
-        cantor_logits = -cantor_distances  # Lower distance = higher logit
+            cantor_values.unsqueeze(1) - self.cantor_prototypes.unsqueeze(0)
+        ) ** 2
+        cantor_logits = -cantor_distances
 
-        # 3. Crystal geometry logits (distance-based)
+        # 3. Crystal geometry logits
         distances = torch.cdist(
             query.unsqueeze(1),
             prototypes_norm.unsqueeze(0)
-        ).squeeze(1)  # [batch_size, num_classes]
+        ).squeeze(1)
         crystal_logits = -distances
 
         # Geometric basin combination
@@ -144,7 +183,8 @@ class GeoFractalDavid(nn.Module):
     - Crystal simplex geometry
     - Learnable geometric basin weights
 
-    Designed for training with geometric losses (no cross-entropy required).
+    Designed for training with pure geometric losses (no cross-entropy).
+    Compatible with: coherence, separation, discretization, geometry losses.
     """
 
     def __init__(
@@ -191,6 +231,8 @@ class GeoFractalDavid(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         """
+        Inference forward pass with multi-scale fusion.
+
         Args:
             features: Input embeddings [batch_size, feature_dim]
         Returns:
@@ -212,7 +254,7 @@ class GeoFractalDavid(nn.Module):
             scale_logits.append(logits)
 
         # Fuse across scales with learnable weights
-        scale_logits_tensor = torch.stack(scale_logits, dim=0)  # [num_scales, batch_size, num_classes]
+        scale_logits_tensor = torch.stack(scale_logits, dim=0)
         weights = F.softmax(self.fusion_weights, dim=0).view(-1, 1, 1)
         fused_logits = (weights * scale_logits_tensor).sum(dim=0)
 
@@ -248,8 +290,21 @@ class GeoFractalDavid(nn.Module):
             }
         return weights
 
+    def get_cantor_interval_distribution(self, features: torch.Tensor) -> Dict[int, Dict[str, float]]:
+        """Get Cantor interval distribution per scale for diagnostics."""
+        features = F.normalize(features, dim=-1)
+        distributions = {}
+
+        for scale in self.scales:
+            head = self.heads[str(scale)]
+            proj_features = head.projection(features)
+            dist = self.cantor_stairs.get_interval_distribution(proj_features)
+            distributions[scale] = dist
+
+        return distributions
+
     def __repr__(self):
-        s = f"GeoFractalDavid (Pure Geometric)\n"
+        s = f"GeoFractalDavid (Pure Geometric Basin)\n"
         s += f"  Simplex: k={self.k} ({self.k + 1} vertices)\n"
         s += f"  Scales: {self.scales}\n"
         s += f"  Cantor Alpha: {self.cantor_stairs.alpha.item():.4f}\n"
@@ -294,3 +349,9 @@ if __name__ == "__main__":
     for scale, weights in geo_weights.items():
         print(f"  Scale {scale}: feature={weights['feature']:.3f}, "
               f"cantor={weights['cantor']:.3f}, crystal={weights['crystal']:.3f}")
+
+    # Test Cantor interval distribution
+    interval_dist = model.get_cantor_interval_distribution(features)
+    print(f"\nCantor interval distribution:")
+    for scale, dist in interval_dist.items():
+        print(f"  Scale {scale}: L={dist['left']:.3f}, M={dist['middle']:.3f}, R={dist['right']:.3f}")
