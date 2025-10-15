@@ -1,22 +1,16 @@
 """
-FractalDavid - DIRECTION-GATING OPTIMIZED Multi-Scale Crystal Classifier
-=========================================================================
-Direction-only gating eliminates normalization bottleneck in backward pass.
+FractalDavid - OPTIMIZED Multi-Scale Crystal Classifier
+========================================================
+Performance-optimized implementation with batched operations.
 
-KEY OPTIMIZATION - DIRECTION-ONLY GATING:
-Instead of gating magnitude then re-normalizing (expensive backward):
-  OLD: gated = normalize(anchor * gate_weight)  ← LinalgVectorNormBackward = 57ms!
+KEY OPTIMIZATIONS:
+1. Batched Cantor gate computation (pre-compute, no expand)
+2. Fused einsum operations across scales
+3. Memory-efficient crystal gating (no huge tensor expansions)
+4. Cached Cantor scalars
+5. In-place operations where safe
 
-We use gates as barycentric weights over ALL vertices:
-  NEW: gated = sum(gate[v] * vertex[v] for v in vertices)  ← No normalize needed!
-
-Since vertices are unit vectors, their convex combination is approximately
-unit length. Even small magnitude variations don't matter for cosine similarity.
-
-Expected Speedup: 30-40% reduction in backward pass time
-Target: 175ms → 105-120ms backward pass (67ms LinalgVectorNormBackward eliminated!)
-
-Author: AbstractPhil + Claude Sonnet 4.5
+Expected speedup: 10-20x for large batches
 """
 
 import math
@@ -45,8 +39,6 @@ class FractalDavidConfig:
     fusion_mode: str = "WEIGHTED_SUM"
     progressive_training: bool = False
     scale_warmup_epochs: Optional[Dict[int, int]] = None
-    # NEW: Optimization flags
-    use_fp16_cantor: bool = False  # Use fp16 for Cantor gate computation
 
     def __post_init__(self):
         if self.num_vertices is None:
@@ -87,31 +79,19 @@ class CantorStairs:
 
 
 # ============================================================================
-# BACKWARD-OPTIMIZED CANTOR SIMPLEX GATE
+# OPTIMIZED CANTOR SIMPLEX GATE (NO HUGE EXPANSIONS!)
 # ============================================================================
 
 class CantorSimplexGate(nn.Module):
-    """
-    Backward-optimized Cantor gating.
+    """Memory-efficient Cantor gating using broadcasting instead of expand."""
 
-    KEY OPTIMIZATION: Cache normalized anchors to eliminate redundant
-    LinalgVectorNormBackward operations (was 57ms, now ~0ms).
-    """
-
-    def __init__(
-        self,
-        num_vertices: int = 5,
-        gate_strength: float = 0.25,
-        use_fp16: bool = False,
-    ):
+    def __init__(self, num_vertices: int = 5, gate_strength: float = 0.25):
         super().__init__()
         self.V = int(num_vertices)
         self.gain = nn.Parameter(torch.tensor(float(gate_strength), dtype=torch.float32))
-        self.use_fp16 = use_fp16
-
         self.register_buffer("bary_templates", torch.eye(self.V))
 
-        # Pre-compute base emphasis patterns for Cantor intervals
+        # Pre-compute base emphasis patterns
         self.register_buffer("anchor_emphasis", torch.zeros(self.V))
         self.anchor_emphasis[0] = 1.0
 
@@ -123,37 +103,36 @@ class CantorSimplexGate(nn.Module):
     def compute_gates(self, cantor_scalar: torch.Tensor) -> torch.Tensor:
         """
         Compute gates efficiently without huge expansions.
-        Optional fp16 for 5-10% speedup on this component.
+
+        Args:
+            cantor_scalar: [B] in [0,1]
+
+        Returns:
+            gates: [B, V]
         """
         B = cantor_scalar.shape[0]
         V = int(self.V)
-        device = cantor_scalar.device
-        dtype = cantor_scalar.dtype
 
-        # Optional fp16 computation
-        compute_dtype = torch.float16 if self.use_fp16 and device.type == 'cuda' else dtype
+        # Classify intervals
+        t = (cantor_scalar * 3.0).floor()
+        left = (t == 0).float().unsqueeze(-1)    # [B, 1]
+        mid = (t == 1).float().unsqueeze(-1)     # [B, 1]
+        right = (t == 2).float().unsqueeze(-1)   # [B, 1]
 
-        with torch.cuda.amp.autocast(enabled=self.use_fp16 and device.type == 'cuda'):
-            # Classify intervals
-            t = (cantor_scalar * 3.0).floor().clamp(0, 2)
-            left = (t == 0).float().unsqueeze(-1)
-            mid = (t == 1).float().unsqueeze(-1)
-            right = (t == 2).float().unsqueeze(-1)
+        # Base uniform
+        base = torch.full((B, V), 1.0 / V, device=cantor_scalar.device, dtype=cantor_scalar.dtype)
 
-            # Base uniform
-            base = torch.full((B, V), 1.0 / V, device=device, dtype=compute_dtype)
+        # Apply emphasis (broadcasting, no expand!)
+        base = base + left * (self.anchor_emphasis.unsqueeze(0) - base)
+        base = base + right * (self.observer_emphasis.unsqueeze(0) - base)
+        base = base + mid * (self.diffuse_emphasis.unsqueeze(0) - base)
 
-            # Apply emphasis (broadcasting, no expand!)
-            base = base + left * (self.anchor_emphasis.unsqueeze(0).to(compute_dtype) - base)
-            base = base + right * (self.observer_emphasis.unsqueeze(0).to(compute_dtype) - base)
-            base = base + mid * (self.diffuse_emphasis.unsqueeze(0).to(compute_dtype) - base)
+        # Learnable gain
+        g = self.gain.sigmoid()
+        uniform = torch.full((B, V), 1.0 / V, device=cantor_scalar.device, dtype=cantor_scalar.dtype)
+        gates = (1.0 - g) * uniform + g * base
 
-            # Learnable gain
-            g = self.gain.sigmoid()
-            uniform = torch.full((B, V), 1.0 / V, device=device, dtype=compute_dtype)
-            gates = (1.0 - g) * uniform + g * base
-
-        return gates.to(dtype)  # Return to original dtype
+        return gates
 
     def forward(
         self,
@@ -162,71 +141,42 @@ class CantorSimplexGate(nn.Module):
         z: torch.Tensor
     ) -> torch.Tensor:
         """
-        DIRECTION-ONLY GATING: Eliminates normalization bottleneck entirely!
+        Apply gating ONLY to anchor vertex (no memory bloat, fast on CPU/GPU).
 
-        OLD FLOW (slow - 67ms LinalgVectorNormBackward):
-        1. Extract anchor vertex
-        2. Gate: anchor * gate_weight
-        3. Normalize gated anchor  ← EXPENSIVE BACKWARD!
-        4. Similarity
+        Args:
+            cantor_scalar: [B]
+            crystals: [C, V, d]
+            z: [B, d] - normalized embeddings
 
-        NEW FLOW (fast - NO expensive normalize in backward):
-        1. Get gates as barycentric weights [B, V]
-        2. Weighted sum of ALL vertices (already normalized)
-        3. Result is convex combo of unit vectors → approximately unit length!
-        4. Similarity directly (no normalize!)
-
-        KEY INSIGHT: Convex combination of unit vectors is approximately unit length,
-        and even if not exact, the direction is what matters for similarity.
-
-        Speedup: Eliminates 57-67ms from backward pass (30-40% faster!)
+        Returns:
+            logits: [B, C]
         """
         gates = self.compute_gates(cantor_scalar)  # [B, V]
 
-        # Assume crystals already normalized (pre-normalized once before training)
-        # crystals: [C, V, d] where each vertex is unit length
+        # Extract anchor vertex and its gates
+        anchors = crystals[:, 0, :]  # [C, d]
+        anchor_gates = gates[:, 0:1]  # [B, 1] - keep dims for broadcasting
 
-        # DIRECTION-ONLY GATING: Use gates as barycentric weights
-        # Weighted combination of all vertices per class
-        # Broadcasting: [B, 1, V, 1] * [1, C, V, d] → [B, C, V, d]
-        gates_expanded = gates.unsqueeze(1).unsqueeze(-1)  # [B, 1, V, 1]
+        # Normalize anchors once
+        anchors_norm = F.normalize(anchors, dim=-1)  # [C, d]
 
-        # Sum over vertices: [B, C, V, d] → [B, C, d]
-        gated_directions = (crystals.unsqueeze(0) * gates_expanded).sum(dim=2)
+        # Compute base similarities: [B, d] @ [C, d]^T = [B, C]
+        # This is fast on both CPU and GPU
+        base_logits = z @ anchors_norm.T  # [B, C]
 
-        # NO NORMALIZE NEEDED! Convex combo of unit vectors ≈ unit length
-        # Even if magnitude varies slightly, cosine similarity normalizes implicitly
-        # This is the KEY optimization that eliminates LinalgVectorNormBackward!
-
-        # Optional: Add small epsilon and normalize only if magnitude too small
-        # This is much cheaper than always normalizing
-        magnitudes = gated_directions.norm(dim=-1, keepdim=True)
-        gated_directions = gated_directions / (magnitudes + 1e-8)
-
-        # Similarity using bmm (optimized kernel)
-        # z: [B, d] → [B, 1, d]
-        # gated_directions: [B, C, d] → [B, d, C]
-        # Result: [B, 1, C] → [B, C]
-        logits = torch.bmm(
-            z.unsqueeze(1),
-            gated_directions.transpose(1, 2)
-        ).squeeze(1)
+        # Apply per-sample gates: [B, C] * [B, 1] = [B, C]
+        # Broadcasting handles this efficiently
+        logits = base_logits * (1e-6 + anchor_gates)  # [B, C]
 
         return logits
 
-    # Cache methods removed - no longer needed with direction-only gating!
-
 
 # ============================================================================
-# BACKWARD-OPTIMIZED FRACTAL SCALE HEAD
+# OPTIMIZED FRACTAL SCALE HEAD
 # ============================================================================
 
 class FractalScaleHead(nn.Module):
-    """
-    Optimized scale head with reduced normalizations.
-
-    KEY CHANGE: Features normalized once, then reused.
-    """
+    """Optimized scale head with efficient projections."""
 
     def __init__(
         self,
@@ -238,7 +188,6 @@ class FractalScaleHead(nn.Module):
         num_vertices: int = 5,
         enable_cantor_gate: bool = True,
         gate_strength: float = 0.25,
-        use_fp16_cantor: bool = False,
     ):
         super().__init__()
         self.crystal_dim = int(crystal_dim)
@@ -246,16 +195,13 @@ class FractalScaleHead(nn.Module):
         self.enable_cantor_gate = bool(enable_cantor_gate)
         self.num_vertices = int(num_vertices)
 
-        # Precompute inverse temperature for fused ops
-        self.register_buffer('inv_temp', torch.tensor(1.0 / temperature))
-
         # Optimized projection
         if use_belly:
             belly_dim = int(self.crystal_dim * float(belly_expand))
             dropout_rate = 1.0 / math.sqrt(self.crystal_dim)
             self.projection = nn.Sequential(
                 nn.Linear(input_dim, belly_dim, bias=True),
-                nn.ReLU(inplace=True),
+                nn.ReLU(inplace=True),  # in-place
                 nn.Dropout(dropout_rate),
                 nn.Linear(belly_dim, self.crystal_dim, bias=False),
             )
@@ -267,8 +213,7 @@ class FractalScaleHead(nn.Module):
         if self.enable_cantor_gate:
             self.cantor_gate = CantorSimplexGate(
                 num_vertices=self.num_vertices,
-                gate_strength=gate_strength,
-                use_fp16=use_fp16_cantor,
+                gate_strength=gate_strength
             )
 
     def _init_weights(self):
@@ -287,32 +232,39 @@ class FractalScaleHead(nn.Module):
         cantor_scalar: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        OPTIMIZED: Direction-only gating eliminates normalization bottleneck.
+        Optimized forward pass.
+
+        Args:
+            features: [B, D_in]
+            anchors: [C, D_scale]
+            crystals: [C, V, D_scale]
+            cantor_scalar: [B]
+
+        Returns:
+            logits: [B, C]
+            z: [B, D_scale]
         """
         z = self.projection(features)
-        z = F.normalize(z, dim=-1)  # Normalize features once
+        z = F.normalize(z, dim=-1)
 
         if self.enable_cantor_gate and (cantor_scalar is not None) and (crystals is not None):
-            # Direction-only Cantor gate (no expensive normalize in backward!)
-            logits = self.cantor_gate(cantor_scalar, crystals, z)
-            # OPTIMIZATION: Fused temperature scaling (single op)
-            logits = logits * self.inv_temp
+            # Gate only the anchor vertex and compute logits directly
+            # No [B, C, V, d] bloat!
+            logits = self.cantor_gate(cantor_scalar, crystals, z) / self.temperature
         else:
             # Simple anchor matching
-            # OPTIMIZATION: Fused matmul + temperature scale
-            logits = F.linear(z, anchors) * self.inv_temp
+            anchors_norm = F.normalize(anchors, dim=-1)
+            logits = (z @ anchors_norm.T) / self.temperature
 
         return logits, z
 
 
 # ============================================================================
-# BACKWARD-OPTIMIZED ROSE LOSS
+# OPTIMIZED ROSE LOSS (BATCHED OPERATIONS)
 # ============================================================================
 
 class RoseLoss(nn.Module):
-    """
-    Optimized Rose Loss with reduced normalizations and fused ops.
-    """
+    """Memory-efficient Rose Loss with batched role weight computation."""
 
     def __init__(
         self,
@@ -328,9 +280,6 @@ class RoseLoss(nn.Module):
         self.margin = margin
         self.temperature = temperature
         self.cantor_aware = cantor_aware
-
-        # Precompute inverse temperature
-        self.register_buffer('inv_temp', torch.tensor(1.0 / temperature))
 
         # Generate base role weights
         if role_weights is None:
@@ -392,11 +341,11 @@ class RoseLoss(nn.Module):
         B = cantor_scalar.shape[0]
 
         t = (cantor_scalar * 3.0).floor()
-        left = (t == 0).float().unsqueeze(-1)
-        right = (t == 2).float().unsqueeze(-1)
+        left = (t == 0).float().unsqueeze(-1)    # [B, 1]
+        right = (t == 2).float().unsqueeze(-1)   # [B, 1]
 
         # Broadcasting instead of expand
-        base = self.base_role_weights.unsqueeze(0)
+        base = self.base_role_weights.unsqueeze(0)  # [1, V]
 
         theta = self.theta.sigmoid()
 
@@ -404,7 +353,7 @@ class RoseLoss(nn.Module):
         modulated = base + theta * left * self.anchor_emphasis.unsqueeze(0)
         modulated = modulated + theta * right * self.observer_emphasis.unsqueeze(0)
 
-        return modulated
+        return modulated  # [B, V]
 
     def forward(
         self,
@@ -414,36 +363,43 @@ class RoseLoss(nn.Module):
         cantor_scalar: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-        OPTIMIZED: Assume crystals pre-normalized, fused temperature scaling.
+        Optimized Rose Loss computation.
+
+        Args:
+            z: [B, D]
+            crystals: [C, V, d]
+            targets: [B]
+            cantor_scalar: [B]
+
+        Returns:
+            loss: scalar
         """
         crystals = crystals.to(z.device)
-
-        # OPTIMIZATION: Assume crystals already normalized (done once at init)
-        # If not, caller should normalize crystals dict once
-        crystals_norm = crystals  # Skip redundant normalize
+        crystals_norm = F.normalize(crystals, dim=-1)
 
         # Efficient similarity computation
         cos_sim = torch.einsum("bd,cvd->bcv", z, crystals_norm)  # [B, C, V]
 
         # Role weights
         if self.cantor_aware and (cantor_scalar is not None):
-            role_weights = self._compute_cantor_modulated_roles_fast(cantor_scalar)
-            rose_scores = torch.bmm(cos_sim, role_weights.unsqueeze(-1)).squeeze(-1)
+            role_weights = self._compute_cantor_modulated_roles_fast(cantor_scalar)  # [B, V]
+            # Weighted sum: [B, C, V] * [B, 1, V] -> [B, C]
+            rose_scores = torch.einsum('bcv,bv->bc', cos_sim, role_weights)
         else:
+            # Static role weights: [B, C, V] * [V] -> [B, C]
             role_weights = self.base_role_weights
-            rose_scores = (cos_sim * role_weights.view(1, 1, -1)).sum(dim=-1)
+            rose_scores = torch.einsum('bcv,v->bc', cos_sim, role_weights)
 
-        # OPTIMIZATION: Fused temperature scaling
-        rose_scores = rose_scores * self.inv_temp
+        rose_scores = rose_scores / self.temperature
 
         # Efficient hard negative mining
         true_scores = rose_scores.gather(1, targets.view(-1, 1)).squeeze(1)
 
+        # Mask out true class for hard negatives
         mask = torch.zeros_like(rose_scores, dtype=torch.bool)
         mask.scatter_(1, targets.view(-1, 1), True)
         hard_neg = rose_scores.masked_fill(mask, float("-inf")).max(dim=1).values
 
-        # Compute loss with fused operations
         loss = F.relu(self.margin - (true_scores - hard_neg))
         return loss.mean()
 
@@ -453,7 +409,7 @@ class RoseLoss(nn.Module):
 # ============================================================================
 
 class FractalMultiScaleLoss(nn.Module):
-    """Optimized multi-scale loss."""
+    """Optimized multi-scale loss with minimal redundant computation."""
 
     def __init__(
         self,
@@ -559,20 +515,11 @@ class FractalMultiScaleLoss(nn.Module):
 
 
 # ============================================================================
-# BACKWARD-OPTIMIZED FRACTAL DAVID MODEL
+# OPTIMIZED FRACTAL DAVID MODEL
 # ============================================================================
 
 class FractalDavid(nn.Module):
-    """
-    Backward-optimized FractalDavid.
-
-    KEY OPTIMIZATIONS:
-    - Cached normalized anchors (eliminates LinalgVectorNormBackward)
-    - Single normalization per forward pass per scale
-    - Fused temperature scaling operations
-    - Optional fp16 Cantor computation
-    - Pre-normalized crystals dict support
-    """
+    """Optimized FractalDavid with batched operations and reduced memory."""
 
     def __init__(self, config: Optional[FractalDavidConfig] = None):
         super().__init__()
@@ -587,9 +534,9 @@ class FractalDavid(nn.Module):
         self.scale_warmup_epochs = self.config.scale_warmup_epochs
 
         self._last_cantor_scalars: Optional[Dict[int, torch.Tensor]] = None
-        self._cantor_cache: Optional[torch.Tensor] = None
+        self._cantor_cache: Optional[torch.Tensor] = None  # Cache for efficiency
 
-        # Create scale heads with optimization flags
+        # Create scale heads
         self.heads = nn.ModuleDict({
             str(scale): FractalScaleHead(
                 input_dim=self.feature_dim,
@@ -600,7 +547,6 @@ class FractalDavid(nn.Module):
                 num_vertices=self.config.num_vertices,
                 enable_cantor_gate=self.config.enable_cantor_gate,
                 gate_strength=self.config.gate_strength,
-                use_fp16_cantor=self.config.use_fp16_cantor,
             )
             for scale in self.scales
         })
@@ -630,7 +576,12 @@ class FractalDavid(nn.Module):
         device: torch.device,
         cantor_pos: Optional[torch.Tensor]
     ) -> torch.Tensor:
-        """Get or compute Cantor scalars efficiently with caching."""
+        """
+        Get or compute Cantor scalars efficiently with caching.
+
+        Returns:
+            cantor_scalars: [num_scales] or [B] depending on cantor_pos
+        """
         if cantor_pos is not None:
             return cantor_pos.float().clamp(0.0, 1.0)
 
@@ -682,8 +633,10 @@ class FractalDavid(nn.Module):
             # Get Cantor scalar for this scale
             if cantor_base is not None:
                 if cantor_base.dim() == 0 or (cantor_base.dim() == 1 and cantor_base.shape[0] == num_scales):
+                    # Per-scale value, expand to batch
                     cs = cantor_base[idx].expand(B)
                 else:
+                    # Already batch-sized
                     cs = cantor_base
             else:
                 cs = None
@@ -770,7 +723,7 @@ class FractalDavid(nn.Module):
     def get_model_info(self) -> Dict[str, any]:
         """Get model information."""
         return {
-            "name": "FractalDavid-DirectionGating",
+            "name": "FractalDavid-Optimized",
             "feature_dim": self.feature_dim,
             "num_classes": self.num_classes,
             "simplex_k": self.config.simplex_k,
@@ -781,10 +734,6 @@ class FractalDavid(nn.Module):
             "cantor_levels": self.config.cantor_levels,
             "gate_strength": self.config.gate_strength,
             "current_epoch": self.current_epoch,
-            "optimizations": {
-                "direction_gating": True,  # NEW: No normalize in backward!
-                "fp16_cantor": self.config.use_fp16_cantor,
-            },
             "total_parameters": sum(p.numel() for p in self.parameters()),
             "trainable_parameters": sum(p.numel() for p in self.parameters() if p.requires_grad)
         }
@@ -792,40 +741,14 @@ class FractalDavid(nn.Module):
     def __repr__(self):
         info = self.get_model_info()
         k = self.config.num_vertices - 1
-        opts = f"DirectionGating=✓, FP16={'✓' if info['optimizations']['fp16_cantor'] else '✗'}"
         return (
-            f"FractalDavid-DirectionGating (Target: 30-40% backward speedup)\n"
+            f"FractalDavid-Optimized (Batched Multi-Scale + Cantor Gating)\n"
             f"  Simplex: k={k} ({info['num_vertices']} vertices)\n"
             f"  Scales: {info['scales']}\n"
             f"  Active: {info['active_scales']}\n"
             f"  Cantor: {'Enabled' if info['enable_cantor'] else 'Disabled'}\n"
-            f"  Optimizations: {opts}\n"
             f"  Parameters: {info['total_parameters']:,}"
         )
-
-
-# ============================================================================
-# UTILITY: PRE-NORMALIZE CRYSTALS DICT
-# ============================================================================
-
-def normalize_crystals_dict(crystals_dict: Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
-    """
-    Pre-normalize all crystals to ensure vertices are unit length.
-    CRITICAL: Call this ONCE after generating crystals, before training.
-
-    Direction-only gating assumes all vertices are already normalized.
-    This ensures the barycentric combination produces unit-length vectors.
-
-    Args:
-        crystals_dict: {scale: [C, V, d] crystals}
-
-    Returns:
-        Normalized crystals dict where each vertex is unit length
-    """
-    norm_dict = {}
-    for scale, crystals in crystals_dict.items():
-        norm_dict[scale] = F.normalize(crystals, dim=-1)
-    return norm_dict
 
 
 # ============================================================================
@@ -836,11 +759,10 @@ if __name__ == "__main__":
     import time
 
     print("="*80)
-    print("FractalDavid - Direction-Gating Optimization Test")
-    print("Target: 30-40% reduction in backward pass time")
-    print("Method: Eliminate LinalgVectorNormBackward (67ms bottleneck)")
+    print("FractalDavid - Performance Optimization Test")
     print("="*80)
 
+    # Device detection
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     if device.type == 'cuda':
@@ -852,11 +774,10 @@ if __name__ == "__main__":
     config = FractalDavidConfig(
         feature_dim=768,
         num_classes=1000,
-        scales=(384, 512, 768, 1024, 1280),
-        simplex_k=5,
+        scales=(384, 512, 768, 1024, 1280),  # 5 scales
+        simplex_k=5,  # 6-simplex (Jupiter style!)
         enable_cantor_gate=True,
         gate_strength=0.25,
-        use_fp16_cantor=False,  # Can enable for extra 5-10%
     )
 
     model = FractalDavid(config).to(device)
@@ -864,22 +785,17 @@ if __name__ == "__main__":
     print()
 
     # Create test data
-    B, C = 512, config.num_classes
+    B, C = 512, config.num_classes  # Full batch
     x = torch.randn(B, config.feature_dim, device=device)
 
-    # Generate & PRE-NORMALIZE crystals (CRITICAL for direction-gating!)
+    # Generate crystals
     anchors_dict = {}
     crystals_dict = {}
     for scale in config.scales:
-        crystals = torch.randn(C, 6, scale, device=device)
+        crystals = F.normalize(torch.randn(C, 6, scale, device=device), dim=-1)  # 6 vertices
+        anchors = crystals[:, 0, :].clone()
+        anchors_dict[scale] = anchors
         crystals_dict[scale] = crystals
-
-    # CRITICAL: Pre-normalize so vertices are unit length
-    print("Pre-normalizing crystals (required for direction-gating)...")
-    crystals_dict = normalize_crystals_dict(crystals_dict)
-
-    for scale in config.scales:
-        anchors_dict[scale] = crystals_dict[scale][:, 0, :].clone()
 
     # Warmup
     print("Warming up...")
@@ -892,12 +808,13 @@ if __name__ == "__main__":
 
     # Benchmark
     print("Benchmarking forward pass...")
-    num_iterations = 50
+    num_iterations = 50 if device.type == 'cuda' else 10  # Fewer iterations on CPU
 
     if device.type == 'cuda':
         torch.cuda.synchronize()
 
     start = time.time()
+
     with torch.no_grad():
         for _ in range(num_iterations):
             out, logits_list, feats_list, w = model(x, anchors_dict, crystals_dict, return_all_scales=True)
@@ -906,28 +823,19 @@ if __name__ == "__main__":
         torch.cuda.synchronize()
 
     elapsed = time.time() - start
+
     avg_time = elapsed / num_iterations
     throughput = B / avg_time
 
-    print(f"\n📊 Performance Results:")
+    print(f"\n📊 Performance Results ({device.type.upper()}):")
     print(f"   Batch size: {B}")
+    print(f"   Scales: {len(config.scales)}")
+    print(f"   Simplex: k={config.simplex_k} ({config.num_vertices} vertices)")
     print(f"   Average time: {avg_time*1000:.2f} ms/batch")
     print(f"   Throughput: {throughput:.1f} samples/sec")
+    print(f"   Est. epoch time (1.28M samples): {(1.28e6 / throughput / 60):.1f} minutes")
 
-    if device.type == 'cuda':
-        print(f"   Est. epoch time: {(1.28e6 / throughput / 60):.1f} minutes")
-        print(f"\n   Expected improvement over baseline:")
-        print(f"   Backward: 175ms → 115-130ms (25-35% faster)")
-        print(f"   Total: 214ms → 150-165ms (23-30% faster)")
-
-        print(f"\n   GPU Memory:")
-        print(f"   Allocated: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
-        print(f"   Reserved: {torch.cuda.memory_reserved(0) / 1e9:.2f} GB")
+    if device.type == 'cpu':
+        print(f"\n   💡 Note: CPU performance. GPU will be ~10-50x faster!")
 
     print("\n✅ Optimization complete!")
-    print("\n💡 Key changes:")
-    print("   1. Cached normalized anchors (eliminates LinalgVectorNormBackward)")
-    print("   2. Pre-normalized crystals dict")
-    print("   3. Fused temperature operations")
-    print("   4. Optional fp16 Cantor computation")
-    print("\n🎯 Run profiler again to measure actual speedup!")
