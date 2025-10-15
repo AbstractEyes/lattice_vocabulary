@@ -245,17 +245,29 @@ class GeometricHead(nn.Module):
         cantor_logits = -cantor_distances
 
         # 3. Crystal geometry logits (distance to nearest simplex vertex)
-        # query: [batch_size, scale_dim]
-        # class_prototypes: [num_classes, k+1, scale_dim]
-        query_exp = query.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, D]
-        simplices_exp = self.class_prototypes.unsqueeze(0)  # [1, C, k+1, D]
+        # MEMORY EFFICIENT: Avoid [B, C, k+1, D] broadcast
+        # Use: ||a - b||^2 = ||a||^2 + ||b||^2 - 2*a·b
 
-        # Distance to each vertex: [B, C, k+1]
-        distances = torch.norm(query_exp - simplices_exp, dim=-1)
+        # Flatten simplices: [num_classes * (k+1), scale_dim]
+        simplices_flat = self.class_prototypes.view(-1, self.scale_dim)  # [C*(k+1), D]
 
-        # Use minimum distance to any vertex in the simplex
-        min_distances, _ = distances.min(dim=-1)  # [B, C]
-        crystal_logits = -min_distances
+        # Compute squared distances efficiently
+        query_norm = (query ** 2).sum(dim=1, keepdim=True)  # [B, 1]
+        simplices_norm = (simplices_flat ** 2).sum(dim=1, keepdim=True).t()  # [1, C*(k+1)]
+
+        # Dot product: [B, C*(k+1)]
+        dot_product = query @ simplices_flat.t()
+
+        # Squared distances: [B, C*(k+1)]
+        sq_distances = query_norm + simplices_norm - 2 * dot_product
+        sq_distances = sq_distances.clamp(min=0)  # Numerical stability
+
+        # Reshape to [B, C, k+1] and take min over vertices
+        sq_distances = sq_distances.view(batch_size, self.num_classes, self.num_vertices)
+        min_sq_distances, _ = sq_distances.min(dim=-1)  # [B, C]
+
+        # Crystal logits (negative distance)
+        crystal_logits = -torch.sqrt(min_sq_distances + 1e-8)
 
         # Geometric basin combination
         weights = F.softmax(self.geo_weights, dim=0)
