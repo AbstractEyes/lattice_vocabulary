@@ -23,5 +23,5 @@ for importer, modname, ispkg in pkgutil.iter_modules(__path__):
                         globals()[name] = obj
                         _all_classes.append(name)
 
-print ("all formula imports;", _all_classes)
+# print ("all formula imports;", _all_classes)
 __all__ = _all_classes

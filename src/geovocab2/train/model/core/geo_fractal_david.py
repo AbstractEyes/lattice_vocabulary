@@ -3,6 +3,7 @@ GeoFractalDavid: Pure Geometric Basin Architecture (Refactored)
 ================================================================
 Compatible with pure geometric basin training (no cross-entropy).
 Uses 4 geometric loss components: coherence, separation, discretization, geometry.
+Uses SimplexFactory for proper k-simplex class prototypes.
 
 Author: AbstractPhil + Claude Sonnet 4.5
 License: MIT
@@ -13,15 +14,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Dict, Optional, Tuple
 
+from geovocab2.shapes.factory import SimplexFactory
+
 
 class CantorStaircase(nn.Module):
     """
     Learnable soft Cantor staircase with alpha-normalized middle weighting.
-    Follows Beatrix paradigm: normalize to [0, 1], then apply triadic decomposition.
+    Provides infinite lattice structure that features traverse through.
+
+    Combines:
+    - Position-based lattice structure (Beatrix paradigm)
+    - Feature-driven modulation (learnable trajectories)
     """
 
-    def __init__(self, alpha_init: float = 0.5, tau: float = 0.25, base: int = 3):
+    def __init__(self, feature_dim: int, alpha_init: float = 0.5, tau: float = 0.25, base: int = 3):
         super().__init__()
+        self.feature_dim = feature_dim
         self.alpha = nn.Parameter(torch.tensor(alpha_init))
         self.tau = tau
         self.base = base
@@ -29,23 +37,33 @@ class CantorStaircase(nn.Module):
         # Fixed centers for triadic intervals [left, middle, right]
         self.register_buffer('centers', torch.tensor([0.5, 1.5, 2.5]))
 
-    def forward(self, y: torch.Tensor) -> torch.Tensor:
+        # Learnable feature modulation (features influence position in lattice)
+        self.feature_to_position = nn.Linear(feature_dim, 1)
+
+    def forward(self, y: torch.Tensor, positions: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             y: Input features [batch_size, feature_dim]
+            positions: Optional position indices [batch_size]
         Returns:
             cantor_values: Soft Cantor values in [0, 1] [batch_size]
         """
-        # Reduce to scalar per sample via mean
-        if y.dim() > 1:
-            y = y.mean(dim=1, keepdim=True)  # [batch_size, 1]
+        batch_size = y.size(0)
 
-        # BEATRIX PARADIGM: Normalize to [0, 1] first (like positions)
-        # Use sigmoid to map features → [0, 1] (learnable mapping)
-        x = torch.sigmoid(y).squeeze(-1)  # [batch_size] in (0, 1)
+        # Get base positions (lattice structure)
+        if positions is None:
+            positions = torch.arange(batch_size, device=y.device, dtype=torch.float32)
 
-        # Clamp away from boundaries for numerical stability
-        x = x.clamp(1e-6, 1.0 - 1e-6)
+        # Normalize positions to [0, 1] (base lattice)
+        x_base = positions / max(batch_size - 1, 1.0)
+        x_base = x_base.clamp(1e-6, 1.0 - 1e-6)
+
+        # Feature-driven modulation (trajectories through lattice)
+        feature_shift = self.feature_to_position(y).squeeze(-1)  # [batch_size]
+        feature_shift = torch.tanh(feature_shift) * 0.3  # Bounded shift ±0.3
+
+        # Combine: base structure + learned trajectory
+        x = (x_base + feature_shift).clamp(1e-6, 1.0 - 1e-6)
 
         # BEATRIX TRIADIC DECOMPOSITION
         # Map to [0, base) range - this creates the hierarchical structure
@@ -64,14 +82,20 @@ class CantorStaircase(nn.Module):
 
         return bit_k
 
-    def get_interval_distribution(self, y: torch.Tensor) -> Dict[str, float]:
+    def get_interval_distribution(self, y: torch.Tensor, positions: Optional[torch.Tensor] = None) -> Dict[str, float]:
         """Get soft interval distribution for diagnostics."""
-        if y.dim() > 1:
-            y = y.mean(dim=1, keepdim=True)
+        batch_size = y.size(0)
 
-        # Same normalization as forward
-        x = torch.sigmoid(y).squeeze(-1)
-        x = x.clamp(1e-6, 1.0 - 1e-6)
+        if positions is None:
+            positions = torch.arange(batch_size, device=y.device, dtype=torch.float32)
+
+        x_base = positions / max(batch_size - 1, 1.0)
+        x_base = x_base.clamp(1e-6, 1.0 - 1e-6)
+
+        feature_shift = self.feature_to_position(y).squeeze(-1)
+        feature_shift = torch.tanh(feature_shift) * 0.3
+
+        x = (x_base + feature_shift).clamp(1e-6, 1.0 - 1e-6)
         y_triadic = (x * self.base) % self.base
 
         d2 = (y_triadic.unsqueeze(-1) - self.centers) ** 2
@@ -89,6 +113,7 @@ class GeometricHead(nn.Module):
     """
     Multi-scale geometric classification head.
     Provides components for pure geometric basin training.
+    Uses k-simplex structures for class prototypes.
     """
 
     def __init__(
@@ -103,6 +128,7 @@ class GeometricHead(nn.Module):
         self.scale_dim = scale_dim
         self.num_classes = num_classes
         self.k = k
+        self.num_vertices = k + 1
 
         # Project to scale dimension
         hidden_dim = scale_dim * 2
@@ -113,14 +139,36 @@ class GeometricHead(nn.Module):
             nn.Linear(hidden_dim, scale_dim)
         )
 
-        # Class prototypes in scale space (for geometry loss)
-        self.class_prototypes = nn.Parameter(
-            torch.randn(num_classes, scale_dim)
-        )
+        # Class prototypes as k-simplices (k+1 vertices per class)
+        # Shape: [num_classes, k+1, scale_dim]
+        # Use RANDOM method with proper seed per class for distinguishability
+        simplex_factory = SimplexFactory(k=k, embed_dim=scale_dim, method="random")
+
+        # Detect device
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Generate unique simplex for each class with proper seed
+        class_simplices = []
+        for class_idx in range(num_classes):
+            # Use hash for better seed distribution
+            seed = hash(f"simplex_class_{class_idx}") % (2**32)
+
+            simplex = simplex_factory.build(
+                backend="torch",
+                device=device,
+                seed=seed,
+                validate=True  # Validate each simplex
+            )
+            class_simplices.append(simplex)
+
+        # Stack: [num_classes, k+1, scale_dim]
+        simplices_tensor = torch.stack(class_simplices, dim=0)
+        self.class_prototypes = nn.Parameter(simplices_tensor)
 
         # Cantor prototypes (scalar per class, for coherence loss)
+        # Initialize evenly spaced across [0, 1] like original FractalDavid
         self.cantor_prototypes = nn.Parameter(
-            torch.rand(num_classes) * 0.5 + 0.25  # Initialize in [0.25, 0.75]
+            torch.linspace(0.0, 1.0, num_classes, dtype=torch.float32)
         )
 
         # Geometric weights for inference (feature, cantor, crystal)
@@ -146,9 +194,11 @@ class GeometricHead(nn.Module):
         query = self.projection(features)
         query = F.normalize(query, dim=-1)
 
-        # 1. Feature similarity logits
-        prototypes_norm = F.normalize(self.class_prototypes, dim=-1)
-        feature_logits = query @ prototypes_norm.t()
+        # 1. Feature similarity logits (use simplex centroids)
+        # Centroid of each class simplex: [num_classes, scale_dim]
+        simplex_centroids = self.class_prototypes.mean(dim=1)
+        centroids_norm = F.normalize(simplex_centroids, dim=-1)
+        feature_logits = query @ centroids_norm.t()
 
         # 2. Cantor coherence logits
         cantor_distances = (
@@ -156,12 +206,18 @@ class GeometricHead(nn.Module):
         ) ** 2
         cantor_logits = -cantor_distances
 
-        # 3. Crystal geometry logits
-        distances = torch.cdist(
-            query.unsqueeze(1),
-            prototypes_norm.unsqueeze(0)
-        ).squeeze(1)
-        crystal_logits = -distances
+        # 3. Crystal geometry logits (distance to nearest simplex vertex)
+        # query: [batch_size, scale_dim]
+        # class_prototypes: [num_classes, k+1, scale_dim]
+        query_exp = query.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, D]
+        simplices_exp = self.class_prototypes.unsqueeze(0)  # [1, C, k+1, D]
+
+        # Distance to each vertex: [B, C, k+1]
+        distances = torch.norm(query_exp - simplices_exp, dim=-1)
+
+        # Use minimum distance to any vertex in the simplex
+        min_distances, _ = distances.min(dim=-1)  # [B, C]
+        crystal_logits = -min_distances
 
         # Geometric basin combination
         weights = F.softmax(self.geo_weights, dim=0)
@@ -203,8 +259,12 @@ class GeoFractalDavid(nn.Module):
         self.k = k
         self.scales = scales or [256, 384, 512, 768, 1024, 1280]
 
-        # Shared Cantor staircase
-        self.cantor_stairs = CantorStaircase(alpha_init=alpha_init, tau=tau)
+        # Shared Cantor staircase (takes BOTH positions and features)
+        self.cantor_stairs = CantorStaircase(
+            feature_dim=feature_dim,  # Now needs feature_dim for modulation
+            alpha_init=alpha_init,
+            tau=tau
+        )
 
         # Multi-scale heads
         self.heads = nn.ModuleDict({
@@ -222,12 +282,12 @@ class GeoFractalDavid(nn.Module):
         self._init_prototypes()
 
     def _init_prototypes(self):
-        """Initialize class prototypes on unit sphere."""
+        """Initialize class simplex prototypes on unit sphere."""
         for head in self.heads.values():
-            nn.init.xavier_uniform_(head.class_prototypes)
-            head.class_prototypes.data = F.normalize(
-                head.class_prototypes.data, dim=-1
-            )
+            # Normalize each vertex of each simplex to unit sphere
+            # Shape: [num_classes, k+1, scale_dim]
+            normalized_simplices = F.normalize(head.class_prototypes.data, dim=-1)
+            head.class_prototypes.data = normalized_simplices
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         """
@@ -243,8 +303,11 @@ class GeoFractalDavid(nn.Module):
         # Normalize input features
         features = F.normalize(features, dim=-1)
 
-        # Compute Cantor values (shared across scales)
-        cantor_values = self.cantor_stairs(features)
+        # Generate positions for lattice structure
+        positions = torch.arange(batch_size, device=features.device, dtype=torch.float32)
+
+        # Compute Cantor values (lattice + feature trajectories)
+        cantor_values = self.cantor_stairs(features, positions)
 
         # Get logits from each scale
         scale_logits = []
@@ -263,7 +326,9 @@ class GeoFractalDavid(nn.Module):
     def get_scale_logits(self, features: torch.Tensor) -> Dict[int, torch.Tensor]:
         """Get individual scale logits for analysis."""
         features = F.normalize(features, dim=-1)
-        cantor_values = self.cantor_stairs(features)
+        batch_size = features.size(0)
+        positions = torch.arange(batch_size, device=features.device, dtype=torch.float32)
+        cantor_values = self.cantor_stairs(features, positions)
 
         scale_logits = {}
         for scale in self.scales:
@@ -275,7 +340,9 @@ class GeoFractalDavid(nn.Module):
     def get_cantor_values(self, features: torch.Tensor) -> torch.Tensor:
         """Get Cantor values for features."""
         features = F.normalize(features, dim=-1)
-        return self.cantor_stairs(features)
+        batch_size = features.size(0)
+        positions = torch.arange(batch_size, device=features.device, dtype=torch.float32)
+        return self.cantor_stairs(features, positions)
 
     def get_geometric_weights(self) -> Dict[int, Dict[str, float]]:
         """Get current geometric basin weights per scale."""
@@ -293,21 +360,24 @@ class GeoFractalDavid(nn.Module):
     def get_cantor_interval_distribution(self, features: torch.Tensor) -> Dict[int, Dict[str, float]]:
         """Get Cantor interval distribution per scale for diagnostics."""
         features = F.normalize(features, dim=-1)
-        distributions = {}
+        batch_size = features.size(0)
+        positions = torch.arange(batch_size, device=features.device, dtype=torch.float32)
 
-        for scale in self.scales:
-            head = self.heads[str(scale)]
-            proj_features = head.projection(features)
-            dist = self.cantor_stairs.get_interval_distribution(proj_features)
-            distributions[scale] = dist
+        # Cantor staircase operates on ORIGINAL features, not projected
+        dist = self.cantor_stairs.get_interval_distribution(features, positions)
+
+        # Same distribution applies to all scales (shared Cantor staircase)
+        distributions = {scale: dist for scale in self.scales}
 
         return distributions
 
     def __repr__(self):
-        s = f"GeoFractalDavid (Pure Geometric Basin)\n"
-        s += f"  Simplex: k={self.k} ({self.k + 1} vertices)\n"
+        s = f"GeoFractalDavid (Pure Geometric Basin + SimplexFactory)\n"
+        s += f"  Simplex: k={self.k} ({self.k + 1} vertices per class)\n"
         s += f"  Scales: {self.scales}\n"
         s += f"  Cantor Alpha: {self.cantor_stairs.alpha.item():.4f}\n"
+        s += f"  Total Classes: {self.num_classes}\n"
+        s += f"  Total Simplex Vertices: {self.num_classes * (self.k + 1):,}\n"
         s += f"  Parameters: {sum(p.numel() for p in self.parameters()):,}"
         return s
 
@@ -352,6 +422,28 @@ if __name__ == "__main__":
 
     # Test Cantor interval distribution
     interval_dist = model.get_cantor_interval_distribution(features)
-    print(f"\nCantor interval distribution:")
+    print(f"\nCantor interval distribution (Beatrix paradigm):")
     for scale, dist in interval_dist.items():
         print(f"  Scale {scale}: L={dist['left']:.3f}, M={dist['middle']:.3f}, R={dist['right']:.3f}")
+
+    # Check simplex structure
+    print(f"\nSimplex structure:")
+    for scale in [256, 512, 1024]:
+        head = model.heads[str(scale)]
+        print(f"  Scale {scale}:")
+        print(f"    Class prototypes shape: {head.class_prototypes.shape}")
+        print(f"    Expected: [{model.num_classes}, {model.k + 1}, {scale}]")
+
+        # Validate one simplex
+        simplex_0 = head.class_prototypes[0]  # First class
+        centroid = simplex_0.mean(dim=0)
+        print(f"    Class 0 centroid norm: {torch.norm(centroid):.4f}")
+
+        # Check distances between vertices
+        distances = []
+        for i in range(model.k + 1):
+            for j in range(i + 1, model.k + 1):
+                d = torch.norm(simplex_0[i] - simplex_0[j])
+                distances.append(d.item())
+        print(f"    Edge lengths: min={min(distances):.4f}, max={max(distances):.4f}, "
+              f"mean={sum(distances)/len(distances):.4f}")
