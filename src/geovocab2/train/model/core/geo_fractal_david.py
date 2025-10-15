@@ -210,11 +210,27 @@ class GeometricHead(nn.Module):
         Returns:
             logits: Classification logits [batch_size, num_classes]
         """
-        batch_size = features.size(0)
-
         # Project to scale space
         query = self.projection(features)
         query = F.normalize(query, dim=-1)
+
+        return self.forward_from_projection(query, cantor_values)
+
+    def forward_from_projection(
+            self,
+            query: torch.Tensor,
+            cantor_values: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward from already-projected features (avoids recomputation).
+
+        Args:
+            query: Projected features [batch_size, scale_dim] (already normalized)
+            cantor_values: Cantor values [batch_size]
+        Returns:
+            logits: Classification logits [batch_size, num_classes]
+        """
+        batch_size = query.size(0)
 
         # 1. Feature similarity logits (use simplex centroids)
         # Centroid of each class simplex: [num_classes, scale_dim]
@@ -318,14 +334,16 @@ class GeoFractalDavid(nn.Module):
             normalized_simplices = F.normalize(head.class_prototypes.data, dim=-1)
             head.class_prototypes.data = normalized_simplices
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
+    def forward(self, features: torch.Tensor, return_intermediates: bool = False) -> torch.Tensor:
         """
         Inference forward pass with multi-scale fusion.
 
         Args:
             features: Input embeddings [batch_size, feature_dim]
+            return_intermediates: If True, return (logits, cantor_values, proj_features_dict)
         Returns:
             logits: Fused classification logits [batch_size, num_classes]
+            OR (logits, cantor_values, proj_features_dict) if return_intermediates=True
         """
         batch_size = features.size(0)
 
@@ -340,9 +358,21 @@ class GeoFractalDavid(nn.Module):
 
         # Get logits from each scale
         scale_logits = []
+        proj_features_dict = {} if return_intermediates else None
+
         for scale in self.scales:
             head = self.heads[str(scale)]
-            logits = head(features, cantor_values)
+
+            # Store projected features if needed for loss
+            if return_intermediates:
+                proj_features = head.projection(features)
+                proj_features = F.normalize(proj_features, dim=-1)
+                proj_features_dict[scale] = proj_features
+                # Use stored proj_features in head forward
+                logits = head.forward_from_projection(proj_features, cantor_values)
+            else:
+                logits = head(features, cantor_values)
+
             scale_logits.append(logits)
 
         # Fuse across scales with learnable weights
@@ -350,6 +380,8 @@ class GeoFractalDavid(nn.Module):
         weights = F.softmax(self.fusion_weights, dim=0).view(-1, 1, 1)
         fused_logits = (weights * scale_logits_tensor).sum(dim=0)
 
+        if return_intermediates:
+            return fused_logits, cantor_values, proj_features_dict
         return fused_logits
 
     def get_scale_logits(self, features: torch.Tensor) -> Dict[int, torch.Tensor]:
