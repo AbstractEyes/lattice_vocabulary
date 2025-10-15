@@ -156,6 +156,7 @@ class GeometricHead(nn.Module):
             simplex = simplex_factory.build(
                 backend="torch",
                 device=device,
+                dtype=torch.float32,  # Force FP32 for QR decomposition
                 seed=seed,
                 validate=True  # Validate each simplex
             )
