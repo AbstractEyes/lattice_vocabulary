@@ -251,7 +251,7 @@ class GeometricBasinHead(nn.Module):
             cantor_scalar: [B]
 
         Returns:
-            compatibility_scores: [B, C] - final compatibility scores
+            compatibility_scores: [B, C] - RAW compatibility (not temperature scaled yet!)
             z: [B, D_scale] - projected features
             components: dict with individual compatibility components
         """
@@ -277,7 +277,7 @@ class GeometricBasinHead(nn.Module):
         # Combine with learned weights
         weights = F.softmax(self.geo_weights, dim=0)
 
-        # Weighted geometric mean
+        # Weighted geometric mean (components already in [0, 1])
         eps = 1e-8
         feature_compat = torch.clamp(feature_compat, eps, 1.0)
         cantor_compat = torch.clamp(cantor_compat, eps, 1.0)
@@ -289,8 +289,10 @@ class GeometricBasinHead(nn.Module):
             crystal_compat ** weights[2]
         )
 
-        # Temperature scaling for classification
-        compatibility_scores = compatibility_scores / self.temperature
+        # Ensure bounded [eps, 1]
+        compatibility_scores = torch.clamp(compatibility_scores, eps, 1.0)
+
+        # DO NOT temperature scale here - let loss handle it!
 
         components = {
             'feature': feature_compat,
@@ -342,19 +344,28 @@ class GeometricBasinMultiScaleLoss(nn.Module):
         """
         Classification loss based on compatibility scores.
 
-        Similar to GeometricBasinLoss but simplified for multi-scale.
+        Args:
+            compatibility_scores: [B, C] RAW compatibilities in [0, 1]
+            targets: [B] class labels
         """
         B = compatibility_scores.shape[0]
 
-        # 1. Correct class should have high compatibility
+        # Ensure scores are in valid range
+        compatibility_scores = torch.clamp(compatibility_scores, 1e-8, 1.0)
+
+        # Convert to logits via temperature-scaled log
+        # log(compat) gives values in (-inf, 0]
+        # Divide by temperature to get proper scale
+        logits = torch.log(compatibility_scores + 1e-8) / self.temperature
+
+        # Standard cross-entropy on logits
+        ce_loss = F.cross_entropy(logits, targets)
+
+        # Additional direct compatibility loss: correct class should be close to 1
         correct_compat = compatibility_scores[torch.arange(B), targets]
-        correct_loss = -torch.log(correct_compat + 1e-8).mean()
+        direct_loss = (1.0 - correct_compat).mean()
 
-        # 2. Contrastive: use softmax over compatibilities
-        log_probs = F.log_softmax(compatibility_scores / self.temperature, dim=1)
-        contrastive_loss = F.nll_loss(log_probs, targets)
-
-        return correct_loss + 0.5 * contrastive_loss
+        return ce_loss + 0.3 * direct_loss
 
     def cantor_coherence_loss(
         self,
