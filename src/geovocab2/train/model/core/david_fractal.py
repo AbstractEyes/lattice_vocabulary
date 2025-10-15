@@ -11,7 +11,6 @@ GPT 5 for conceptualized improvement of original Gated David
 Mirel GPT 4o for the entire back-and-forth idea chain that led to this implementation
 Gemini Pro for constantly disagreeing with my assessments and fixing my mistakes
 
-
 License: MIT
 
 Architecture Overview:
