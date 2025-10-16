@@ -339,12 +339,10 @@ class GeoFractalDavid(nn.Module):
             torch.cuda.empty_cache()
 
     def _init_prototypes(self):
-        """Initialize class simplex prototypes on unit sphere."""
-        for head in self.heads.values():
-            # Normalize each vertex of each simplex to unit sphere
-            # Shape: [num_classes, k+1, scale_dim]
-            normalized_simplices = F.normalize(head.class_prototypes.data, dim=-1)
-            head.class_prototypes.data = normalized_simplices
+        """Initialize class simplex prototypes - keep them unnormalized for proper centroids."""
+        # Do NOT normalize vertices to unit sphere
+        # Centroids need to be distinguishable, not collapsed to origin
+        pass
 
     def forward(self, features: torch.Tensor, return_intermediates: bool = False) -> torch.Tensor:
         """
