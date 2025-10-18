@@ -2,14 +2,12 @@
 SimpleClassifier
 Author: AbstractPhil + Claude Sonnet 4.5
 
-Description: Simple MLP classifier demonstrating BaseModel usage.
-- Concrete example of BaseModel implementation
-- Shows proper inheritance from both BaseModel and nn.Module
-- Demonstrates compile() and cache() usage
+Description: Simple MLP classifier demonstrating base torch usage.
 - Educational reference for students
+- Very simple implementation with intentional faults
 
 Design Philosophy:
-    Clear, practical example showing how to implement BaseModel.
+    Clear, practical example showing how to implement a simple torch model.
     Students can use this as a template for their own models.
 
 License: MIT
@@ -19,15 +17,11 @@ import torch
 import torch.nn as nn
 from typing import Dict, Any, List
 
-from geovocab2.train.model.model_base import BaseModel
-
-
-class SimpleClassifier(BaseModel, nn.Module):
+class SimpleClassifier(nn.Module):
     """
     Simple MLP classifier for demonstration and teaching.
 
     A straightforward feedforward network that shows how to properly
-    implement BaseModel while inheriting from nn.Module.
 
     Architecture:
         Input -> Hidden Layer(s) -> ReLU -> Dropout -> Output -> Softmax
@@ -70,7 +64,6 @@ class SimpleClassifier(BaseModel, nn.Module):
     ):
         """Initialize the classifier."""
         # Initialize both base classes
-        BaseModel.__init__(self, name=name, uid=uid)
         nn.Module.__init__(self)
 
         # Store config
@@ -205,7 +198,7 @@ if __name__ == "__main__":
     import json
 
     print("=" * 70)
-    print("SimpleClassifier Example: Practical BaseModel Usage")
+    print("SimpleClassifier Example: Practical Torch Model Usage")
     print("=" * 70)
 
     # Test 1: Create and inspect model
