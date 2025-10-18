@@ -4,7 +4,7 @@ from typing import Dict, Optional, Any, Union
 import torch
 import torch.nn as nn
 
-from geovocab2.train.config.config_base import ConfigBase
+from geovocab2.train.config.config_base import BaseConfig
 
 
 class LossBase(ABC):

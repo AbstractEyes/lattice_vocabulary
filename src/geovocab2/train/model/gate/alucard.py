@@ -9,27 +9,35 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION (top)
-# ──────────────────────────────────────────────────────────────────────────────
+# src/geovocab2/train/config/alucard_formula_config.py
 
-CONFIG = {
-    "model_dim": 768,           # D (must match David feature dim at the insertion point)
-    "ffn_expand": 2.0,          # inner MLP width multiplier
-    "dropout": 0.05,
-    "norm": "rms",              # "layer" | "rms"
-    "stride": 4,                # window size for stride folding
-    "fold_mode": "mean",        # "mean" | "max" | "conv1d"
-    "conv_kernel": 3,           # used if fold_mode == "conv1d"
-    "harmonic_levels": 4,       # number of harmonic gates
-    "cfg_temperature": 0.5,     # global scaling for cosine-CFG blend
-    "cfg_clamp": 2.0,           # clamp factor for cfg scale
-    "shiva_cool": 0.15,         # noise amplitude (0 = off)
-    "shiva_learnable": True,    # learn scaling of noise
-    "residual_alpha": 1.0,      # residual scale on output
-    "init_scale": 0.5,          # scale for small initialization of projections
-}
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
+from geovocab2.train.config.config_base import BaseConfig
 
+@dataclass
+class AlucardFormulaConfig(BaseConfig):
+    """Configuration for Alucard Formula Block."""
+    model_dim: int = 768
+    ffn_expand: float = 2.0
+    dropout: float = 0.05
+    norm: str = "rms"
+    stride: int = 4
+    fold_mode: str = "mean"        # "mean" | "max" | "conv1d"
+    conv_kernel: int = 3
+    harmonic_levels: int = 4
+    cfg_temperature: float = 0.5
+    cfg_clamp: float = 2.0
+    shiva_cool: float = 0.15
+    shiva_learnable: bool = True
+    residual_alpha: float = 1.0
+    init_scale: float = 0.5
+
+    # inherited BaseConfig provides:
+    # - to_dict(), from_dict()
+    # - save_json(path)
+    # - load_json(path)
+    # - repr(), validate_fields(), freeze()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # HELPERS (minimal, no monkey-patching)

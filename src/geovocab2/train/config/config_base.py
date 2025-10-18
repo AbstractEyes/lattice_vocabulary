@@ -43,7 +43,7 @@ from typing import Optional, Dict, Any
 
 
 @dataclass
-class ConfigBase:
+class BaseConfig:
     """
     Minimal dataclass configuration container.
 
@@ -86,6 +86,9 @@ class ConfigBase:
         return asdict(self)
 
 
+ConfigBase = BaseConfig  # Alias for convenience
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # EXAMPLE USAGE AND TESTING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -96,7 +99,7 @@ if __name__ == "__main__":
 
     # Example 1: Training configuration
     @dataclass
-    class TrainingConfig(ConfigBase):
+    class TrainingConfig(BaseConfig):
         """Training configuration with optimizer parameters."""
         name: str = "training_config"
         uid: str = "c.training.default"
@@ -109,7 +112,7 @@ if __name__ == "__main__":
 
     # Example 2: Formula configuration
     @dataclass
-    class FormulaConfig(ConfigBase):
+    class FormulaConfig(BaseConfig):
         """Formula configuration for Cayley-Menger."""
         name: str = "cayley_menger_config"
         uid: str = "c.formula.cayley"
@@ -121,7 +124,7 @@ if __name__ == "__main__":
 
     # Example 3: Model configuration
     @dataclass
-    class ModelConfig(ConfigBase):
+    class ModelConfig(BaseConfig):
         """Model architecture configuration."""
         name: str = "transformer_config"
         uid: str = "c.model.transformer"
@@ -200,7 +203,7 @@ if __name__ == "__main__":
 
 
     @dataclass
-    class ExperimentConfig(ConfigBase):
+    class ExperimentConfig(BaseConfig):
         """Complete experiment configuration."""
         name: str = "experiment_config"
         uid: str = "c.experiment.default"

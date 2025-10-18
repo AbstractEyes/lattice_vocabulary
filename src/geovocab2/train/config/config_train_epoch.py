@@ -16,11 +16,11 @@ License: MIT
 
 from dataclasses import dataclass
 from typing import Optional
-from geovocab2.train.config.config_base import ConfigBase
+from geovocab2.train.config.config_base import BaseConfig
 
 
 @dataclass
-class TrainEpochConfig(ConfigBase):
+class TrainEpochConfig(BaseConfig):
     """
     Configuration for TrainEpoch training.
 
