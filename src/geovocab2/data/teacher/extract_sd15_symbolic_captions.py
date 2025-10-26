@@ -10,7 +10,7 @@ import torch
 from typing import Optional, Dict, List, Iterator
 import numpy as np
 
-from geovocab2.data.prompt.synthesis_tree import SynthesisSystem
+from geovocab2.data.prompt.symbolic_tree import SynthesisSystem
 from geovocab2.data.teacher.extract_sd15 import SD15FeatureExtractor, SD15ExtractionConfig
 
 
