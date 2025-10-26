@@ -134,6 +134,10 @@ def extract_sd15_with_symbolic_captions(
     # Extraction config - instantiate with defaults first
     extraction_config = SD15ExtractionConfig()
 
+    # Force initialize parent class fields using __dict__ to bypass Field descriptors
+    extraction_config.__dict__['layer_hook_configs'] = {}
+    extraction_config.__dict__['default_hook_config'] = None
+
     # Then set our custom values
     if active_blocks is not None:
         extraction_config.active_blocks = active_blocks
