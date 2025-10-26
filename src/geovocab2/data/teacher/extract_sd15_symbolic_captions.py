@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor, Future
 from dataclasses import dataclass, field
 import time
 
-from geovocab2.data.prompt.synthesis_tree import SynthesisSystem
+from geovocab2.data.prompt.symbolic_tree import SynthesisSystem
 from geovocab2.data.teacher.extract_sd15 import SD15FeatureExtractor, SD15ExtractionConfig
 
 
