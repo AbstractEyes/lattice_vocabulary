@@ -131,22 +131,18 @@ def extract_sd15_with_symbolic_captions(
     )
     dataloader = SimpleDataLoader(caption_generator)
 
-    # Extraction config
-    extraction_config = SD15ExtractionConfig(
-        active_blocks=active_blocks or [
-            'down_blocks.0.resnets.1',
-            'down_blocks.1.resnets.1',
-            'mid_block.resnets.1',
-            'up_blocks.0.resnets.2',
-            'up_blocks.1.resnets.2',
-        ],
-        extract_clip_embeddings=extract_clip,
-        clip_pooled=clip_pooled,
-        hf_repo_id=hf_repo_id,
-        upload_interval=upload_interval,
-        checkpoint_interval=checkpoint_interval,
-        max_samples=num_samples
-    )
+    # Extraction config - instantiate with defaults first
+    extraction_config = SD15ExtractionConfig()
+
+    # Then set our custom values
+    if active_blocks is not None:
+        extraction_config.active_blocks = active_blocks
+    extraction_config.extract_clip_embeddings = extract_clip
+    extraction_config.clip_pooled = clip_pooled
+    extraction_config.hf_repo_id = hf_repo_id
+    extraction_config.upload_interval = upload_interval
+    extraction_config.checkpoint_interval = checkpoint_interval
+    extraction_config.max_samples = num_samples
 
     # Create extractor
     print(f"Initializing SD15 on {device}...")
