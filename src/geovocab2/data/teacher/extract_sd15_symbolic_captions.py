@@ -1,7 +1,7 @@
 """
 SD1.5 Feature Extraction + Symbolic Caption Synthesis (Colab-Ready)
 ====================================================================
-Connects SymbolicCaptionSynthesizer to SD15FeatureExtractor.
+Connects SynthesisSystem to SD15FeatureExtractor.
 
 File: geovocab2/data/teacher/sd15_caption_integration.py
 """
@@ -67,6 +67,46 @@ class SimpleDataLoader:
         return len(self.generator)
 
 
+def create_working_config(
+    active_blocks: Optional[List[str]] = None,
+    extract_clip: bool = True,
+    clip_pooled: bool = True,
+    hf_repo_id: Optional[str] = None,
+    upload_interval: int = 10_000,
+    checkpoint_interval: int = 50_000,
+    num_samples: Optional[int] = None
+) -> SD15ExtractionConfig:
+    """
+    Create a properly initialized SD15ExtractionConfig.
+    Works around Field descriptor issues in parent ExtractionSchema.
+    """
+    # Create with no arguments to let all defaults initialize
+    config = SD15ExtractionConfig()
+
+    # Directly write to __dict__ to bypass Field descriptors that block assignment
+    config.__dict__['layer_hook_configs'] = {}
+    config.__dict__['default_hook_config'] = None
+
+    # Create a simple cache_schema object with layer_configs dict
+    class SimpleCacheSchema:
+        def __init__(self):
+            self.layer_configs = {}
+
+    config.__dict__['cache_schema'] = SimpleCacheSchema()
+
+    # Now set custom values normally
+    if active_blocks is not None:
+        config.active_blocks = active_blocks
+    config.extract_clip_embeddings = extract_clip
+    config.clip_pooled = clip_pooled
+    config.hf_repo_id = hf_repo_id
+    config.upload_interval = upload_interval
+    config.checkpoint_interval = checkpoint_interval
+    config.max_samples = num_samples
+
+    return config
+
+
 def extract_sd15_with_symbolic_captions(
     num_samples: int = 100_000,
     batch_size: int = 32,
@@ -114,7 +154,6 @@ def extract_sd15_with_symbolic_captions(
     print("Initializing synthesizer...")
     synthesizer = SynthesisSystem()
     if bias_weights:
-        # Note: apply_bias_weights may need implementation in SynthesisSystem
         if hasattr(synthesizer, 'apply_bias_weights'):
             synthesizer.apply_bias_weights(bias_weights)
         else:
@@ -131,22 +170,16 @@ def extract_sd15_with_symbolic_captions(
     )
     dataloader = SimpleDataLoader(caption_generator)
 
-    # Extraction config - instantiate with defaults first
-    extraction_config = SD15ExtractionConfig()
-
-    # Force initialize parent class fields using __dict__ to bypass Field descriptors
-    extraction_config.__dict__['layer_hook_configs'] = {}
-    extraction_config.__dict__['default_hook_config'] = None
-
-    # Then set our custom values
-    if active_blocks is not None:
-        extraction_config.active_blocks = active_blocks
-    extraction_config.extract_clip_embeddings = extract_clip
-    extraction_config.clip_pooled = clip_pooled
-    extraction_config.hf_repo_id = hf_repo_id
-    extraction_config.upload_interval = upload_interval
-    extraction_config.checkpoint_interval = checkpoint_interval
-    extraction_config.max_samples = num_samples
+    # Create extraction config using helper
+    extraction_config = create_working_config(
+        active_blocks=active_blocks,
+        extract_clip=extract_clip,
+        clip_pooled=clip_pooled,
+        hf_repo_id=hf_repo_id,
+        upload_interval=upload_interval,
+        checkpoint_interval=checkpoint_interval,
+        num_samples=num_samples
+    )
 
     # Create extractor
     print(f"Initializing SD15 on {device}...")
