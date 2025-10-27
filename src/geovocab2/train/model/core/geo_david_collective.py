@@ -1283,47 +1283,135 @@ if __name__ == "__main__":
 
     print("Step 1: Configuring multi-block ensemble...")
 
-    # Define block configurations (simulating SD1.5 blocks)
+    # Block configurations for ALL SD1.5 blocks (9 total)
     block_configs = {
+        # Down blocks (4)
         'down_0': {
             'input_dim': 320,
-            'scale_dim': 64,
+            'scale_dim': 384,
             'use_belly': True,
             'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
             'cantor_levels': 12,
             'simplex_k': 4,
             'simplex_seed_base': 42
         },
         'down_1': {
             'input_dim': 640,
-            'scale_dim': 64,
+            'scale_dim': 512,
             'use_belly': True,
             'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
             'cantor_levels': 12,
             'simplex_k': 4,
             'simplex_seed_base': 43
         },
-        'mid': {
+        'down_2': {
             'input_dim': 1280,
-            'scale_dim': 128,
+            'scale_dim': 768,
             'use_belly': True,
-            'belly_expand': 2.5,
+            'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
             'cantor_levels': 12,
             'simplex_k': 4,
             'simplex_seed_base': 44
         },
-        'up_0': {
+        'down_3': {
             'input_dim': 1280,
-            'scale_dim': 96,
+            'scale_dim': 768,
             'use_belly': True,
             'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
             'cantor_levels': 12,
             'simplex_k': 4,
             'simplex_seed_base': 45
+        },
+        # Mid block (1)
+        'mid': {
+            'input_dim': 1280,
+            'scale_dim': 1024,
+            'use_belly': True,
+            'belly_expand': 2.5,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
+            'cantor_levels': 12,
+            'simplex_k': 4,
+            'simplex_seed_base': 46
+        },
+        # Up blocks (4)
+        'up_0': {
+            'input_dim': 1280,
+            'scale_dim': 768,
+            'use_belly': True,
+            'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
+            'cantor_levels': 12,
+            'simplex_k': 4,
+            'simplex_seed_base': 47
+        },
+        'up_1': {
+            'input_dim': 1280,
+            'scale_dim': 768,
+            'use_belly': True,
+            'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
+            'cantor_levels': 12,
+            'simplex_k': 4,
+            'simplex_seed_base': 48
+        },
+        'up_2': {
+            'input_dim': 640,
+            'scale_dim': 512,
+            'use_belly': True,
+            'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
+            'cantor_levels': 12,
+            'simplex_k': 4,
+            'simplex_seed_base': 49
+        },
+        'up_3': {
+            'input_dim': 320,
+            'scale_dim': 384,
+            'use_belly': True,
+            'belly_expand': 2.0,
+            'temperature': 0.07,
+            'cantor_alpha_init': 0.5,
+            'cantor_tau': 0.25,
+            'cantor_levels': 12,
+            'simplex_k': 4,
+            'simplex_seed_base': 50
         }
     }
 
-    # Loss configuration (matching GeometricMultiScaleLoss parameter names)
+    # Block importance weights (mid-block most important)
+    block_weights = {
+        'down_0': 0.8,
+        'down_1': 1.0,
+        'down_2': 1.2,
+        'down_3': 1.3,
+        'mid': 1.5,  # Highest importance
+        'up_0': 1.3,
+        'up_1': 1.2,
+        'up_2': 1.0,
+        'up_3': 0.8
+    }
+
+    # Geometric loss configuration
     loss_config = {
         'feature_similarity_weight': 0.4,
         'rose_weight': 0.25,
@@ -1333,14 +1421,6 @@ if __name__ == "__main__":
         'cantor_coherence_weight': 0.05,
         'use_soft_assignment': True,
         'temperature': 0.1
-    }
-
-    # Block importance weights
-    block_weights = {
-        'down_0': 0.8,
-        'down_1': 1.0,
-        'mid': 1.5,     # Mid-block is most important
-        'up_0': 1.0
     }
 
     print("✓ Configured 4 blocks (down_0, down_1, mid, up_0)")
