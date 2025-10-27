@@ -237,6 +237,241 @@ class MultiScaleCrystalLoss(nn.Module):
 
 
 # ============================================================================
+# PATTERN-SUPERVISED LOSS
+# Designed specifically for student learning with full 1000-class supervision.
+# This is how david learns to classify diffusion timesteps and patterns.
+# ============================================================================
+class PatternSupervisedLoss(nn.Module):
+    """
+    Pattern-supervised loss with full 1000-class supervision.
+    Supervises all 1000 classes (100 timesteps × 10 patterns).
+    """
+
+    def __init__(
+            self,
+            num_timestep_bins: int = 100,
+            num_patterns_per_timestep: int = 10,
+            feature_similarity_weight: float = 0.5,
+            rose_weight: float = 0.3,
+            ce_weight: float = 0.2,
+            pattern_diversity_weight: float = 0.05,
+            use_soft_assignment: bool = True,
+            temperature: float = 0.1
+    ):
+        super().__init__()
+
+        self.num_bins = num_timestep_bins
+        self.num_patterns = num_patterns_per_timestep
+        self.num_classes = num_timestep_bins * num_patterns_per_timestep
+
+        self.feature_sim_weight = feature_similarity_weight
+        self.rose_weight = rose_weight
+        self.ce_weight = ce_weight
+        self.pattern_diversity_weight = pattern_diversity_weight
+
+        self.use_soft_assignment = use_soft_assignment
+        self.temperature = temperature
+
+    def assign_patterns(
+            self,
+            features: torch.Tensor,
+            timestep_class: torch.Tensor,
+            crystal_centroids: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Assign samples to nearest pattern within their timestep bin.
+        FIXED: Uses COSINE SIMILARITY (not Euclidean distance) to match original trainer.
+
+        Args:
+            features: [B, D]
+            timestep_class: [B] - timestep bins [0, num_bins)
+            crystal_centroids: [num_bins, num_patterns, D]
+
+        Returns:
+            pattern_ids: [B] - pattern indices [0, num_patterns)
+            full_class_ids: [B] - full class [0, num_classes)
+        """
+        B = features.shape[0]
+
+        # Get centroids for each sample's timestep
+        batch_centroids = crystal_centroids[timestep_class]  # [B, num_patterns, D]
+
+        # Compute similarities (CRITICAL: Use cosine, not Euclidean!)
+        features_expanded = features.unsqueeze(1)  # [B, 1, D]
+        similarities = F.cosine_similarity(
+            features_expanded,
+            batch_centroids,
+            dim=2
+        )  # [B, num_patterns]
+
+        # Assign to nearest (highest similarity)
+        pattern_ids = similarities.argmax(dim=1)
+        full_class_ids = timestep_class * self.num_patterns + pattern_ids
+
+        return pattern_ids, full_class_ids
+
+    def compute_soft_assignment(
+            self,
+            features: torch.Tensor,
+            timestep_class: torch.Tensor,
+            crystal_centroids: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute soft pattern assignment with temperature smoothing.
+        MATCHES ORIGINAL: Lines 120-156
+
+        Args:
+            features: [B, D]
+            timestep_class: [B] - timestep bins
+            crystal_centroids: [num_bins, num_patterns, D]
+
+        Returns:
+            soft_targets: [B, num_classes] - soft target distribution
+        """
+        B, D = features.shape
+        device = features.device
+
+        # Get centroids for each sample's timestep bin
+        batch_centroids = crystal_centroids[timestep_class]  # [B, num_patterns, D]
+        features_expanded = features.unsqueeze(1)  # [B, 1, D]
+
+        # Compute cosine similarities
+        similarities = F.cosine_similarity(
+            features_expanded,
+            batch_centroids,
+            dim=2
+        )  # [B, num_patterns]
+
+        # Soft assignment with temperature
+        pattern_probs = F.softmax(similarities / self.temperature, dim=1)
+
+        # Create full soft targets [B, num_classes]
+        soft_targets = torch.zeros(B, self.num_classes, device=device)
+        for i in range(B):
+            t = timestep_class[i]
+            start_idx = t * self.num_patterns
+            end_idx = start_idx + self.num_patterns
+            soft_targets[i, start_idx:end_idx] = pattern_probs[i]
+
+        return soft_targets
+
+    def compute_pattern_diversity_loss(
+            self,
+            logits: torch.Tensor,
+            timestep_class: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Encourage diverse pattern usage (prevent mode collapse).
+        MATCHES ORIGINAL: Lines 157-182
+        """
+        B = logits.shape[0]
+
+        # For each sample, get pattern probs within its timestep
+        pattern_probs_list = []
+        for i in range(B):
+            t = timestep_class[i]
+            start_idx = t * self.num_patterns
+            end_idx = start_idx + self.num_patterns
+            probs = F.softmax(logits[i, start_idx:end_idx], dim=0)
+            pattern_probs_list.append(probs)
+
+        pattern_probs = torch.stack(pattern_probs_list)  # [B, num_patterns]
+
+        # Entropy (higher = more diverse)
+        entropy = -(pattern_probs * torch.log(pattern_probs + 1e-8)).sum(dim=1).mean()
+
+        # Minimize negative entropy (maximize diversity)
+        return -entropy
+
+    def forward(
+            self,
+            student_features: torch.Tensor,
+            teacher_features: torch.Tensor,
+            student_logits: torch.Tensor,
+            crystal_centroids: torch.Tensor,
+            timesteps: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict]:
+        """
+        Compute full loss with pattern supervision.
+
+        Returns:
+            total_loss: Combined weighted loss
+            metrics: Dict of individual metrics
+        """
+
+        # Timestep classification (0-999 -> 0-99 bins)
+        timestep_class = (timesteps // 10).clamp(0, self.num_bins - 1)
+
+        # Pattern assignment (use STUDENT features, not teacher!)
+        pattern_ids, full_class_ids = self.assign_patterns(
+            student_features,  # ✓ FIXED: Use student features [B, D]
+            timestep_class,
+            crystal_centroids
+        )
+
+        # Get target centroids for assigned patterns
+        target_centroids = torch.stack([
+            crystal_centroids[timestep_class[j], pattern_ids[j]]
+            for j in range(len(timestep_class))
+        ])
+
+        # 1. Feature similarity loss (student vs target centroids)
+        feature_sim_loss = 1.0 - F.cosine_similarity(
+            student_features,
+            target_centroids,  # ✓ FIXED: Compare to centroids, not teacher
+            dim=-1
+        ).mean()
+
+        # 2. Rose loss (MATCHES ORIGINAL: Same as feature_sim_loss!)
+        # Original trainer line 609: rose_loss = feature_sim_loss
+        rose_loss = feature_sim_loss  # ✓ Simple copy, not contrastive learning!
+
+        # 3. Cross-entropy with soft assignment (MATCHES ORIGINAL)
+        # Original trainer lines 612-617
+        if self.use_soft_assignment:
+            soft_targets = self.compute_soft_assignment(
+                student_features, timestep_class, crystal_centroids
+            )
+            log_probs = F.log_softmax(student_logits, dim=1)
+            ce_loss = -(soft_targets * log_probs).sum(dim=1).mean()
+        else:
+            ce_loss = F.cross_entropy(student_logits, full_class_ids)
+
+        # 4. Pattern diversity (MATCHES ORIGINAL: lines 622-623)
+        diversity_loss = self.compute_pattern_diversity_loss(
+            student_logits, timestep_class
+        )
+
+        # Total loss
+        total_loss = (
+                self.feature_sim_weight * feature_sim_loss +
+                self.rose_weight * rose_loss +
+                self.ce_weight * ce_loss +
+                self.pattern_diversity_weight * diversity_loss
+        )
+
+        # Accuracy metrics
+        timestep_pred = student_logits.argmax(dim=-1) // self.num_patterns
+        pattern_pred = student_logits.argmax(dim=-1) % self.num_patterns
+        full_pred = student_logits.argmax(dim=-1)
+
+        timestep_acc = (timestep_pred == timestep_class).float().mean()
+        pattern_acc = (pattern_pred == pattern_ids).float().mean()
+        full_acc = (full_pred == full_class_ids).float().mean()
+
+        metrics = {
+            'feature_sim': feature_sim_loss.item(),
+            'rose': rose_loss.item(),
+            'ce': ce_loss.item(),
+            'pattern_diversity': diversity_loss.item(),
+            'timestep_acc': timestep_acc.item(),
+            'pattern_acc': pattern_acc.item(),
+            'full_acc': full_acc.item()
+        }
+
+        return total_loss, metrics
+
+# ============================================================================
 # MODEL COMPONENTS
 # ============================================================================
 
