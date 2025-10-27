@@ -1,5 +1,5 @@
 """
-symbolic_tree.py (Rules Enforced + Seeded Determinism + Multi-Clause)
+symbolic_tree.py (FIXED - Rules Enforced)
 ===========================================
 Comprehensive symbolic synthesis system that ACTUALLY respects all rules,
 creates multi-clause captions, and emphasizes quality tags.
@@ -20,6 +20,53 @@ import numpy as np
 
 # Import BulkCaptions for data access
 from geovocab2.data.prompt.bulk_caption_data import BulkCaptions
+
+
+# ============================================================================
+# SEED GENERATOR
+# ============================================================================
+
+class SeedGen:
+    """Lightweight deterministic seed generator for reproducible randomness."""
+
+    def __init__(self, seed: Optional[int] = None):
+        """Initialize with optional seed. If None, uses system entropy."""
+        self.rng = np.random.default_rng(seed)
+        self._initial_seed = seed
+
+    def __call__(self) -> int:
+        """Generate next seed in sequence."""
+        return int(self.rng.integers(0, 2**31))
+
+    def fork(self) -> 'SeedGen':
+        """Create independent child generator."""
+        return SeedGen(self())
+
+    @property
+    def initial_seed(self) -> Optional[int]:
+        """Return the initial seed used (None if non-deterministic)."""
+        return self._initial_seed
+
+    def choice(self, seq):
+        """Random choice from sequence."""
+        return self.rng.choice(seq)
+
+    def sample(self, seq, k):
+        """Random sample from sequence without replacement."""
+        return self.rng.choice(seq, size=k, replace=False).tolist()
+
+    def random(self) -> float:
+        """Random float [0, 1)."""
+        return float(self.rng.random())
+
+    def randint(self, low, high) -> int:
+        """Random integer [low, high] inclusive."""
+        return int(self.rng.integers(low, high + 1))
+
+    def shuffle(self, seq):
+        """In-place shuffle. Returns seq for chaining."""
+        self.rng.shuffle(seq)
+        return seq
 
 
 # ============================================================================
@@ -499,9 +546,10 @@ SYMBOLIC_TREE = {
 class BulkCaptionsAccessor:
     """Provides safe access to BulkCaptions data"""
 
-    def __init__(self):
+    def __init__(self, sg: SeedGen):
         self.bulk_captions = BulkCaptions
         self._cache = {}
+        self.sg = sg
 
     def get_list(self, list_name: str) -> List[str]:
         """Get a list from BulkCaptions"""
@@ -522,7 +570,8 @@ class BulkCaptionsAccessor:
         data = self.get_list(list_name)
         if not data:
             return [f"<missing:{list_name}>"]
-        return random.choices(data, k=n)
+        # Use SeedGen instead of random.choices
+        return [self.sg.choice(data) for _ in range(n)]
 
     def get_random(self, list_name: str) -> str:
         """Get single random item"""
@@ -537,9 +586,10 @@ class BulkCaptionsAccessor:
 class TreeNavigator:
     """Navigate SYMBOLIC_TREE and resolve to BulkCaptions"""
 
-    def __init__(self, tree: Dict = None):
+    def __init__(self, tree: Dict, sg: SeedGen):
         self.tree = tree or SYMBOLIC_TREE
-        self.accessor = BulkCaptionsAccessor()
+        self.sg = sg
+        self.accessor = BulkCaptionsAccessor(sg)
         self._path_to_list_cache = {}
         self._path_to_node_cache = {}
         self._build_cache()
@@ -797,6 +847,9 @@ class MultiClauseComposer:
 
     CONJUNCTIONS = ["with", "and", "while", "featuring", "against", "in", "under"]
 
+    def __init__(self, sg: SeedGen):
+        self.sg = sg
+
     def _is_plural_subject(self, subject: str) -> bool:
         """Check if subject indicates multiple people"""
         if not subject:
@@ -909,7 +962,7 @@ class MultiClauseComposer:
                     clothing_phrase = f"in {' and '.join(clothing)}"
                 else:
                     # Pluralize single item or use generic phrase
-                    if random.random() < 0.5:
+                    if self.sg.random() < 0.5:
                         clothing_phrase = f"wearing varied {clothing[0]}"
                     else:
                         clothing_phrase = f"in {clothing[0]}"
@@ -957,7 +1010,7 @@ class MultiClauseComposer:
 
         background = items.get("context.environment.background", "")
         if background:
-            prep = random.choice(["in", "against", "within", "near"])
+            prep = self.sg.choice(["in", "against", "within", "near"])
             parts.append(f"{prep} {background}")
 
         surface = items.get("context.environment.on_surface", "")
@@ -991,9 +1044,9 @@ class MultiClauseComposer:
         # Use commas for most joins, occasional conjunctions
         result = clauses[0]
         for i, clause in enumerate(clauses[1:], 1):
-            if i == len(clauses) - 1 and random.random() < 0.3:
+            if i == len(clauses) - 1 and self.sg.random() < 0.3:
                 # Last clause sometimes gets conjunction
-                conj = random.choice(["with", "featuring"])
+                conj = self.sg.choice(["with", "featuring"])
                 result += f" {conj} {clause}"
             else:
                 result += f", {clause}"
@@ -1005,7 +1058,7 @@ class MultiClauseComposer:
         if any(subject.startswith(p) for p in ["1boy", "1girl", "male", "female", "1other"]):
             return ""
 
-        roll = random.random()
+        roll = self.sg.random()
         if roll < 0.7:
             return "an " if subject[0].lower() in "aeiou" else "a "
         elif roll < 0.9:
@@ -1020,11 +1073,12 @@ class MultiClauseComposer:
 class TemplateComposer:
     """Builds captions while respecting ALL rules"""
 
-    def __init__(self, tree: Dict, navigator: TreeNavigator, rule_engine: RuleEngine):
+    def __init__(self, tree: Dict, navigator: TreeNavigator, rule_engine: RuleEngine, sg: SeedGen):
         self.tree = tree
         self.navigator = navigator
         self.rule_engine = rule_engine
-        self.clause_composer = MultiClauseComposer()
+        self.sg = sg
+        self.clause_composer = MultiClauseComposer(sg)
 
     def compose(self, complexity: int = 3, noise_level: float = 0.1) -> Dict[str, Any]:
         """Compose caption with rule enforcement"""
@@ -1091,25 +1145,27 @@ class TemplateComposer:
 
         # Weighted random selection
         paths, weights = zip(*valid_candidates)
-        return random.choices(paths, weights=weights, k=1)[0]
+        # Use numpy's choice with weights
+        chosen_idx = self.sg.rng.choice(len(paths), p=np.array(weights)/sum(weights))
+        return paths[chosen_idx]
 
     def _select_human_attributes_valid(self, complexity: int, selected: List[str]) -> List[str]:
         """Select human attributes with rule validation"""
         paths = []
 
         # Pose - 70% probability (not always!)
-        if random.random() < 0.7:
+        if self.sg.random() < 0.7:
             if self.rule_engine.is_valid_selection("human.anatomy.pose", selected):
                 paths.append("human.anatomy.pose")
 
         # Upper clothing - 60% probability
-        if complexity >= 2 and random.random() < 0.6:
+        if complexity >= 2 and self.sg.random() < 0.6:
             if self.rule_engine.is_valid_selection("human.attire.upper_clothing", selected + paths):
                 paths.append("human.attire.upper_clothing")
 
         if complexity >= 3:
             # Try lower clothing first
-            if random.random() < 0.6:
+            if self.sg.random() < 0.6:
                 if self.rule_engine.is_valid_selection("human.attire.lower_clothing", selected + paths):
                     paths.append("human.attire.lower_clothing")
             else:
@@ -1118,16 +1174,16 @@ class TemplateComposer:
 
         # Hair
         if complexity >= 3:
-            if random.random() < 0.4:
+            if self.sg.random() < 0.4:
                 if self.rule_engine.is_valid_selection("human.anatomy.hair_style", selected + paths):
                     paths.append("human.anatomy.hair_style")
                     # Hair length - simple 50/50 when hair mentioned
-                    if random.random() < 0.5:
+                    if self.sg.random() < 0.5:
                         if self.rule_engine.is_valid_selection("human.anatomy.hair_length", selected + paths):
                             paths.append("human.anatomy.hair_length")
 
         # Accessory - boost to 40% probability
-        if complexity >= 3 and random.random() < 0.40:
+        if complexity >= 3 and self.sg.random() < 0.40:
             if self.rule_engine.is_valid_selection("human.attire.accessory", selected + paths):
                 paths.append("human.attire.accessory")
 
@@ -1138,17 +1194,17 @@ class TemplateComposer:
         paths = []
 
         # Background
-        if complexity >= 2 and random.random() < 0.8:
+        if complexity >= 2 and self.sg.random() < 0.8:
             if self.rule_engine.is_valid_selection("context.environment.background", selected):
                 paths.append("context.environment.background")
 
         # Lighting
-        if complexity >= 2 and random.random() < 0.5:  # 50% chance, not always
+        if complexity >= 2 and self.sg.random() < 0.5:  # 50% chance, not always
             if self.rule_engine.is_valid_selection("context.depiction.composition.lighting", selected + paths):
                 paths.append("context.depiction.composition.lighting")
 
         # Style - available earlier with higher probability
-        if complexity >= 3 and random.random() < 0.15:
+        if complexity >= 3 and self.sg.random() < 0.15:
             if self.rule_engine.is_valid_selection("context.depiction.composition.style", selected + paths):
                 paths.append("context.depiction.composition.style")
 
@@ -1159,12 +1215,12 @@ class TemplateComposer:
         paths = []
 
         # QUALITY TAGS: 70% chance at complexity >= 2 (not just 30% at 4+!)
-        if complexity >= 2 and random.random() < 0.7:
+        if complexity >= 2 and self.sg.random() < 0.7:
             if self.rule_engine.is_valid_selection("shared.descriptors.quality", selected):
                 paths.append("shared.descriptors.quality")
 
         # Color
-        if complexity >= 2 and random.random() < 0.5:
+        if complexity >= 2 and self.sg.random() < 0.5:
             if self.rule_engine.is_valid_selection("shared.descriptors.color", selected + paths):
                 paths.append("shared.descriptors.color")
 
@@ -1178,11 +1234,28 @@ class TemplateComposer:
 class SynthesisSystem:
     """Complete synthesis system with rule enforcement"""
 
-    def __init__(self, tree: Dict = None):
+    def __init__(self, tree: Dict = None, seed=None):
+        """
+        Initialize synthesis system.
+
+        Args:
+            tree: Symbol tree structure (uses SYMBOLIC_TREE if None)
+            seed: Either an int seed or a SeedGen instance (None for random)
+        """
         self.tree = tree or SYMBOLIC_TREE
-        self.navigator = TreeNavigator(self.tree)
+
+        # Handle seed - accept either int or SeedGen
+        if isinstance(seed, SeedGen):
+            self.sg = seed
+        else:
+            self.sg = SeedGen(seed)
+
+        # Pass seed generator to all components
+        self.navigator = TreeNavigator(self.tree, self.sg)
         self.rule_engine = RuleEngine(self.tree, self.navigator)
-        self.template_composer = TemplateComposer(self.tree, self.navigator, self.rule_engine)
+        self.template_composer = TemplateComposer(
+            self.tree, self.navigator, self.rule_engine, self.sg
+        )
 
     def synthesize(self, complexity: int = 3, noise_level: float = 0.1) -> Dict[str, Any]:
         """Synthesize caption with all rules enforced"""
@@ -1197,9 +1270,9 @@ class SynthesisSystem:
 # FACTORY
 # ============================================================================
 
-def create_synthesis_system(tree: Dict = None) -> SynthesisSystem:
-    """Factory function"""
-    return SynthesisSystem(tree)
+def create_synthesis_system(tree: Dict = None, seed=None) -> SynthesisSystem:
+    """Factory function to create synthesis system with optional seed"""
+    return SynthesisSystem(tree, seed)
 
 
 # ============================================================================
@@ -1263,12 +1336,11 @@ class SynthesisBenchmark:
         self.num_captions = num_captions
         self.seed = seed
 
-        # Set seeds for reproducibility
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
+        # Create SeedGen for benchmark operations
+        self.sg = SeedGen(seed)
 
-        self.system = create_synthesis_system()
+        # Create system with its own forked generator
+        self.system = create_synthesis_system(seed=self.sg.fork())
 
         # Tracking
         self.all_paths = Counter()
@@ -1290,8 +1362,8 @@ class SynthesisBenchmark:
 
         for i in tqdm(range(self.num_captions), desc="Generating"):
             # Vary complexity
-            complexity = random.choice([2, 3, 3, 3, 4])  # Bias toward 3
-            noise = random.uniform(0.05, 0.15)
+            complexity = self.sg.choice([2, 3, 3, 3, 4])  # Bias toward 3
+            noise = self.sg.random() * 0.10 + 0.05  # Uniform between 0.05 and 0.15
 
             # Generate
             result = self.system.synthesize(complexity=complexity, noise_level=noise)
@@ -1357,6 +1429,23 @@ class SynthesisBenchmark:
             bias_weights[path] = expected_per_path / count if count > 0 else 1.0
 
         return bias_weights
+
+    @staticmethod
+    def _convert_to_native(obj):
+        """Convert numpy types to native Python types for JSON serialization"""
+        if isinstance(obj, dict):
+            return {SynthesisBenchmark._convert_to_native(k): SynthesisBenchmark._convert_to_native(v)
+                    for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [SynthesisBenchmark._convert_to_native(item) for item in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
 
     def generate_heatmap(self, output_path: str = "category_heatmap.png"):
         """Generate heatmap of category usage"""
@@ -1531,7 +1620,7 @@ class SynthesisBenchmark:
         # Sample captions
         report_lines.append("SAMPLE CAPTIONS (Random 20)")
         report_lines.append("-" * 80)
-        samples = random.sample(self.captions, min(20, len(self.captions)))
+        samples = self.sg.sample(self.captions, min(20, len(self.captions)))
         for i, caption in enumerate(samples, 1):
             report_lines.append(f"{i:2d}. {caption}")
         report_lines.append("")
@@ -1543,6 +1632,7 @@ class SynthesisBenchmark:
     def save_bias_weights(self, output_path: str = "bias_weights.json"):
         """Save bias weights to JSON"""
         bias_weights = self.calculate_bias_weights()
+        bias_weights = self._convert_to_native(bias_weights)
 
         with open(output_path, 'w') as f:
             json.dump(bias_weights, f, indent=2)
@@ -1569,7 +1659,7 @@ class SynthesisBenchmark:
         # Raw data
         data_path = f"{output_dir}/benchmark_data.json"
         with open(data_path, 'w') as f:
-            json.dump({
+            data = {
                 "num_captions": self.num_captions,
                 "path_counts": dict(self.all_paths.most_common()),
                 "item_counts": dict(self.all_items.most_common()),
@@ -1582,12 +1672,15 @@ class SynthesisBenchmark:
                 },
                 "quality_tag_rate": self.quality_tag_count / self.num_captions,
                 "avg_clauses": float(np.mean(self.clause_counts)),
-            }, f, indent=2)
+            }
+            # Convert any numpy types to native Python types
+            data = self._convert_to_native(data)
+            json.dump(data, f, indent=2)
         print(f"✓ Raw data saved to: {data_path}")
 
         # Sample captions
         samples_path = f"{output_dir}/sample_captions.txt"
-        samples = random.sample(self.captions, min(1000, len(self.captions)))
+        samples = self.sg.sample(self.captions, min(1000, len(self.captions)))
         with open(samples_path, 'w') as f:
             for caption in samples:
                 f.write(caption + '\n')
@@ -1603,11 +1696,11 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Benchmark synthesis system")
-    parser.add_argument('-n', '--num-captions', type=int, default=100000,
-                        help="Number of captions to generate (default: 100000)")
+    parser.add_argument('-n', '--num-captions', type=int, default=10000,
+                        help="Number of captions to generate (default: 10000)")
     parser.add_argument('-o', '--output-dir', type=str, default="./benchmark_results",
                         help="Output directory (default: ./benchmark_results)")
-    parser.add_argument('-s', '--seed', type=int, default=42,
+    parser.add_argument('-s', '--seed', type=int, default=None,
                         help="Random seed for reproducibility (default: None)")
 
     args = parser.parse_args()
