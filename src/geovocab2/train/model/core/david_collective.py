@@ -26,8 +26,7 @@ from geovocab2.train.model.core.david import (
     DavidArchitectureConfig,
     RoseLoss,
     CayleyChaosLoss,
-    MultiScaleCrystalLoss,
-    PatternSupervisedLoss
+    MultiScaleCrystalLoss
 )
 
 
@@ -89,6 +88,38 @@ class LossConfig:
 
 
 @dataclass
+class PatternSupervisedLossConfig(LossConfig):
+    """
+    Extended config for pattern-supervised learning.
+
+    This is the BATTLE-TESTED loss configuration that successfully
+    trained previous David models with 1000-class supervision
+    (100 timestep bins × 10 patterns per bin).
+
+    Key differences from base LossConfig:
+    - Soft assignment with temperature smoothing
+    - Pattern diversity regularization (prevents mode collapse)
+    - Rose loss = feature_sim (not separate geometric loss)
+    - Student-driven pattern assignment (uses student features, not teacher)
+    - Comparison to learned centroids (not direct teacher features)
+    """
+
+    # Pattern supervision parameters
+    use_soft_assignment: bool = True
+    assignment_temperature: float = 0.1  # Lower = sharper, higher = smoother
+    pattern_diversity_weight: float = 0.05  # Entropy regularization
+
+    # Override defaults for pattern supervision
+    feature_similarity_weight: float = 0.5
+    rose_weight: float = 0.3  # Adds to feature_sim (same computation in this version)
+    ce_weight: float = 0.2
+
+    # Disable unused components
+    use_cayley_loss: bool = False  # Not used in pattern supervision
+    cayley_weight: float = 0.0
+
+
+@dataclass
 class DavidCollectiveConfig:
     """Configuration for entire DavidCollective system."""
 
@@ -107,6 +138,7 @@ class DavidCollectiveConfig:
 
     # Loss configuration
     loss_config: LossConfig = None
+    loss_calculator_type: str = 'pattern'  # 'block' or 'pattern'
 
     # Progressive training
     progressive_training: bool = True
@@ -364,6 +396,330 @@ class BlockLossCalculator(nn.Module):
 
 
 # ============================================================================
+# PATTERN-SUPERVISED LOSS CALCULATOR
+# ============================================================================
+
+class PatternSupervisedLossCalculator(BlockLossCalculator):
+    """
+    Pattern-supervised loss calculator for self-organizing pattern learning.
+
+    This is the BATTLE-TESTED approach that successfully trained previous David models.
+
+    Key Features:
+    - 1000-class supervision (100 bins × 10 patterns)
+    - Student-driven pattern assignment (uses student features, not teacher)
+    - Soft assignment with temperature smoothing
+    - Pattern diversity regularization (prevents mode collapse)
+    - Compares to centroids, not teacher features directly
+
+    Differences from base BlockLossCalculator:
+    - assign_patterns(): Explicit pattern assignment via cosine similarity
+    - compute_soft_assignment(): Temperature-smoothed soft targets
+    - compute_pattern_diversity_loss(): Entropy regularization
+    - Rose loss = feature_sim (simplified, not separate geometric loss)
+    """
+
+    def __init__(
+        self,
+        block_spec: SD15BlockSpec,
+        scales: List[int],
+        loss_config: PatternSupervisedLossConfig,
+        num_timestep_bins: int,
+        num_feature_patterns: int
+    ):
+        # Initialize base (creates teacher projections, loss instances)
+        super().__init__(
+            block_spec=block_spec,
+            scales=scales,
+            loss_config=loss_config,
+            num_timestep_bins=num_timestep_bins,
+            num_feature_patterns=num_feature_patterns
+        )
+
+        # Store pattern-specific config
+        self.pattern_config = loss_config
+        self.num_bins = num_timestep_bins
+        self.num_patterns = num_feature_patterns
+        self.num_classes = num_timestep_bins * num_feature_patterns
+
+    def assign_patterns(
+        self,
+        features: torch.Tensor,
+        timestep_class: torch.Tensor,
+        crystal_centroids: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Assign samples to nearest pattern within their timestep bin.
+
+        Uses COSINE SIMILARITY (critical for geometric consistency).
+
+        Args:
+            features: [B, D] - Student features
+            timestep_class: [B] - Timestep bins [0, num_bins)
+            crystal_centroids: [num_bins, num_patterns, D] - Pattern centroids
+
+        Returns:
+            pattern_ids: [B] - Pattern indices [0, num_patterns)
+            full_class_ids: [B] - Full class [0, num_classes)
+        """
+        B = features.shape[0]
+
+        # Get centroids for each sample's timestep
+        batch_centroids = crystal_centroids[timestep_class]  # [B, num_patterns, D]
+
+        # Compute cosine similarities
+        features_expanded = features.unsqueeze(1)  # [B, 1, D]
+        similarities = F.cosine_similarity(
+            features_expanded,
+            batch_centroids,
+            dim=2
+        )  # [B, num_patterns]
+
+        # Assign to nearest (highest similarity)
+        pattern_ids = similarities.argmax(dim=1)
+        full_class_ids = timestep_class * self.num_patterns + pattern_ids
+
+        return pattern_ids, full_class_ids
+
+    def compute_soft_assignment(
+        self,
+        features: torch.Tensor,
+        timestep_class: torch.Tensor,
+        crystal_centroids: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute soft pattern assignment with temperature smoothing.
+
+        Args:
+            features: [B, D]
+            timestep_class: [B] - Timestep bins
+            crystal_centroids: [num_bins, num_patterns, D]
+
+        Returns:
+            soft_targets: [B, num_classes] - Soft target distribution
+        """
+        B, D = features.shape
+        device = features.device
+
+        # Get centroids for each sample's timestep bin
+        batch_centroids = crystal_centroids[timestep_class]  # [B, num_patterns, D]
+        features_expanded = features.unsqueeze(1)  # [B, 1, D]
+
+        # Compute cosine similarities
+        similarities = F.cosine_similarity(
+            features_expanded,
+            batch_centroids,
+            dim=2
+        )  # [B, num_patterns]
+
+        # Soft assignment with temperature
+        pattern_probs = F.softmax(
+            similarities / self.pattern_config.assignment_temperature,
+            dim=1
+        )
+
+        # Create full soft targets [B, num_classes]
+        soft_targets = torch.zeros(B, self.num_classes, device=device)
+        for i in range(B):
+            t = timestep_class[i]
+            start_idx = t * self.num_patterns
+            end_idx = start_idx + self.num_patterns
+            soft_targets[i, start_idx:end_idx] = pattern_probs[i]
+
+        return soft_targets
+
+    def compute_pattern_diversity_loss(
+        self,
+        logits: torch.Tensor,
+        timestep_class: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Encourage diverse pattern usage (prevent mode collapse).
+
+        Computes entropy of pattern distribution and minimizes negative entropy
+        to maximize diversity.
+
+        Args:
+            logits: [B, num_classes]
+            timestep_class: [B]
+
+        Returns:
+            diversity_loss: Scalar (lower = more diverse)
+        """
+        B = logits.shape[0]
+
+        # For each sample, get pattern probs within its timestep
+        pattern_probs_list = []
+        for i in range(B):
+            t = timestep_class[i]
+            start_idx = t * self.num_patterns
+            end_idx = start_idx + self.num_patterns
+            probs = F.softmax(logits[i, start_idx:end_idx], dim=0)
+            pattern_probs_list.append(probs)
+
+        pattern_probs = torch.stack(pattern_probs_list)  # [B, num_patterns]
+
+        # Entropy (higher = more diverse)
+        entropy = -(pattern_probs * torch.log(pattern_probs + 1e-8)).sum(dim=1).mean()
+
+        # Minimize negative entropy (maximize diversity)
+        return -entropy
+
+    def compute_losses(
+        self,
+        outputs: Dict[str, torch.Tensor],
+        teacher_features: torch.Tensor,
+        crystal_centroids: torch.Tensor,
+        spatial_adapter: nn.Module
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute pattern-supervised losses.
+
+        CRITICAL: This method expects crystal_centroids [num_bins, num_patterns, scale]
+        NOT batch_crystals [B, num_patterns, 5, scale].
+
+        Args:
+            outputs: Forward outputs from companion
+            teacher_features: [B, C, H, W] - Not used directly in this version!
+            crystal_centroids: [num_bins, num_patterns, scale] - FULL centroids
+            spatial_adapter: For converting features (not used in pattern supervision)
+
+        Returns:
+            Dictionary of losses and metrics
+        """
+        losses = {}
+
+        timestep_class = outputs['timestep_class']
+        batch_size = timestep_class.shape[0]
+
+        # Compute losses per scale and aggregate
+        scale_feature_losses = []
+        scale_rose_losses = []
+        scale_ce_losses = []
+        scale_diversity_losses = []
+
+        scale_timestep_accs = []
+        scale_pattern_accs = []
+        scale_full_accs = []
+
+        for i, scale_features in enumerate(outputs['scale_features']):
+            scale = self.scales[i]
+            scale_logits = outputs['scale_logits'][i]
+
+            # Get centroids for this scale [num_bins, num_patterns, scale]
+            scale_centroids = crystal_centroids[:, :, :scale]
+
+            # Pattern assignment using STUDENT features
+            pattern_ids, full_class_ids = self.assign_patterns(
+                scale_features,
+                timestep_class,
+                scale_centroids
+            )
+
+            # Get target centroids for assigned patterns
+            target_centroids = torch.stack([
+                scale_centroids[timestep_class[j], pattern_ids[j]]
+                for j in range(batch_size)
+            ])
+
+            # 1. Feature Similarity Loss
+            feature_sim_loss = (1.0 - F.cosine_similarity(
+                scale_features,
+                target_centroids,
+                dim=-1
+            )).mean()
+
+            scale_feature_losses.append(feature_sim_loss)
+            losses[f'feature_sim_scale_{i}'] = feature_sim_loss
+
+            # 2. Rose Loss (same as feature similarity in this version)
+            rose_loss = feature_sim_loss
+            scale_rose_losses.append(rose_loss)
+            losses[f'rose_scale_{i}'] = rose_loss
+
+            # 3. Cross-Entropy Loss
+            if self.pattern_config.use_soft_assignment:
+                soft_targets = self.compute_soft_assignment(
+                    scale_features,
+                    timestep_class,
+                    scale_centroids
+                )
+                log_probs = F.log_softmax(scale_logits, dim=1)
+                ce_loss = -(soft_targets * log_probs).sum(dim=1).mean()
+            else:
+                ce_loss = F.cross_entropy(scale_logits, full_class_ids)
+
+            scale_ce_losses.append(ce_loss)
+            losses[f'ce_scale_{i}'] = ce_loss
+
+            # 4. Pattern Diversity Loss
+            diversity_loss = self.compute_pattern_diversity_loss(
+                scale_logits,
+                timestep_class
+            )
+            scale_diversity_losses.append(diversity_loss)
+            losses[f'diversity_scale_{i}'] = diversity_loss
+
+            # Accuracy metrics
+            timestep_pred = scale_logits.argmax(dim=-1) // self.num_patterns
+            pattern_pred = scale_logits.argmax(dim=-1) % self.num_patterns
+            full_pred = scale_logits.argmax(dim=-1)
+
+            timestep_acc = (timestep_pred == timestep_class).float().mean()
+            pattern_acc = (pattern_pred == pattern_ids).float().mean()
+            full_acc = (full_pred == full_class_ids).float().mean()
+
+            scale_timestep_accs.append(timestep_acc)
+            scale_pattern_accs.append(pattern_acc)
+            scale_full_accs.append(full_acc)
+
+            losses[f'timestep_acc_scale_{i}'] = timestep_acc
+            losses[f'pattern_acc_scale_{i}'] = pattern_acc
+            losses[f'full_acc_scale_{i}'] = full_acc
+
+        # Aggregate across scales
+        losses['feature_similarity'] = sum(scale_feature_losses) / len(scale_feature_losses)
+        losses['rose'] = sum(scale_rose_losses) / len(scale_rose_losses)
+        losses['ce'] = sum(scale_ce_losses) / len(scale_ce_losses)
+        losses['pattern_diversity'] = sum(scale_diversity_losses) / len(scale_diversity_losses)
+
+        losses['timestep_acc'] = sum(scale_timestep_accs) / len(scale_timestep_accs)
+        losses['pattern_acc'] = sum(scale_pattern_accs) / len(scale_pattern_accs)
+        losses['full_acc'] = sum(scale_full_accs) / len(scale_full_accs)
+
+        # Also store as 'accuracy' for compatibility
+        losses['accuracy'] = losses['full_acc']
+
+        # Total loss
+        losses['total'] = self._compute_total_loss(losses)
+
+        return losses
+
+    def _compute_total_loss(self, losses: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Weighted combination of pattern-supervised losses.
+
+        Note: rose_weight effectively adds to feature_similarity_weight
+        since rose = feature_sim in this version.
+        """
+        total = 0.0
+
+        if 'feature_similarity' in losses:
+            total += self.config.feature_similarity_weight * losses['feature_similarity']
+
+        if 'rose' in losses:
+            total += self.config.rose_weight * losses['rose']
+
+        if 'ce' in losses:
+            total += self.config.ce_weight * losses['ce']
+
+        if 'pattern_diversity' in losses:
+            total += self.pattern_config.pattern_diversity_weight * losses['pattern_diversity']
+
+        return total
+
+
+# ============================================================================
 # DAVID BLOCK COMPANION - REFACTORED
 # ============================================================================
 
@@ -372,8 +728,16 @@ class DavidBlockCompanion(nn.Module):
     Single David instance for one SD1.5 block.
     Learns timestep-conditioned feature distributions.
 
-    REFACTORED: No loss computation - pure forward pass model.
-    Loss computation delegated to BlockLossCalculator.
+    PURE FORWARD PASS MODEL: No loss computation or loss calculator.
+    Loss computation handled externally by DavidCollective using BlockLossCalculator.
+
+    Companion responsibilities:
+    - Forward passes through David
+    - Crystal anchor management
+    - Spatial feature adaptation
+    - Timestep discretization
+
+    Loss computation is NOT the companion's responsibility.
     """
 
     def __init__(
@@ -432,15 +796,6 @@ class DavidBlockCompanion(nn.Module):
         # Initialize crystals with good geometry
         with torch.no_grad():
             self._initialize_crystals()
-
-        # Loss calculator (EXTRACTED)
-        self.loss_calculator = BlockLossCalculator(
-            block_spec=block_spec,
-            scales=scales,
-            loss_config=config.loss_config,
-            num_timestep_bins=config.num_timestep_bins,
-            num_feature_patterns=config.num_feature_patterns_per_timestep
-        )
 
     def _initialize_crystals(self):
         """Initialize crystal anchors with valid geometric properties."""
@@ -515,26 +870,6 @@ class DavidBlockCompanion(nn.Module):
             'spatial_features': spatial_features
         }
 
-    def compute_loss(
-        self,
-        outputs: Dict[str, torch.Tensor],
-        teacher_features: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Compute losses using external calculator.
-
-        DELEGATION: All loss logic in BlockLossCalculator.
-        """
-        timestep_class = outputs['timestep_class']
-        batch_crystals = self.get_timestep_crystals(timestep_class)
-
-        return self.loss_calculator.compute_losses(
-            outputs=outputs,
-            teacher_features=teacher_features,
-            batch_crystals=batch_crystals,
-            spatial_adapter=self.spatial_adapter
-        )
-
     def discretize_timestep(self, timestep: torch.Tensor) -> torch.Tensor:
         """Convert continuous timesteps to discrete bins."""
         return (timestep / 1000.0 * self.config.num_timestep_bins).long().clamp(
@@ -597,10 +932,20 @@ class SpatialFeatureAdapter(nn.Module):
 
 class DavidCollective(nn.Module):
     """
-    Parallel ensemble of DavidBlockCompanions.
-    One companion per SD1.5 UNet block.
+    Parallel ensemble of DavidBlockCompanions with external loss computation.
 
-    REFACTORED: Loss computation delegated to calculators.
+    Architecture:
+    - Companions: Pure forward pass models (one per SD1.5 UNet block)
+    - Loss Calculators: External loss computation (one per companion, owned by collective)
+
+    CLEAN SEPARATION:
+    - Companions handle: forward passes, feature extraction, crystal management
+    - Collective handles: loss computation via external BlockLossCalculators
+
+    This separation enables:
+    - Testable components (test forward passes and losses independently)
+    - Flexible loss strategies (swap calculators without touching companions)
+    - Clear responsibilities (companions predict, collective evaluates)
     """
 
     def __init__(self, config: DavidCollectiveConfig):
@@ -619,6 +964,30 @@ class DavidCollective(nn.Module):
             block.name: DavidBlockCompanion(block, config)
             for block in self.active_blocks
         })
+
+        # Loss calculators (EXTERNAL to companions)
+        # Choose calculator type based on config
+        self.loss_calculators = nn.ModuleDict()
+        for block in self.active_blocks:
+            if config.loss_calculator_type == 'pattern':
+                # Pattern-supervised loss (battle-tested)
+                calculator = PatternSupervisedLossCalculator(
+                    block_spec=block,
+                    scales=self.companions[block.name].scales,
+                    loss_config=config.loss_config,
+                    num_timestep_bins=config.num_timestep_bins,
+                    num_feature_patterns=config.num_feature_patterns_per_timestep
+                )
+            else:
+                # Block loss calculator (distillation-style)
+                calculator = BlockLossCalculator(
+                    block_spec=block,
+                    scales=self.companions[block.name].scales,
+                    loss_config=config.loss_config,
+                    num_timestep_bins=config.num_timestep_bins,
+                    num_feature_patterns=config.num_feature_patterns_per_timestep
+                )
+            self.loss_calculators[block.name] = calculator
 
         # Tracking
         self.current_epoch = 0
@@ -651,18 +1020,51 @@ class DavidCollective(nn.Module):
         teacher_features: Dict[str, torch.Tensor]
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
-        Compute losses for all blocks.
+        Compute losses for all blocks using EXTERNAL loss calculators.
 
-        DELEGATION: Each companion uses its calculator.
+        Loss calculators are owned by DavidCollective, not companions.
+        Companions are pure forward pass models.
+
+        Handles both calculator types:
+        - BlockLossCalculator: Uses batch_crystals [B, patterns, 5, scale]
+        - PatternSupervisedLossCalculator: Uses crystal_centroids [bins, patterns, scale]
         """
         all_losses = {}
 
-        for block_name, companion in self.companions.items():
+        for block_name in self.companions.keys():
             if block_name in outputs and block_name in teacher_features:
-                losses = companion.compute_loss(
-                    outputs[block_name],
-                    teacher_features[block_name]
-                )
+                companion = self.companions[block_name]
+                calculator = self.loss_calculators[block_name]
+                block_outputs = outputs[block_name]
+
+                timestep_class = block_outputs['timestep_class']
+
+                # Prepare data based on calculator type
+                if isinstance(calculator, PatternSupervisedLossCalculator):
+                    # Pattern-supervised needs FULL crystal centroids
+                    # crystal_anchors: [num_bins, num_patterns, 5, max_scale]
+                    # Compute centroids by averaging vertices: [num_bins, num_patterns, max_scale]
+                    crystal_centroids = companion.crystal_anchors.mean(dim=2)
+
+                    # Compute losses using crystal_centroids
+                    losses = calculator.compute_losses(
+                        outputs=block_outputs,
+                        teacher_features=teacher_features[block_name],
+                        crystal_centroids=crystal_centroids,  # FULL centroids
+                        spatial_adapter=companion.spatial_adapter
+                    )
+                else:
+                    # BlockLossCalculator uses batch crystals
+                    batch_crystals = companion.get_timestep_crystals(timestep_class)
+
+                    # Compute losses using batch_crystals
+                    losses = calculator.compute_losses(
+                        outputs=block_outputs,
+                        teacher_features=teacher_features[block_name],
+                        batch_crystals=batch_crystals,  # Batch only
+                        spatial_adapter=companion.spatial_adapter
+                    )
+
                 all_losses[block_name] = losses
 
         return all_losses
@@ -685,15 +1087,25 @@ class DavidCollective(nn.Module):
             companion.david.update_epoch(epoch)
 
     def get_status(self) -> Dict:
-        """Get status of all companions."""
+        """Get status of all companions and loss calculators."""
+        # Total parameters includes both companions and loss calculators
+        companion_params = sum(
+            sum(p.numel() for p in companion.parameters())
+            for companion in self.companions.values()
+        )
+        calculator_params = sum(
+            sum(p.numel() for p in calculator.parameters())
+            for calculator in self.loss_calculators.values()
+        )
+
         return {
             'epoch': self.current_epoch,
             'num_companions': len(self.companions),
+            'num_loss_calculators': len(self.loss_calculators),
             'active_blocks': [block.name for block in self.active_blocks],
-            'total_parameters': sum(
-                sum(p.numel() for p in companion.parameters())
-                for companion in self.companions.values()
-            ),
+            'total_parameters': companion_params + calculator_params,
+            'companion_parameters': companion_params,
+            'calculator_parameters': calculator_params,
             'companion_info': {
                 name: {
                     'scales': companion.scales,
@@ -701,6 +1113,12 @@ class DavidCollective(nn.Module):
                     'parameters': sum(p.numel() for p in companion.parameters())
                 }
                 for name, companion in self.companions.items()
+            },
+            'calculator_info': {
+                name: {
+                    'parameters': sum(p.numel() for p in calculator.parameters())
+                }
+                for name, calculator in self.loss_calculators.items()
             }
         }
 
@@ -958,14 +1376,22 @@ if __name__ == "__main__":
     collective = DavidCollective(config)
 
     print(f"\n[Refactoring Status]")
-    print(f"  ✓ Loss computation EXTRACTED to BlockLossCalculator")
-    print(f"  ✓ Teacher projections moved to calculator")
-    print(f"  ✓ Loss instances centralized")
-    print(f"  ✓ Companion focuses on forward passes only")
-    print(f"  ✓ Loss configuration in one place")
+    print(f"  ✓ Loss computation FULLY EXTERNAL - not in companions")
+    print(f"  ✓ Loss calculators owned by DavidCollective")
+    print(f"  ✓ Companions are PURE forward pass models")
+    print(f"  ✓ Teacher projections in external calculators")
+    print(f"  ✓ Loss instances in external calculators")
+    print(f"  ✓ Complete separation of concerns achieved")
+
+    print(f"\n[Architecture]")
+    status = collective.get_status()
+    print(f"  DavidCollective:")
+    print(f"    ├── companions: {status['num_companions']} forward pass models")
+    print(f"    └── loss_calculators: {status['num_loss_calculators']} external calculators")
+    print(f"  Companion parameters: {status['companion_parameters']:,}")
+    print(f"  Calculator parameters: {status['calculator_parameters']:,}")
 
     print(f"\n[Status]")
-    status = collective.get_status()
     print(f"  Active blocks: {len(status['active_blocks'])}")
     print(f"  Total parameters: {status['total_parameters']:,}")
 
@@ -1010,3 +1436,70 @@ if __name__ == "__main__":
             print(f"    CE: {block_losses['ce'].item():.4f}")
         if 'accuracy' in block_losses:
             print(f"    Accuracy: {block_losses['accuracy'].item():.2%}")
+
+    print("\n" + "=" * 80)
+    print("EXAMPLE 2: PATTERN-SUPERVISED LOSS (BATTLE-TESTED)")
+    print("=" * 80)
+
+    # Pattern-supervised loss configuration
+    pattern_loss_config = PatternSupervisedLossConfig(
+        feature_similarity_weight=0.5,
+        rose_weight=0.3,  # Adds to feature_sim (same computation)
+        ce_weight=0.2,
+        pattern_diversity_weight=0.05,
+        use_soft_assignment=True,
+        assignment_temperature=0.1,
+        use_cayley_loss=False
+    )
+
+    # Collective configuration with pattern-supervised loss
+    pattern_config = DavidCollectiveConfig(
+        active_blocks=['down_0', 'mid'],
+        num_timestep_bins=100,
+        num_feature_patterns_per_timestep=10,
+        progressive_training=False,
+        loss_config=pattern_loss_config,
+        loss_calculator_type='pattern'  # Use pattern-supervised calculator
+    )
+
+    # Create collective with pattern-supervised loss
+    pattern_collective = DavidCollective(pattern_config)
+
+    print(f"\n[Pattern-Supervised Features]")
+    print(f"  ✓ 1000-class supervision (100 bins × 10 patterns)")
+    print(f"  ✓ Student-driven pattern assignment")
+    print(f"  ✓ Soft assignment with temperature: {pattern_loss_config.assignment_temperature}")
+    print(f"  ✓ Pattern diversity regularization: {pattern_loss_config.pattern_diversity_weight}")
+    print(f"  ✓ Comparison to learned centroids")
+
+    # Test forward and loss
+    pattern_features = {
+        'down_0': torch.randn(batch_size, 320, 64, 64),
+        'mid': torch.randn(batch_size, 1280, 8, 8)
+    }
+
+    with torch.no_grad():
+        pattern_outputs = pattern_collective(pattern_features, timesteps)
+        pattern_losses = pattern_collective.compute_losses(pattern_outputs, pattern_features)
+        pattern_total_loss = pattern_collective.get_total_loss(pattern_losses)
+
+    print(f"\n[Pattern-Supervised Loss Results]")
+    print(f"  Total loss: {pattern_total_loss.item():.4f}")
+
+    for block_name, block_losses in pattern_losses.items():
+        print(f"\n  {block_name}:")
+        print(f"    Feature similarity: {block_losses['feature_similarity'].item():.4f}")
+        print(f"    Rose: {block_losses['rose'].item():.4f}")
+        print(f"    CE: {block_losses['ce'].item():.4f}")
+        print(f"    Pattern diversity: {block_losses['pattern_diversity'].item():.4f}")
+        if 'timestep_acc' in block_losses:
+            print(f"    Timestep accuracy: {block_losses['timestep_acc'].item():.2%}")
+        if 'pattern_acc' in block_losses:
+            print(f"    Pattern accuracy: {block_losses['pattern_acc'].item():.2%}")
+        if 'full_acc' in block_losses:
+            print(f"    Full accuracy (1000-class): {block_losses['full_acc'].item():.2%}")
+
+    print("\n" + "=" * 80)
+    print("REFACTORING COMPLETE - LOSS SYSTEM EXTRACTED")
+    print("Both BlockLossCalculator and PatternSupervisedLossCalculator available!")
+    print("=" * 80)
