@@ -611,7 +611,7 @@ class DavidCollective(nn.Module):
     @classmethod
     def load_checkpoint(cls, path: str):
         """Load collective from checkpoint."""
-        checkpoint = torch.load(path)
+        checkpoint = torch.load(path, weights_only=False)
         collective = cls(checkpoint['config'])
         collective.load_state_dict(checkpoint['state_dict'])
         collective.current_epoch = checkpoint['epoch']
