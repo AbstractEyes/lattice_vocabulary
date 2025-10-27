@@ -727,7 +727,9 @@ class GeoDavidBlockCompanion(nn.Module):
 
 class GeometricMultiScaleLoss(nn.Module):
     """
-    Geometric loss calculator for multi-block ensemble.
+    BATCHED geometric loss calculator for multi-block ensemble.
+
+    Processes ALL blocks in parallel instead of sequential loop.
 
     Computes 6 loss components per block:
     1. Feature similarity - teacher alignment
@@ -736,8 +738,6 @@ class GeometricMultiScaleLoss(nn.Module):
     4. Pattern diversity - mode collapse prevention
     5. Cayley-Menger - geometric solidity (CRITICAL)
     6. Cantor coherence - hierarchical clustering
-
-    Aggregates across all blocks with per-block weighting.
     """
 
     def __init__(
@@ -796,7 +796,7 @@ class GeometricMultiScaleLoss(nn.Module):
             timestep_class: torch.Tensor,
             pentachora: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Assign patterns using pentachoron centroid matching."""
+        """Assign patterns using pentachoron centroid matching (single block)."""
         B = features.size(0)
 
         # Get pentachora for timestep bins
@@ -821,7 +821,7 @@ class GeometricMultiScaleLoss(nn.Module):
             timestep_class: torch.Tensor,
             pentachora: torch.Tensor
     ) -> torch.Tensor:
-        """Soft pattern assignment with temperature."""
+        """Soft pattern assignment with temperature (single block)."""
         B, D = features.shape
         device = features.device
 
@@ -842,18 +842,93 @@ class GeometricMultiScaleLoss(nn.Module):
 
         return soft_targets
 
-    def compute_cantor_coherence(
+    def batch_assign_patterns(
             self,
-            cantor_values: torch.Tensor,
-            pattern_ids: torch.Tensor,
-            timestep_class: torch.Tensor
-    ) -> torch.Tensor:
-        """Intra-pattern Cantor coherence."""
+            features: torch.Tensor,  # [num_blocks * B, D]
+            timestep_class: torch.Tensor,  # [num_blocks * B]
+            pentachora: torch.Tensor,  # [num_blocks, num_bins, num_patterns, 5, D]
+            block_indices: torch.Tensor  # [num_blocks * B] - which block each sample belongs to
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Batched pattern assignment across all blocks.
+
+        Returns:
+            pattern_ids: [num_blocks * B] - pattern within timestep bin
+            full_class_ids: [num_blocks * B] - full class ID (bin * patterns + pattern)
+        """
+        total_samples = features.size(0)
+        D = features.size(1)
+        device = features.device
+
+        # Get pentachora for each sample's block and timestep
+        # [num_blocks * B, num_patterns, 5, D]
+        batch_pentachora = pentachora[block_indices, timestep_class]
+
+        # Compute centroids: [num_blocks * B, num_patterns, D]
+        centroids = batch_pentachora.mean(dim=2)
+
+        # Cosine similarity
+        features_expanded = features.unsqueeze(1)  # [num_blocks * B, 1, D]
+        similarities = F.cosine_similarity(features_expanded, centroids, dim=2)  # [num_blocks * B, num_patterns]
+
+        # Assign to nearest
+        pattern_ids = similarities.argmax(dim=1)  # [num_blocks * B]
         full_class_ids = timestep_class * self.num_patterns + pattern_ids
+
+        return pattern_ids, full_class_ids
+
+    def batch_compute_soft_assignment(
+            self,
+            features: torch.Tensor,
+            timestep_class: torch.Tensor,
+            pentachora: torch.Tensor,
+            block_indices: torch.Tensor
+    ) -> torch.Tensor:
+        """Batched soft pattern assignment."""
+        total_samples = features.size(0)
+        device = features.device
+
+        # Get pentachora
+        batch_pentachora = pentachora[block_indices, timestep_class]
+        centroids = batch_pentachora.mean(dim=2)
+
+        # Similarities
+        features_expanded = features.unsqueeze(1)
+        similarities = F.cosine_similarity(features_expanded, centroids, dim=2)
+        pattern_probs = F.softmax(similarities / self.temperature, dim=1)
+
+        # Build soft targets
+        soft_targets = torch.zeros(total_samples, self.num_classes, device=device)
+        for i in range(total_samples):
+            bin_idx = timestep_class[i].item()
+            start_idx = bin_idx * self.num_patterns
+            end_idx = start_idx + self.num_patterns
+            soft_targets[i, start_idx:end_idx] = pattern_probs[i]
+
+        return soft_targets
+
+    def batch_compute_cantor_coherence(
+            self,
+            cantor_values: torch.Tensor,  # [num_blocks * B]
+            pattern_ids: torch.Tensor,
+            timestep_class: torch.Tensor,
+            block_indices: torch.Tensor
+    ) -> torch.Tensor:
+        """Batched Cantor coherence across all blocks."""
+        device = cantor_values.device
+
+        # Full class IDs including block identity
+        # We need to make classes unique per block
+        full_class_ids = (
+                block_indices * self.num_classes +
+                timestep_class * self.num_patterns +
+                pattern_ids
+        )
+
         unique_classes = torch.unique(full_class_ids)
 
         if len(unique_classes) < 2:
-            return torch.tensor(0.0, device=cantor_values.device)
+            return torch.tensor(0.0, device=device)
 
         coherence_losses = []
         for class_id in unique_classes:
@@ -864,158 +939,337 @@ class GeometricMultiScaleLoss(nn.Module):
                 coherence_losses.append(class_cantor.var())
 
         if len(coherence_losses) == 0:
-            return torch.tensor(0.0, device=cantor_values.device)
+            return torch.tensor(0.0, device=device)
 
         return torch.stack(coherence_losses).mean()
 
-    def compute_block_loss(
+    def batch_compute_pattern_diversity(
             self,
-            outputs: Dict[str, torch.Tensor],
-            teacher_features: torch.Tensor,
-            timesteps: torch.Tensor,
-            companion: GeoDavidBlockCompanion,
-            block_name: str
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Compute all 6 loss components for one block."""
-        features = outputs['features']
-        timestep_logits = outputs['timestep_logits']
-        pattern_logits = outputs['pattern_logits']
-        timestep_class = outputs['timestep_class']
-        cantor_values = outputs['cantor_values']
+            pattern_ids: torch.Tensor,
+            block_indices: torch.Tensor,
+            num_blocks: int
+    ) -> torch.Tensor:
+        """Compute pattern diversity per block, then average."""
+        device = pattern_ids.device
+        diversity_losses = []
 
-        B = features.size(0)
-        device = features.device
+        for block_idx in range(num_blocks):
+            block_mask = block_indices == block_idx
+            block_patterns = pattern_ids[block_mask]
 
-        pentachora = companion.crystal_pentachora
-        pattern_ids, full_class_ids = self.assign_patterns(
-            features, timestep_class, pentachora
-        )
+            if block_patterns.size(0) == 0:
+                continue
 
-        # 1. Feature similarity
-        # Project teacher features to same space as companion outputs
-        with torch.no_grad():
-            teacher_projected = companion.projection(teacher_features)
-        teacher_norm = F.normalize(teacher_projected, dim=-1)
-        features_norm = F.normalize(features, dim=-1)
-        feature_sim = F.cosine_similarity(features_norm, teacher_norm, dim=1)
-        feat_sim_loss = (1.0 - feature_sim).mean()
+            pattern_counts = torch.bincount(
+                block_patterns, minlength=self.num_patterns
+            ).float()
+            pattern_probs = pattern_counts / pattern_counts.sum()
+            pattern_probs = pattern_probs[pattern_probs > 0]
 
-        # 2. Rose loss (pentachoron relational)
-        # Reshape pentachora to [num_classes, 5, D] for Rose loss
-        pentachora_all_classes = pentachora.view(-1, 5, pentachora.size(-1))  # [1000, 5, D]
-        rose = self.rose_loss(features, pentachora_all_classes, full_class_ids)
+            if len(pattern_probs) > 1:
+                pattern_entropy = -(pattern_probs * pattern_probs.log()).sum()
+                max_entropy = torch.log(torch.tensor(float(self.num_patterns)))
+                diversity_loss = (max_entropy - pattern_entropy) / max_entropy
+            else:
+                diversity_loss = torch.tensor(1.0, device=device)
 
-        # 3. Cross-entropy
-        if self.use_soft_assignment:
-            soft_targets = self.compute_soft_assignment(
-                features, timestep_class, pentachora
-            )
-            log_probs = F.log_softmax(pattern_logits, dim=1)
-            ce_loss = -(soft_targets * log_probs).sum(dim=1).mean()
-        else:
-            ce_loss = F.cross_entropy(pattern_logits, full_class_ids)
+            diversity_losses.append(diversity_loss)
 
-        # 4. Pattern diversity
-        pattern_counts = torch.bincount(
-            pattern_ids, minlength=self.num_patterns
-        ).float()
-        pattern_probs = pattern_counts / pattern_counts.sum()
-        pattern_probs = pattern_probs[pattern_probs > 0]
-        if len(pattern_probs) > 1:
-            pattern_entropy = -(pattern_probs * pattern_probs.log()).sum()
-            max_entropy = torch.log(torch.tensor(float(self.num_patterns)))
-            pattern_div_loss = (max_entropy - pattern_entropy) / max_entropy
-        else:
-            pattern_div_loss = torch.tensor(1.0, device=device)
+        if len(diversity_losses) == 0:
+            return torch.tensor(0.0, device=device)
 
-        # 5. Cayley-Menger (geometric solidity)
-        batch_pentachora = pentachora[timestep_class, pattern_ids]
-        cayley = self.cayley_loss(batch_pentachora)
-
-        # 6. Cantor coherence
-        cantor_coherence = self.compute_cantor_coherence(
-            cantor_values, pattern_ids, timestep_class
-        )
-
-        # Total loss
-        total_loss = (
-                self.feature_sim_weight * feat_sim_loss +
-                self.rose_weight * rose +
-                self.ce_weight * ce_loss +
-                self.pattern_diversity_weight * pattern_div_loss +
-                self.cayley_weight * cayley +
-                self.cantor_coherence_weight * cantor_coherence
-        )
-
-        # Accuracies
-        pred_timestep = timestep_logits.argmax(dim=1)
-        timestep_acc = (pred_timestep == timestep_class).float().mean().item()
-
-        pred_patterns = pattern_logits.argmax(dim=1) % self.num_patterns
-        pattern_acc = (pred_patterns == pattern_ids).float().mean().item()
-
-        pred_full = pattern_logits.argmax(dim=1)
-        full_acc = (pred_full == full_class_ids).float().mean().item()
-
-        # Metrics
-        metrics = {
-            f'{block_name}/total': total_loss.item(),
-            f'{block_name}/feat_sim': feat_sim_loss.item(),
-            f'{block_name}/rose': rose.item(),
-            f'{block_name}/ce': ce_loss.item(),
-            f'{block_name}/diversity': pattern_div_loss.item(),
-            f'{block_name}/cayley': cayley.item(),
-            f'{block_name}/cantor': cantor_coherence.item(),
-            f'{block_name}/timestep_acc': timestep_acc,
-            f'{block_name}/pattern_acc': pattern_acc,
-            f'{block_name}/full_acc': full_acc,
-            f'{block_name}/cantor_alpha': companion.cantor_stairs.get_alpha()
-        }
-
-        return total_loss, metrics
+        return torch.stack(diversity_losses).mean()
 
     def forward(
             self,
             companions_outputs: Dict[str, Dict[str, torch.Tensor]],
             teacher_features_dict: Dict[str, torch.Tensor],
-            timesteps: torch.Tensor,
-            companions: Dict[str, GeoDavidBlockCompanion],
+            timesteps: torch.Tensor,  # [B]
+            companions: Dict[str, 'GeoDavidBlockCompanion'],
             block_weights: Optional[Dict[str, float]] = None
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        Compute multi-block geometric loss.
+        BATCHED computation across all blocks (handles variable feature dims).
 
         Args:
-            companions_outputs: Dict[block_name, outputs]
-            teacher_features_dict: Dict[block_name, teacher_features]
-            timesteps: [B] - timesteps
+            companions_outputs: Dict[block_name, outputs_dict]
+                Each outputs_dict has:
+                    'features': [B, D_block] - D can vary per block!
+                    'timestep_logits': [B, num_bins]
+                    'pattern_logits': [B, num_classes]
+                    'timestep_class': [B]
+                    'cantor_values': [B]
+            teacher_features_dict: Dict[block_name, teacher_features [B, D_teacher]]
+            timesteps: [B] - timesteps for all samples
             companions: Dict[block_name, companion]
-            block_weights: Optional per-block weights
+            block_weights: Optional per-block importance weights
 
         Returns:
-            total_loss: Weighted sum across blocks
-            all_metrics: Dict of all metrics
+            total_loss: Weighted aggregate loss
+            all_metrics: Comprehensive metrics dict
         """
+        block_names = list(companions_outputs.keys())
+        num_blocks = len(block_names)
+        B = timesteps.size(0)
+        device = timesteps.device
+
         if block_weights is None:
-            block_weights = {name: 1.0 for name in companions_outputs.keys()}
+            block_weights = {name: 1.0 for name in block_names}
 
-        total_loss = 0.0
-        all_metrics = {}
+        # ==================================================================
+        # STEP 1: Collect block data (DON'T concatenate features yet!)
+        # ==================================================================
 
-        for block_name, outputs in companions_outputs.items():
-            teacher_features = teacher_features_dict[block_name]
+        # These can be stacked (same dims across blocks)
+        timestep_logits_list = []
+        pattern_logits_list = []
+        timestep_class_list = []
+        cantor_values_list = []
+        block_indices_list = []
+
+        # These have variable dims - keep as lists
+        features_list = []
+        teacher_features_list = []
+        pentachora_list = []
+        projection_list = []
+
+        for block_idx, block_name in enumerate(block_names):
+            outputs = companions_outputs[block_name]
             companion = companions[block_name]
-            weight = block_weights.get(block_name, 1.0)
 
-            loss, metrics = self.compute_block_loss(
-                outputs, teacher_features, timesteps, companion, block_name
+            # Variable dimension - keep in list
+            features_list.append(outputs['features'])
+            teacher_features_list.append(teacher_features_dict[block_name])
+            pentachora_list.append(companion.crystal_pentachora)
+            projection_list.append(companion.projection)
+
+            # Fixed dimension - can stack
+            timestep_logits_list.append(outputs['timestep_logits'])
+            pattern_logits_list.append(outputs['pattern_logits'])
+            timestep_class_list.append(outputs['timestep_class'])
+            cantor_values_list.append(outputs['cantor_values'])
+
+            # Block indices for tracking
+            block_indices_list.append(
+                torch.full((B,), block_idx, dtype=torch.long, device=device)
             )
 
-            total_loss += weight * loss
-            all_metrics.update(metrics)
+        # Stack only fixed-dimension tensors
+        timestep_logits_batched = torch.cat(timestep_logits_list, dim=0)  # [num_blocks*B, num_bins]
+        pattern_logits_batched = torch.cat(pattern_logits_list, dim=0)  # [num_blocks*B, num_classes]
+        timestep_class_batched = torch.cat(timestep_class_list, dim=0)  # [num_blocks*B]
+        cantor_values_batched = torch.cat(cantor_values_list, dim=0)  # [num_blocks*B]
+        block_indices = torch.cat(block_indices_list, dim=0)  # [num_blocks*B]
+
+        # ==================================================================
+        # STEP 2: Pattern assignment (per-block due to variable dims)
+        # ==================================================================
+
+        pattern_ids_list = []
+        full_class_ids_list = []
+
+        for block_idx, block_name in enumerate(block_names):
+            features = features_list[block_idx]  # [B, D_block]
+            timestep_class = timestep_class_list[block_idx]  # [B]
+            pentachora = pentachora_list[block_idx]  # [num_bins, num_patterns, 5, D_block]
+
+            # Assign patterns for this block
+            pattern_ids, full_class_ids = self.assign_patterns(
+                features, timestep_class, pentachora
+            )
+
+            pattern_ids_list.append(pattern_ids)
+            full_class_ids_list.append(full_class_ids)
+
+        # Stack pattern assignments
+        pattern_ids_batched = torch.cat(pattern_ids_list, dim=0)  # [num_blocks * B]
+        full_class_ids_batched = torch.cat(full_class_ids_list, dim=0)  # [num_blocks * B]
+
+        # ==================================================================
+        # STEP 3: Compute loss components (per-block for feature-dependent)
+        # ==================================================================
+
+        # 3a. Feature similarity (MUST be per-block due to variable dims + projections)
+        feat_sim_losses = []
+        for block_idx, block_name in enumerate(block_names):
+            features = features_list[block_idx]
+            teacher_features = teacher_features_list[block_idx]
+            projection = projection_list[block_idx]
+
+            with torch.no_grad():
+                teacher_projected = projection(teacher_features)
+
+            teacher_norm = F.normalize(teacher_projected, dim=-1)
+            features_norm = F.normalize(features, dim=-1)
+            feature_sim = F.cosine_similarity(features_norm, teacher_norm, dim=1)
+            feat_sim_loss = (1.0 - feature_sim).mean()
+            feat_sim_losses.append(feat_sim_loss)
+
+        feat_sim_loss_total = torch.stack(feat_sim_losses).mean()
+
+        # 3b. Rose loss (per-block due to variable feature dims)
+        rose_losses = []
+        for block_idx, block_name in enumerate(block_names):
+            features = features_list[block_idx]  # [B, D_block]
+            pentachora = pentachora_list[block_idx]  # [num_bins, num_patterns, 5, D_block]
+            full_class_ids = full_class_ids_list[block_idx]  # [B]
+
+            # Reshape pentachora to [num_classes, 5, D]
+            pentachora_all_classes = pentachora.view(-1, 5, pentachora.size(-1))
+
+            rose_loss = self.rose_loss(features, pentachora_all_classes, full_class_ids)
+            rose_losses.append(rose_loss)
+
+        rose_loss_total = torch.stack(rose_losses).mean()
+
+        # 3c. Cross-entropy (can batch - same logits structure)
+        if self.use_soft_assignment:
+            # Compute soft targets per-block
+            soft_targets_list = []
+            for block_idx in range(num_blocks):
+                features = features_list[block_idx]
+                timestep_class = timestep_class_list[block_idx]
+                pentachora = pentachora_list[block_idx]
+
+                soft_targets = self.compute_soft_assignment(
+                    features, timestep_class, pentachora
+                )
+                soft_targets_list.append(soft_targets)
+
+            soft_targets_batched = torch.cat(soft_targets_list, dim=0)
+            log_probs = F.log_softmax(pattern_logits_batched, dim=1)
+            ce_loss_total = -(soft_targets_batched * log_probs).sum(dim=1).mean()
+        else:
+            ce_loss_total = F.cross_entropy(pattern_logits_batched, full_class_ids_batched)
+
+        # 3d. Pattern diversity (per-block, then averaged)
+        pattern_div_loss_total = self.batch_compute_pattern_diversity(
+            pattern_ids_batched,
+            block_indices,
+            num_blocks
+        )
+
+        # 3e. Cayley loss (per-block due to variable pentachora dims)
+        cayley_losses = []
+        for block_idx, block_name in enumerate(block_names):
+            pentachora = pentachora_list[block_idx]  # [num_bins, num_patterns, 5, D_block]
+            timestep_class = timestep_class_list[block_idx]  # [B]
+            pattern_ids = pattern_ids_list[block_idx]  # [B]
+
+            # Get assigned pentachora: [B, 5, D_block]
+            batch_pentachora = pentachora[timestep_class, pattern_ids]
+
+            cayley_loss = self.cayley_loss(batch_pentachora)
+            cayley_losses.append(cayley_loss)
+
+        cayley_loss_total = torch.stack(cayley_losses).mean()
+
+        # 3f. Cantor coherence (batched - scalar values)
+        cantor_coherence_total = self.batch_compute_cantor_coherence(
+            cantor_values_batched,
+            pattern_ids_batched,
+            timestep_class_batched,
+            block_indices
+        )
+
+        # ==================================================================
+        # STEP 4: Aggregate losses with block weighting
+        # ==================================================================
+
+        # Compute weighted average for shared losses (CE, diversity, cantor)
+        # These are computed on batched data but should respect block importance
+        total_block_weight = sum(block_weights.get(name, 1.0) for name in block_names)
+
+        # Aggregate per-block losses with weights
+        weighted_feat_sim = sum(
+            block_weights.get(block_names[i], 1.0) * feat_sim_losses[i]
+            for i in range(num_blocks)
+        ) / total_block_weight
+
+        weighted_rose = sum(
+            block_weights.get(block_names[i], 1.0) * rose_losses[i]
+            for i in range(num_blocks)
+        ) / total_block_weight
+
+        weighted_cayley = sum(
+            block_weights.get(block_names[i], 1.0) * cayley_losses[i]
+            for i in range(num_blocks)
+        ) / total_block_weight
+
+        # Shared losses (already aggregated across all blocks)
+        # These represent the full batch, so we use them directly
+        weighted_ce = ce_loss_total
+        weighted_diversity = pattern_div_loss_total
+        weighted_cantor = cantor_coherence_total
+
+        # Total loss with component weights
+        total_loss = (
+                self.feature_sim_weight * weighted_feat_sim +
+                self.rose_weight * weighted_rose +
+                self.ce_weight * weighted_ce +
+                self.pattern_diversity_weight * weighted_diversity +
+                self.cayley_weight * weighted_cayley +
+                self.cantor_coherence_weight * weighted_cantor
+        )
+
+        # ==================================================================
+        # STEP 5: Compute accuracies (per-block for detailed metrics)
+        # ==================================================================
+
+        accuracies = {}
+        for block_idx, block_name in enumerate(block_names):
+            block_mask = block_indices == block_idx
+
+            block_timestep_logits = timestep_logits_batched[block_mask]
+            block_pattern_logits = pattern_logits_batched[block_mask]
+            block_timestep_class = timestep_class_list[block_idx]
+            block_pattern_ids = pattern_ids_list[block_idx]
+            block_full_class_ids = full_class_ids_list[block_idx]
+
+            pred_timestep = block_timestep_logits.argmax(dim=1)
+            timestep_acc = (pred_timestep == block_timestep_class).float().mean().item()
+
+            pred_patterns = block_pattern_logits.argmax(dim=1) % self.num_patterns
+            pattern_acc = (pred_patterns == block_pattern_ids).float().mean().item()
+
+            pred_full = block_pattern_logits.argmax(dim=1)
+            full_acc = (pred_full == block_full_class_ids).float().mean().item()
+
+            accuracies[block_name] = {
+                'timestep_acc': timestep_acc,
+                'pattern_acc': pattern_acc,
+                'full_acc': full_acc
+            }
+
+        # ==================================================================
+        # STEP 6: Build metrics dict
+        # ==================================================================
+
+        all_metrics = {}
+
+        # Per-block metrics
+        for block_idx, block_name in enumerate(block_names):
+            companion = companions[block_name]
+
+            # Per-block loss values
+            all_metrics[f'{block_name}/feat_sim'] = feat_sim_losses[block_idx].item()
+            all_metrics[f'{block_name}/rose'] = rose_losses[block_idx].item()
+            all_metrics[f'{block_name}/cayley'] = cayley_losses[block_idx].item()
+
+            # Shared loss values (same for all blocks since computed on batched data)
+            all_metrics[f'{block_name}/ce'] = ce_loss_total.item()
+            all_metrics[f'{block_name}/diversity'] = pattern_div_loss_total.item()
+            all_metrics[f'{block_name}/cantor'] = cantor_coherence_total.item()
+
+            # Accuracies (per-block)
+            all_metrics[f'{block_name}/timestep_acc'] = accuracies[block_name]['timestep_acc']
+            all_metrics[f'{block_name}/pattern_acc'] = accuracies[block_name]['pattern_acc']
+            all_metrics[f'{block_name}/full_acc'] = accuracies[block_name]['full_acc']
+
+            # Cantor alpha (per-block)
+            all_metrics[f'{block_name}/cantor_alpha'] = companion.cantor_stairs.get_alpha()
 
         # Averaged metrics
-        num_blocks = len(companions_outputs)
         all_metrics['avg/timestep_acc'] = sum(
             v for k, v in all_metrics.items() if k.endswith('/timestep_acc')
         ) / num_blocks
@@ -1025,14 +1279,17 @@ class GeometricMultiScaleLoss(nn.Module):
         all_metrics['avg/full_acc'] = sum(
             v for k, v in all_metrics.items() if k.endswith('/full_acc')
         ) / num_blocks
+
+        # Weighted average cayley (consistent with total loss computation)
+        total_block_weight = sum(block_weights.get(name, 1.0) for name in block_names)
         all_metrics['avg/cayley'] = sum(
-            v for k, v in all_metrics.items() if k.endswith('/cayley')
-        ) / num_blocks
+            block_weights.get(block_names[i], 1.0) * cayley_losses[i].item()
+            for i in range(num_blocks)
+        ) / total_block_weight
 
         all_metrics['total_loss'] = total_loss.item()
 
         return total_loss, all_metrics
-
 
 class GeoDavidCollective(nn.Module):
     """
