@@ -1,12 +1,12 @@
 """
-synthesis_tree.py (FIXED - Rules Enforced)
+symbolic_tree.py (Rules Enforced + Seeded Determinism + Multi-Clause)
 ===========================================
 Comprehensive symbolic synthesis system that ACTUALLY respects all rules,
 creates multi-clause captions, and emphasizes quality tags.
 
 Author: Phi + Claude
 Date: 2025-10-26
-Package: geovocab2.data.prompt.synthesis_tree
+Package: geovocab2.data.prompt.symbolic_tree
 """
 
 from __future__ import annotations
@@ -1259,8 +1259,15 @@ import seaborn as sns
 class SynthesisBenchmark:
     """Benchmark the synthesis system with statistical analysis"""
 
-    def __init__(self, num_captions: int = 100000):
+    def __init__(self, num_captions: int = 100000, seed: Optional[int] = None):
         self.num_captions = num_captions
+        self.seed = seed
+
+        # Set seeds for reproducibility
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+
         self.system = create_synthesis_system()
 
         # Tracking
@@ -1418,6 +1425,10 @@ class SynthesisBenchmark:
         report_lines.append("=" * 80)
         report_lines.append("SYNTHESIS BENCHMARK REPORT")
         report_lines.append("=" * 80)
+        if self.seed is not None:
+            report_lines.append(f"Random Seed: {self.seed} (reproducible)")
+        else:
+            report_lines.append("Random Seed: None (non-reproducible)")
         report_lines.append("")
 
         # Basic stats
@@ -1596,6 +1607,8 @@ def main():
                         help="Number of captions to generate (default: 100000)")
     parser.add_argument('-o', '--output-dir', type=str, default="./benchmark_results",
                         help="Output directory (default: ./benchmark_results)")
+    parser.add_argument('-s', '--seed', type=int, default=42,
+                        help="Random seed for reproducibility (default: None)")
 
     args = parser.parse_args()
 
@@ -1607,10 +1620,14 @@ def main():
     print("=" * 80)
     print(f"Captions to generate: {args.num_captions:,}")
     print(f"Output directory: {args.output_dir}")
+    if args.seed is not None:
+        print(f"Random seed: {args.seed} (reproducible mode)")
+    else:
+        print("Random seed: None (non-reproducible mode)")
     print()
 
     # Run benchmark
-    benchmark = SynthesisBenchmark(num_captions=args.num_captions)
+    benchmark = SynthesisBenchmark(num_captions=args.num_captions, seed=args.seed)
     benchmark.run_benchmark()
 
     # Save results

@@ -47,3 +47,4 @@ htmlcov/
 .DS_Store
 Thumbs.db
 *checkpoints/
+*benchmark_results/
