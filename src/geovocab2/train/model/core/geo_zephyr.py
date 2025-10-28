@@ -1,5 +1,5 @@
 """
-GeoDavidCollective: Geometric Multi-Block Diffusion Collective - ENHANCED
+Geo-Zephyr - formerly GeoDavidCollective: Geometric Multi-Block Diffusion Collective - ENHANCED
 ==========================================================================
 Complete geometric architecture for SD1.5 block-level distillation
 with pentachoron structure, Cantor hierarchical encoding, and
@@ -43,8 +43,8 @@ except ImportError:
 
 
 @dataclass
-class GeoDavidConfig:
-    """Configuration for GeoDavidBlockCompanion."""
+class GeoZephyrConfig:
+    """Configuration for GeoZephyr model and the block companions."""
     feature_dim: int = 256          # Input feature dimension
     num_classes: int = 1000         # Number of diffusion patterns/classes
     scale_dim: int = 256            # Scale dimension for block
@@ -53,8 +53,28 @@ class GeoDavidConfig:
     cantor_tau: float = 0.25        # Temperature for Cantor soft assignment
     cantor_alpha_init: float = 0.5  # Initial alpha for Cantor middle weighting
     use_simplex_factory: bool = True  # Whether to use SimplexFactory for initialization
-    # Block configurations (mimicking SD1.5 UNet structure)
     block_configs: dict = field(default_factory=lambda: block_config_overrides.copy().get("sd15_full_blocks"))
+
+
+@dataclass
+class GeoZephyrBlockCompanionConfig:
+    """Configuration for individual GeoZephyr block companion."""
+    name_prefix: str = "geo"                # Prefix name for the block companion
+    target_block: str = "down_0"            # For teacher/student the teacher's target block or layer to use.
+    input_dim: int = 320                    # Input feature dimension for block
+    scale_dim: int = 64                     # Scale dimension for block
+    use_belly: bool = True                  # Whether to use belly expansion for block processing
+    belly_expand: float = 2.0               # Belly expansion factor
+    belly_depth: int = 2                    # Belly depth (number of layers)
+    num_experts: int = 3                    # Number of experts in ProjectiveHead
+    compression_ratio: int = 4              # Compression ratio for bottleneck
+    num_gate_heads: int = 3                 # Number of gating heads
+    expert_dropout: float = 0.1             # Dropout rate for experts
+    attention_dropout: float = 0.1          # Dropout rate for attention
+    head_temperature: float = 0.5           # Initial temperature for ProjectiveHead
+    use_head_sparsity: bool = True          # Whether to use sparsity in ProjectiveHead
+    head_sparsity_threshold: float = 0.1    # Sparsity threshold
+    weight: float = 1.0                     # Weight of this block in ensemble
 
 
 
@@ -894,6 +914,7 @@ class GeoDavidBlockCompanion(nn.Module):
             num_timestep_steps: int = 1000,
             use_belly: bool = True,
             belly_expand: float = 2.0,
+            belly_depth: int = 1,
             temperature: float = 0.07,
             cantor_alpha_init: float = 0.5,
             cantor_tau: float = 0.25,
@@ -950,14 +971,31 @@ class GeoDavidBlockCompanion(nn.Module):
         self.simplex_k = simplex_k
         self.num_vertices = simplex_k + 1  # 5 for pentachoron
         self.num_timestep_steps = num_timestep_steps
+        self.use_belly = use_belly
+        self.belly_expand = belly_expand
+        self.belly_depth = belly_depth
 
         # Feature projection (with optional "belly" expansion)
         if use_belly:
             belly_dim = int(scale_dim * belly_expand)
+            belly_depth = max(1, belly_depth)
             # Adaptive dropout based on scale
             dropout_rate = min(0.5, max(1.0 / math.sqrt(scale_dim), 0.2))
             self.projection = nn.Sequential(
                 nn.Linear(input_dim, belly_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout_rate),
+                nn.Linear(belly_dim, scale_dim, bias=False)
+            ) if belly_depth == 1 else nn.Sequential(
+                nn.Linear(input_dim, belly_dim),
+                *[
+                    nn.Sequential(
+                        nn.ReLU(),
+                        nn.Dropout(dropout_rate),
+                        nn.Linear(belly_dim, belly_dim)
+                    )
+                    for _ in range(belly_depth - 1)
+                ],
                 nn.ReLU(),
                 nn.Dropout(dropout_rate),
                 nn.Linear(belly_dim, scale_dim, bias=False)
