@@ -156,8 +156,7 @@ class CantorLinear(nn.Module):
             effective_weight = self.weight * (self.mask_floor + self.mask_scale * self.mask)
 
         elif self.mask_mode == "alpha":
-            alpha = self.alpha
-            effective_weight = self.weight * (self.mask_floor + alpha * self.mask)
+            effective_weight = self.weight * (self.mask_floor + self.alpha * self.mask)
         else:  # "prune"
             effective_weight = self.weight * self.mask
         return F.linear(x, effective_weight, self.bias)
