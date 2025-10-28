@@ -2,7 +2,6 @@
 # ============================================================
 # CantorConv2d: Fractal‑structured convolutional layer
 # Author: AbstractPhil
-# Assistant: Claude Sonnet (4.5)
 # Date: 2025‑10‑28
 # License: MIT
 # ============================================================
@@ -33,7 +32,11 @@ class CantorConv2dConfig:
     depth: int = 8  # Cantor recursion depth
     mask_mode: str = "alpha"  # ['prune', 'scale', 'alpha']
     mask_floor: float = 0.25  # Minimum mask scaled value
-    mask_scale: float = 0.5  # Scaling factor for cantor mask
+    mask_scale: float = 0.5  # Initial scaling factor for cantor mask
+    alpha_mode: str = "sigmoid"  # ['sigmoid', 'softplus', 'exp', 'raw']
+    alpha_min: float = 0.1  # Minimum alpha value (for constrained modes)
+    alpha_max: float = 1.0  # Maximum alpha value (for constrained modes)
+    per_output_alpha: bool = False  # Use per-output alpha parameters
     dtype: torch.dtype = torch.float32
     device: str | None = None
 
@@ -98,12 +101,32 @@ class CantorConv2d(nn.Module):
             torch.empty(cfg.out_channels, dtype=cfg.dtype, device=cfg.device)
         ) if cfg.bias else None
 
+        # Alpha parameter setup
         if self.mask_mode == "alpha":
-            self.alpha = nn.Parameter(
-                torch.tensor(cfg.mask_scale, dtype=cfg.dtype, device=cfg.device)
-            )
+            self.alpha_mode = cfg.alpha_mode
+            self.alpha_min = cfg.alpha_min
+            self.alpha_max = cfg.alpha_max
+            self.per_output_alpha = cfg.per_output_alpha
+
+            # Determine initialization value based on mode
+            if self.alpha_mode in ["sigmoid", "softplus"]:
+                init_val = 0.0  # sigmoid(0) = 0.5, good starting point
+            elif self.alpha_mode == "exp":
+                init_val = math.log(cfg.mask_scale)
+            else:  # raw
+                init_val = cfg.mask_scale
+
+            # Create parameter (scalar or per-output-channel)
+            if self.per_output_alpha:
+                self._alpha_raw = nn.Parameter(
+                    torch.full((cfg.out_channels,), init_val, dtype=cfg.dtype, device=cfg.device)
+                )
+            else:
+                self._alpha_raw = nn.Parameter(
+                    torch.tensor(init_val, dtype=cfg.dtype, device=cfg.device)
+                )
         else:
-            self.alpha = None
+            self._alpha_raw = None
 
         # Build Cantor mask
         mask = self._build_cantor_mask(
@@ -126,6 +149,36 @@ class CantorConv2d(nn.Module):
             fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
             bound = 1 / math.sqrt(fan_in)
             nn.init.uniform_(self.bias, -bound, bound)
+
+    # --------------------------------------------------------
+    @property
+    def alpha(self):
+        """
+        Compute constrained alpha from raw parameter.
+        Returns appropriately shaped tensor for broadcasting.
+        """
+        if self._alpha_raw is None:
+            return None
+
+        if self.alpha_mode == "sigmoid":
+            # Map to [alpha_min, alpha_max] using sigmoid
+            normalized = torch.sigmoid(self._alpha_raw)
+            alpha_val = self.alpha_min + (self.alpha_max - self.alpha_min) * normalized
+        elif self.alpha_mode == "softplus":
+            # Always positive, offset by alpha_min
+            alpha_val = F.softplus(self._alpha_raw) + self.alpha_min
+            alpha_val = torch.clamp(alpha_val, max=self.alpha_max)
+        elif self.alpha_mode == "exp":
+            # Exponential ensures positivity, clamp in log space
+            alpha_val = torch.exp(self._alpha_raw.clamp(-3, 2))
+        else:  # raw
+            alpha_val = torch.clamp(self._alpha_raw, self.alpha_min, self.alpha_max)
+
+        # Reshape for broadcasting if per-output-channel
+        if self.per_output_alpha:
+            return alpha_val.view(-1, 1, 1, 1)  # [out_channels, 1, 1, 1]
+        else:
+            return alpha_val
 
     # --------------------------------------------------------
     def _build_cantor_mask(
@@ -187,28 +240,79 @@ class CantorConv2d(nn.Module):
             self.groups
         )
 
+    # --------------------------------------------------------
+    def get_alpha_stats(self) -> dict[str, float]:
+        """Return statistics about current alpha values (useful for logging)."""
+        if self._alpha_raw is None:
+            return {}
+
+        alpha_val = self.alpha
+        if self.per_output_alpha:
+            alpha_val = alpha_val.squeeze()
+
+        return {
+            "alpha_mean": alpha_val.mean().item(),
+            "alpha_std": alpha_val.std().item() if self.per_output_alpha else 0.0,
+            "alpha_min": alpha_val.min().item(),
+            "alpha_max": alpha_val.max().item(),
+            "alpha_raw_mean": self._alpha_raw.mean().item(),
+        }
+
 
 # ============================================================
 # ACTIVATION TEST BLOCK
 # ============================================================
 
 if __name__ == "__main__":
+    print("=" * 60)
+    print("Testing CantorConv2d with improved alpha handling")
+    print("=" * 60)
+
+    # Test 1: Sigmoid-constrained alpha
+    print("\n[Test 1] Sigmoid-constrained alpha (single)")
     cfg = CantorConv2dConfig(
         in_channels=3,
         out_channels=64,
         kernel_size=3,
         padding=1,
-        depth=6
+        depth=6,
+        mask_mode="alpha",
+        alpha_mode="sigmoid",
+        alpha_min=0.1,
+        alpha_max=1.0
     )
     layer = CantorConv2d(cfg)
 
     x = torch.randn(4, 3, 32, 32)
     y = layer(x)
 
-    print("Input shape:", x.shape)
-    print("Output shape:", y.shape)
-    print("Weight shape:", layer.weight.shape)
-    print("Mask density:", layer.mask.mean().item())
-    print("Sample output stats:")
-    print(f"  Mean: {y.mean().item():.4f}")
-    print(f"  Std: {y.std().item():.4f}")
+    print(f"Input shape: {x.shape}")
+    print(f"Output shape: {y.shape}")
+    print(f"Weight shape: {layer.weight.shape}")
+    print(f"Mask density: {layer.mask.mean().item():.4f}")
+    print(f"Alpha value: {layer.alpha.item():.4f}")
+    print(f"Alpha stats: {layer.get_alpha_stats()}")
+
+    # Test 2: Per-output-channel alpha
+    print("\n[Test 2] Per-output-channel alpha")
+    cfg2 = CantorConv2dConfig(
+        in_channels=16,
+        out_channels=32,
+        kernel_size=3,
+        padding=1,
+        depth=6,
+        mask_mode="alpha",
+        alpha_mode="sigmoid",
+        per_output_alpha=True
+    )
+    layer2 = CantorConv2d(cfg2)
+
+    x2 = torch.randn(2, 16, 28, 28)
+    y2 = layer2(x2)
+
+    print(f"Output shape: {y2.shape}")
+    print(f"Alpha shape: {layer2.alpha.shape}")
+    print(f"Alpha stats: {layer2.get_alpha_stats()}")
+
+    print("\n" + "=" * 60)
+    print("All tests passed!")
