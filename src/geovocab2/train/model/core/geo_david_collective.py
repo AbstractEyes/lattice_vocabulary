@@ -1,9 +1,12 @@
 """
-GeoDavidCollective: Geometric Multi-Block Diffusion Collective
-===============================================================
+GeoDavidCollective: Geometric Multi-Block Diffusion Collective - ENHANCED
+==========================================================================
 Complete geometric architecture for SD1.5 block-level distillation
 with pentachoron structure, Cantor hierarchical encoding, and
 geometric solidity enforcement.
+
+ENHANCEMENT: Replaces simple linear heads with DeepEfficiencyGating-inspired
+ProjectiveHead architecture for richer projective representations.
 
 Each block companion is a multi-scale geometric structure that learns
 to classify diffusion timesteps and patterns using validated k-simplices
@@ -13,6 +16,7 @@ Key Features:
 - Pentachoron structure (5-vertex 4-simplices) per pattern
 - SimplexFactory-validated initialization for stability
 - Cantor staircase hierarchical position encoding
+- ProjectiveHead multi-expert classification heads
 - 6 geometric loss components (feature, Rose, CE, diversity, Cayley, Cantor)
 - Multi-block ensemble architecture
 - Per-block scale weighting
@@ -25,6 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional
 from collections import OrderedDict
+import math
 
 try:
     from geovocab2.shapes.factory import SimplexFactory
@@ -35,6 +40,446 @@ except ImportError:
     print("WARNING: SimplexFactory not available. Using fallback initialization.")
     print("Training may be less stable without validated geometry.")
 
+
+# ============================================================================
+# PROJECTIVE HEAD - DeepEfficiencyGating Inspired
+# ============================================================================
+class CantorStaircase(nn.Module):
+    """
+    Learnable soft Cantor staircase with alpha-normalized middle weighting.
+
+    Provides:
+    - Deterministic hierarchical lattice structure
+    - Feature-driven position modulation
+    - Learnable alpha parameter for middle-interval weighting
+    - Triadic decomposition (base-3 intervals)
+
+    This creates the "deterministic Cantor step offset" that features
+    traverse through, providing positional encoding via geometric structure.
+    """
+
+    def __init__(
+            self,
+            feature_dim: int,
+            alpha_init: float = 0.5,
+            tau: float = 0.25,
+            base: int = 3,
+            levels: int = 12
+    ):
+        """
+        Args:
+            feature_dim: Dimension of input features
+            alpha_init: Initial alpha value (middle-interval weight)
+            tau: Temperature for soft assignment
+            base: Base for decomposition (3 for triadic Cantor)
+            levels: Number of hierarchical levels
+        """
+        super().__init__()
+
+        self.feature_dim = feature_dim
+        self.tau = tau
+        self.base = base
+        self.levels = levels
+
+        # Learnable alpha parameter (middle-interval weighting)
+        self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
+
+        # Fixed triadic centers [left, middle, right]
+        self.register_buffer(
+            'centers',
+            torch.tensor([0.5, 1.5, 2.5], dtype=torch.float32)
+        )
+
+        # Feature-driven position modulation
+        # Features influence traversal through lattice
+        self.feature_to_position = nn.Linear(feature_dim, 1)
+
+    def forward(
+            self,
+            features: torch.Tensor,
+            positions: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute soft Cantor values with hierarchical structure.
+
+        Args:
+            features: [B, D] - input features
+            positions: [B] - base position indices (e.g., timestep bins)
+
+        Returns:
+            cantor_values: [B] - Cantor values in [0, 1]
+        """
+        batch_size = features.size(0)
+        device = features.device
+
+        # Normalize base positions to [0, 1] (deterministic lattice)
+        max_pos = positions.max().item() + 1
+        if max_pos > 1:
+            x_base = positions.float() / float(max_pos - 1)
+        else:
+            x_base = positions.float()
+
+        x_base = x_base.clamp(1e-6, 1.0 - 1e-6)
+
+        # Feature-driven modulation (learned trajectories through lattice)
+        feature_shift = self.feature_to_position(features).squeeze(-1)  # [B]
+        feature_shift = torch.tanh(feature_shift) * 0.3  # Bounded shift ±0.3
+
+        # Combine: deterministic base + learned modulation
+        x = (x_base + feature_shift).clamp(1e-6, 1.0 - 1e-6)
+
+        # HIERARCHICAL TRIADIC DECOMPOSITION
+        # Build Cantor value through recursive subdivision
+        Cx = torch.zeros_like(x)
+        w = 0.5  # Weight for current level
+
+        for level in range(self.levels):
+            # Map to triadic interval [0, 3)
+            y = x * float(self.base)
+
+            # Compute distances to triadic centers
+            d2 = (y.unsqueeze(-1) - self.centers) ** 2  # [B, 3]
+
+            # Soft assignment via temperature-scaled softmax
+            logits = -d2 / (self.tau + 1e-8)
+            p = F.softmax(logits, dim=-1)  # [B, 3]
+
+            # Alpha-normalized middle weighting (Beatrix paradigm)
+            # bit_k = p[left]*0 + p[middle]*alpha + p[right]*1
+            bit_k = p[:, 1] * self.alpha + p[:, 2]
+
+            # Accumulate weighted contribution
+            Cx = Cx + bit_k * w
+
+            # Recurse into selected interval
+            t = y.floor()
+            x = y - t  # Fractional part for next level
+            w *= 0.5  # Halve weight for next level
+
+        return Cx.clamp(0.0, 1.0)
+
+    def get_alpha(self) -> float:
+        """Get current alpha value."""
+        return self.alpha.item()
+
+    def get_interval_distribution(
+            self,
+            features: torch.Tensor,
+            positions: torch.Tensor
+    ) -> dict:
+        """
+        Get soft interval distribution for diagnostics.
+
+        Returns:
+            Dict with average probabilities for [left, middle, right] intervals
+        """
+        batch_size = features.size(0)
+
+        # Get base position
+        max_pos = positions.max().item() + 1
+        if max_pos > 1:
+            x_base = positions.float() / float(max_pos - 1)
+        else:
+            x_base = positions.float()
+        x_base = x_base.clamp(1e-6, 1.0 - 1e-6)
+
+        # Feature modulation
+        feature_shift = self.feature_to_position(features).squeeze(-1)
+        feature_shift = torch.tanh(feature_shift) * 0.3
+
+        # Combined position
+        x = (x_base + feature_shift).clamp(1e-6, 1.0 - 1e-6)
+
+        # First-level triadic position
+        y = x * float(self.base)
+        d2 = (y.unsqueeze(-1) - self.centers) ** 2
+        logits = -d2 / (self.tau + 1e-8)
+        p = F.softmax(logits, dim=-1)  # [B, 3]
+
+        # Average across batch
+        avg_probs = p.mean(dim=0)
+
+        return {
+            'left': avg_probs[0].item(),
+            'middle': avg_probs[1].item(),
+            'right': avg_probs[2].item(),
+            'alpha': self.alpha.item()
+        }
+
+class ProjectiveHead(nn.Module):
+    """
+    Deep efficiency gating-inspired projective head for classification.
+
+    Multi-expert architecture with cross-attention and multi-head gating
+    for building rich projective representations.
+
+    Architecture:
+        Input → Multi-Expert Pathways → Cross-Attention → Multi-Head Gating → Output
+
+    Features:
+    - Multiple expert pathways for diverse feature representations
+    - Cross-attention for expert refinement
+    - Multi-head gating for ensemble classification
+    - Learnable temperature scaling
+    - Optional sparsity for inference efficiency
+    """
+
+    def __init__(
+            self,
+            input_dim: int,
+            num_classes: int,
+            num_attention_heads: int = 4,
+            num_experts: int = 3,
+            compression_ratio: int = 4,
+            num_gate_heads: int = 3,
+            expert_dropout: float = 0.1,
+            attention_dropout: float = 0.1,
+            temperature_init: float = 0.5,
+            use_sparsity: bool = True,
+            sparsity_threshold: float = 0.1
+    ):
+        """
+        Args:
+            input_dim: Input feature dimension
+            num_classes: Number of output classes
+            num_experts: Number of expert pathways (2-4 recommended)
+            compression_ratio: Bottleneck compression factor (3-6 recommended)
+            num_gate_heads: Number of gating heads (2-4 recommended)
+            expert_dropout: Dropout rate for expert pathways
+            attention_dropout: Dropout rate for cross-attention
+            temperature_init: Initial temperature for scaling
+            use_sparsity: Enable sparsity during inference
+            sparsity_threshold: Threshold for sparse predictions
+        """
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        self.num_experts = num_experts
+        self.num_gate_heads = num_gate_heads
+        self.use_sparsity = use_sparsity
+
+        # Learnable temperature (constrained positive via abs())
+        self.temperature = nn.Parameter(torch.ones(1) * temperature_init)
+
+        # Learnable sparsity threshold
+        self.sparsity_threshold = nn.Parameter(torch.tensor(sparsity_threshold))
+
+        # Calculate bottleneck dimension
+        # Ensure it's large enough for classification but compressed from input
+        self.bottleneck_dim = max(
+            num_classes * 2,  # At least 2x num_classes
+            input_dim // compression_ratio
+        )
+
+        # Multi-expert pathways
+        # Each expert learns a different projection of the input
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_dim, self.bottleneck_dim),
+                nn.LayerNorm(self.bottleneck_dim),
+                nn.GELU(),
+                nn.Dropout(expert_dropout)
+            )
+            for _ in range(num_experts)
+        ])
+
+        # Cross-attention mechanism
+        # Allows experts to refine each other's representations
+        #num_attention_heads = max(1, min(8, self.bottleneck_dim // 64))
+        self.cross_attention = nn.MultiheadAttention(
+            self.bottleneck_dim,
+            num_heads=num_attention_heads,
+            batch_first=True,
+            dropout=attention_dropout
+        )
+
+        # Multi-head gating
+        # Multiple classification heads vote on the final prediction
+        expert_combined_dim = self.bottleneck_dim * num_experts
+        self.gate_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(expert_combined_dim, expert_combined_dim // 2),
+                nn.GELU(),
+                nn.Dropout(expert_dropout),
+                nn.Linear(expert_combined_dim // 2, num_classes)
+            )
+            for _ in range(num_gate_heads)
+        ])
+
+        # Learnable weights for combining gate heads
+        self.head_weights = nn.Parameter(torch.ones(num_gate_heads) / num_gate_heads)
+
+        # Per-class bias (learnable class preferences)
+        self.class_bias = nn.Parameter(torch.zeros(num_classes))
+
+        # Final projection layer (direct path)
+        self.final_projection = nn.Sequential(
+            nn.Linear(expert_combined_dim, num_classes),
+            nn.LayerNorm(num_classes)
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights for better gradient flow and stability."""
+        # Initialize expert pathways
+        for expert in self.experts:
+            for module in expert.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight, gain=0.5)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+
+        # Initialize gate heads
+        for gate_head in self.gate_heads:
+            for module in gate_head.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight, gain=0.5)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+
+        # Initialize final projection
+        for module in self.final_projection.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.5)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+    def forward(
+            self,
+            features: torch.Tensor,
+            return_gates: bool = False
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward pass through projective head.
+
+        Args:
+            features: [B, D] - input features
+            return_gates: Whether to return attention weights (for analysis)
+
+        Returns:
+            logits: [B, num_classes] - classification logits
+            attention_weights: [B, num_experts] - attention weights (if return_gates=True, else None)
+        """
+        B, D = features.shape
+
+        # Step 1: Multi-expert processing
+        # Each expert creates its own representation
+        expert_outputs = [expert(features) for expert in self.experts]
+        stacked_experts = torch.stack(expert_outputs, dim=1)  # [B, num_experts, bottleneck_dim]
+
+        # Step 2: Cross-attention refinement
+        # Experts attend to each other, refining their representations
+        attended_experts, attention_weights = self.cross_attention(
+            stacked_experts,  # query
+            stacked_experts,  # key
+            stacked_experts   # value
+        )  # [B, num_experts, bottleneck_dim], [B, num_experts, num_experts]
+
+        # Step 3: Flatten attended representations
+        flattened = attended_experts.reshape(B, -1)  # [B, bottleneck_dim * num_experts]
+
+        # Step 4: Multi-head gating
+        # Multiple heads vote on the classification
+        gate_outputs = [head(flattened) for head in self.gate_heads]
+
+        # Step 5: Combine gates with learnable weights
+        head_weights_normalized = F.softmax(self.head_weights, dim=0)
+        combined_gates = sum(
+            w * g for w, g in zip(head_weights_normalized, gate_outputs)
+        )
+
+        # Step 6: Add class bias and apply temperature scaling
+        gate_logits = (combined_gates + self.class_bias) / self.temperature.abs()
+
+        # Step 7: Final projection refinement (direct path)
+        final_logits = self.final_projection(flattened)
+
+        # Step 8: Combine gated and projected logits
+        # Weighted combination favors the gated path but includes direct path
+        alpha = 0.7  # Weight towards gated path
+        logits = alpha * gate_logits + (1 - alpha) * final_logits
+
+        # Step 9: Optional sparsity (during inference only)
+        # Zero out low-probability predictions for efficiency
+        if not self.training and self.use_sparsity:
+            probs = F.softmax(logits, dim=-1)
+            mask = probs > self.sparsity_threshold
+            sparse_logits = logits * mask
+            if mask.any():
+                logits = sparse_logits
+
+        if return_gates:
+            # Return mean attention weights across attention heads
+            return logits, attention_weights.mean(dim=1)
+        else:
+            return logits, None
+
+
+# ============================================================================
+# CONFIGURATION HELPERS
+# ============================================================================
+
+# Default ProjectiveHead configurations for different model scales
+PROJECTIVE_HEAD_CONFIGS = {
+    'small': {  # scale_dim < 128
+        'num_experts': 2,
+        'compression_ratio': 6,
+        'num_gate_heads': 2,
+        'expert_dropout': 0.1,
+        'attention_dropout': 0.1,
+        'head_temperature': 0.5,
+        'use_head_sparsity': True,
+        'head_sparsity_threshold': 0.1
+    },
+    'medium': {  # 128 <= scale_dim < 512 (DEFAULT)
+        'num_experts': 3,
+        'compression_ratio': 4,
+        'num_gate_heads': 3,
+        'expert_dropout': 0.1,
+        'attention_dropout': 0.1,
+        'head_temperature': 0.5,
+        'use_head_sparsity': True,
+        'head_sparsity_threshold': 0.1
+    },
+    'large': {  # scale_dim >= 512
+        'num_experts': 4,
+        'compression_ratio': 3,
+        'num_gate_heads': 4,
+        'expert_dropout': 0.15,
+        'attention_dropout': 0.15,
+        'head_temperature': 0.5,
+        'use_head_sparsity': True,
+        'head_sparsity_threshold': 0.1
+    }
+}
+
+
+def get_projective_head_config(scale_dim: int) -> dict:
+    """
+    Get recommended ProjectiveHead config based on scale_dim.
+
+    Auto-selects appropriate complexity based on feature dimension.
+    Smaller models get fewer experts/heads, larger models get more.
+
+    Args:
+        scale_dim: Feature dimension
+
+    Returns:
+        Config dict with ProjectiveHead parameters
+    """
+    if scale_dim < 128:
+        return PROJECTIVE_HEAD_CONFIGS['small'].copy()
+    elif scale_dim < 512:
+        return PROJECTIVE_HEAD_CONFIGS['medium'].copy()
+    else:
+        return PROJECTIVE_HEAD_CONFIGS['large'].copy()
+
+
+# ============================================================================
+# GEOMETRIC LOSS FUNCTIONS
+# ============================================================================
 
 class CayleyChaosLoss(nn.Module):
     """
@@ -215,13 +660,13 @@ class CayleyChaosLoss(nn.Module):
         edge_dev = self.compute_edge_uniformity(X)
         edge_loss = edge_dev.mean()
 
-        # 3. Gram matrix conditioning loss
+        # 3. Gram matrix conditioning (optional)
         gram_loss = 0.0
         if self.gram_weight > 0:
             gram_penalty = self.compute_gram_condition(X)
             gram_loss = gram_penalty.mean()
 
-        # Combine losses
+        # Total weighted loss
         total_loss = (
                 self.chaos_scale * chaos_loss +
                 self.edge_dev_weight * edge_loss +
@@ -235,17 +680,16 @@ class RoseLoss(nn.Module):
     """
     Rose Loss with pentachoron role weighting.
 
-    Learns relational geometry by computing weighted similarity to all 5
-    vertices of each class pentachoron, with semantic role weights:
+    Dream-inspired geometric alignment loss that uses semantic roles
+    for the 5 vertices of each pentachoron:
+    - Anchor: positive (what IS)
+    - Need: negative (what's LACKING)
+    - Relation: positive (CONNECTION)
+    - Purpose: positive (GOAL/INTENT)
+    - Observer: negative (EXTERNAL perspective)
 
-    - Vertex 0 (Anchor): Primary class representation (+1.0)
-    - Vertex 1 (Need): What the class lacks (-0.75)
-    - Vertex 2 (Relation): How class relates to others (+0.75)
-    - Vertex 3 (Purpose): Functional role (+0.75)
-    - Vertex 4 (Observer): External perspective (-0.75)
-
-    Uses margin-based contrastive learning to push features toward correct
-    class pentachoron and away from incorrect ones.
+    This creates a multi-dimensional projection space where features
+    align with their corresponding pentachora through weighted cosine similarity.
     """
 
     def __init__(
@@ -256,22 +700,22 @@ class RoseLoss(nn.Module):
     ):
         """
         Args:
-            margin: Contrastive margin (higher = stricter separation)
-            temperature: Similarity temperature scaling
-            role_weights: Custom role weights (if None, use defaults)
+            margin: Margin for triplet-style loss
+            temperature: Temperature for scaling similarities
+            role_weights: Optional custom role weights (default uses standard geometry)
         """
         super().__init__()
 
         self.margin = margin
         self.temperature = temperature
 
-        # Semantic role weights for pentachoron vertices
+        # Default semantic role weights
         default_weights = {
-            "anchor": 1.0,  # Primary representation
-            "need": -0.75,  # Negative aspect
-            "relation": 0.75,  # Relational aspect
-            "purpose": 0.75,  # Functional aspect
-            "observer": -0.75  # External perspective
+            "anchor": 1.0,      # Core identity
+            "need": -0.75,      # What's lacking
+            "relation": 0.75,   # Connections
+            "purpose": 0.75,    # Goal/intent
+            "observer": -0.75,  # External view
         }
 
         weights = role_weights or default_weights
@@ -292,16 +736,17 @@ class RoseLoss(nn.Module):
             targets: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute Rose loss with pentachoron role weighting.
+        Compute Rose loss.
 
         Args:
-            z: [B, D] - projected features (normalized)
-            pentachora: [C, 5, D] - class pentachora (C classes)
-            targets: [B] - class labels
+            z: [B, D] - normalized feature vectors
+            pentachora: [C, 5, D] - pentachora vertices (C classes, 5 vertices each)
+            targets: [B] - target class indices
 
         Returns:
-            loss: scalar - margin-based contrastive loss
+            loss: scalar - Rose loss value
         """
+        # Ensure everything on same device
         pentachora = pentachora.to(z.device)
         role_weights = self.role_weights.to(z.device)
 
@@ -309,210 +754,54 @@ class RoseLoss(nn.Module):
         C, V, _ = pentachora.shape
         assert V == 5, f"Expected 5 vertices per pentachoron, got {V}"
 
-        # Normalize pentachora vertices
-        pentachora_norm = F.normalize(pentachora, dim=-1)  # [C, 5, D]
+        # Normalize pentachora
+        pentachora_norm = F.normalize(pentachora, dim=-1)
 
-        # Compute cosine similarity to all vertices of all classes
-        # z: [B, D] → [B, 1, 1, D]
-        # pentachora: [C, 5, D] → [1, C, 5, D]
-        cos_sim = torch.einsum("bd,cvd->bcv", z, pentachora_norm)  # [B, C, 5]
+        # Compute cosine similarity to all vertices
+        # [B, D] @ [C, 5, D] -> [B, C, 5]
+        cos_sim = torch.einsum("bd,cvd->bcv", z, pentachora_norm)
 
-        # Apply role weights and sum over vertices
-        rose_scores = (cos_sim * role_weights.view(1, 1, 5)).sum(dim=-1)  # [B, C]
+        # Weight by semantic roles and sum across vertices
+        # [B, C, 5] * [5] -> [B, C]
+        rose_scores = (cos_sim * role_weights.view(1, 1, 5)).sum(dim=-1)
 
-        # Temperature scaling
+        # Scale by temperature
         rose_scores = rose_scores / self.temperature
 
-        # Get scores for correct classes
-        true_scores = rose_scores.gather(1, targets.view(-1, 1)).squeeze(1)  # [B]
+        # Get scores for true classes
+        true_scores = rose_scores.gather(1, targets.view(-1, 1)).squeeze(1)
 
-        # Get hardest negative (highest score among incorrect classes)
+        # Get hard negative (best non-target score)
         mask = torch.zeros_like(rose_scores, dtype=torch.bool)
         mask.scatter_(1, targets.view(-1, 1), True)
-        hard_neg = rose_scores.masked_fill(mask, float("-inf")).max(dim=1).values  # [B]
+        hard_neg = rose_scores.masked_fill(mask, float("-inf")).max(dim=1).values
 
-        # Margin-based contrastive loss
-        # Want: true_scores > hard_neg + margin
+        # Triplet-style margin loss
         loss = F.relu(self.margin - (true_scores - hard_neg))
 
         return loss.mean()
 
 
-class CantorStaircase(nn.Module):
-    """
-    Learnable soft Cantor staircase with alpha-normalized middle weighting.
-
-    Provides:
-    - Deterministic hierarchical lattice structure
-    - Feature-driven position modulation
-    - Learnable alpha parameter for middle-interval weighting
-    - Triadic decomposition (base-3 intervals)
-
-    This creates the "deterministic Cantor step offset" that features
-    traverse through, providing positional encoding via geometric structure.
-    """
-
-    def __init__(
-            self,
-            feature_dim: int,
-            alpha_init: float = 0.5,
-            tau: float = 0.25,
-            base: int = 3,
-            levels: int = 12
-    ):
-        """
-        Args:
-            feature_dim: Dimension of input features
-            alpha_init: Initial alpha value (middle-interval weight)
-            tau: Temperature for soft assignment
-            base: Base for decomposition (3 for triadic Cantor)
-            levels: Number of hierarchical levels
-        """
-        super().__init__()
-
-        self.feature_dim = feature_dim
-        self.tau = tau
-        self.base = base
-        self.levels = levels
-
-        # Learnable alpha parameter (middle-interval weighting)
-        self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
-
-        # Fixed triadic centers [left, middle, right]
-        self.register_buffer(
-            'centers',
-            torch.tensor([0.5, 1.5, 2.5], dtype=torch.float32)
-        )
-
-        # Feature-driven position modulation
-        # Features influence traversal through lattice
-        self.feature_to_position = nn.Linear(feature_dim, 1)
-
-    def forward(
-            self,
-            features: torch.Tensor,
-            positions: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute soft Cantor values with hierarchical structure.
-
-        Args:
-            features: [B, D] - input features
-            positions: [B] - base position indices (e.g., timestep bins)
-
-        Returns:
-            cantor_values: [B] - Cantor values in [0, 1]
-        """
-        batch_size = features.size(0)
-        device = features.device
-
-        # Normalize base positions to [0, 1] (deterministic lattice)
-        max_pos = positions.max().item() + 1
-        if max_pos > 1:
-            x_base = positions.float() / float(max_pos - 1)
-        else:
-            x_base = positions.float()
-
-        x_base = x_base.clamp(1e-6, 1.0 - 1e-6)
-
-        # Feature-driven modulation (learned trajectories through lattice)
-        feature_shift = self.feature_to_position(features).squeeze(-1)  # [B]
-        feature_shift = torch.tanh(feature_shift) * 0.3  # Bounded shift ±0.3
-
-        # Combine: deterministic base + learned modulation
-        x = (x_base + feature_shift).clamp(1e-6, 1.0 - 1e-6)
-
-        # HIERARCHICAL TRIADIC DECOMPOSITION
-        # Build Cantor value through recursive subdivision
-        Cx = torch.zeros_like(x)
-        w = 0.5  # Weight for current level
-
-        for level in range(self.levels):
-            # Map to triadic interval [0, 3)
-            y = x * float(self.base)
-
-            # Compute distances to triadic centers
-            d2 = (y.unsqueeze(-1) - self.centers) ** 2  # [B, 3]
-
-            # Soft assignment via temperature-scaled softmax
-            logits = -d2 / (self.tau + 1e-8)
-            p = F.softmax(logits, dim=-1)  # [B, 3]
-
-            # Alpha-normalized middle weighting (Beatrix paradigm)
-            # bit_k = p[left]*0 + p[middle]*alpha + p[right]*1
-            bit_k = p[:, 1] * self.alpha + p[:, 2]
-
-            # Accumulate weighted contribution
-            Cx = Cx + bit_k * w
-
-            # Recurse into selected interval
-            t = y.floor()
-            x = y - t  # Fractional part for next level
-            w *= 0.5  # Halve weight for next level
-
-        return Cx.clamp(0.0, 1.0)
-
-    def get_alpha(self) -> float:
-        """Get current alpha value."""
-        return self.alpha.item()
-
-    def get_interval_distribution(
-            self,
-            features: torch.Tensor,
-            positions: torch.Tensor
-    ) -> dict:
-        """
-        Get soft interval distribution for diagnostics.
-
-        Returns:
-            Dict with average probabilities for [left, middle, right] intervals
-        """
-        batch_size = features.size(0)
-
-        # Get base position
-        max_pos = positions.max().item() + 1
-        if max_pos > 1:
-            x_base = positions.float() / float(max_pos - 1)
-        else:
-            x_base = positions.float()
-        x_base = x_base.clamp(1e-6, 1.0 - 1e-6)
-
-        # Feature modulation
-        feature_shift = self.feature_to_position(features).squeeze(-1)
-        feature_shift = torch.tanh(feature_shift) * 0.3
-
-        # Combined position
-        x = (x_base + feature_shift).clamp(1e-6, 1.0 - 1e-6)
-
-        # First-level triadic position
-        y = x * float(self.base)
-        d2 = (y.unsqueeze(-1) - self.centers) ** 2
-        logits = -d2 / (self.tau + 1e-8)
-        p = F.softmax(logits, dim=-1)  # [B, 3]
-
-        # Average across batch
-        avg_probs = p.mean(dim=0)
-
-        return {
-            'left': avg_probs[0].item(),
-            'middle': avg_probs[1].item(),
-            'right': avg_probs[2].item(),
-            'alpha': self.alpha.item()
-        }
-
+# ============================================================================
+# GEO DAVID BLOCK COMPANION - ENHANCED
+# ============================================================================
 
 class GeoDavidBlockCompanion(nn.Module):
     """
-    Geometric companion for a single SD1.5 block.
+    Geometric companion for a single SD1.5 block - ENHANCED VERSION.
 
-    This is a multi-scale structure that processes features from one SD1.5 block
-    using pentachoron-based pattern classification with Cantor position encoding.
+    Uses ProjectiveHead instead of simple linear layers for richer
+    projective representations in both timestep and pattern classification.
 
     Architecture:
-    - Feature projection (with optional bottleneck)
-    - Pentachoron patterns: [num_bins, num_patterns, 5, scale_dim]
-    - Cantor staircase for hierarchical position
-    - Timestep and pattern classification heads
+        Input Features → Projection (with optional "belly") → Normalized Features
+        → Cantor Hierarchical Encoding
+        → Timestep ProjectiveHead → timestep logits
+        → Pattern ProjectiveHead → pattern logits
+
+    The pentachora serve as geometric anchors for the feature space,
+    with Rose loss aligning features to their appropriate pentachora
+    using semantic role weighting.
     """
 
     def __init__(
@@ -531,8 +820,45 @@ class GeoDavidBlockCompanion(nn.Module):
             cantor_levels: int = 12,
             cantor_base: int = 3,
             simplex_k: int = 4,
-            simplex_seed_base: int = 42
+            simplex_seed_base: int = 42,
+            # ProjectiveHead parameters
+            num_experts: int = 3,
+            compression_ratio: int = 4,
+            num_gate_heads: int = 3,
+            expert_dropout: float = 0.1,
+            attention_dropout: float = 0.1,
+            head_temperature: float = 0.5,
+            use_head_sparsity: bool = True,
+            head_sparsity_threshold: float = 0.1
     ):
+        """
+        Args:
+            block_name: Identifier for this block (e.g., "down_0", "up_3")
+            input_dim: Dimension of input features from SD1.5 block
+            scale_dim: Dimension of geometric feature space
+            num_timestep_bins: Number of timestep buckets
+            num_patterns_per_bin: Patterns per timestep bucket
+            num_timestep_steps: Total diffusion steps (usually 1000)
+            use_belly: Use expanded intermediate projection
+            belly_expand: Expansion factor for belly layer
+            temperature: Temperature for Rose loss
+            cantor_alpha_init: Initial alpha for Cantor staircase
+            cantor_tau: Tau parameter for Cantor staircase
+            cantor_levels: Number of hierarchical levels in Cantor encoding
+            cantor_base: Base for Cantor staircase (usually 3)
+            simplex_k: Simplex dimension (4 for pentachoron)
+            simplex_seed_base: Base seed for simplex initialization
+
+            ProjectiveHead parameters:
+            num_experts: Number of expert pathways in ProjectiveHead
+            compression_ratio: Bottleneck compression in ProjectiveHead
+            num_gate_heads: Number of gating heads in ProjectiveHead
+            expert_dropout: Dropout for expert pathways
+            attention_dropout: Dropout for cross-attention
+            head_temperature: Initial temperature for ProjectiveHead
+            use_head_sparsity: Enable sparsity in ProjectiveHead
+            head_sparsity_threshold: Threshold for sparse predictions
+        """
         super().__init__()
 
         self.block_name = block_name
@@ -542,13 +868,14 @@ class GeoDavidBlockCompanion(nn.Module):
         self.num_patterns = num_patterns_per_bin
         self.temperature = temperature
         self.simplex_k = simplex_k
-        self.num_vertices = simplex_k + 1
+        self.num_vertices = simplex_k + 1  # 5 for pentachoron
         self.num_timestep_steps = num_timestep_steps
 
-        # Feature projection
+        # Feature projection (with optional "belly" expansion)
         if use_belly:
             belly_dim = int(scale_dim * belly_expand)
-            dropout_rate = min(0.0, max(1.0 / (scale_dim ** 0.5), 0.2))
+            # Adaptive dropout based on scale
+            dropout_rate = min(0.5, max(1.0 / math.sqrt(scale_dim), 0.2))
             self.projection = nn.Sequential(
                 nn.Linear(input_dim, belly_dim),
                 nn.ReLU(),
@@ -570,13 +897,13 @@ class GeoDavidBlockCompanion(nn.Module):
             simplex_seed_base
         )
 
-        # Semantic role weights
+        # Semantic role weights for Rose loss
         role_weights = torch.tensor([
-            1.0,  # Anchor
+            1.0,    # Anchor
             -0.75,  # Need
-            0.75,  # Relation
-            0.75,  # Purpose
-            -0.75  # Observer
+            0.75,   # Relation
+            0.75,   # Purpose
+            -0.75   # Observer
         ], dtype=torch.float32)
         self.register_buffer("role_weights", role_weights)
 
@@ -589,96 +916,97 @@ class GeoDavidBlockCompanion(nn.Module):
             levels=cantor_levels
         )
 
-        # Classification heads
-        self.timestep_head = nn.Linear(scale_dim, num_timestep_bins)
+        # ENHANCED CLASSIFICATION HEADS - ProjectiveHead instead of Linear
         total_patterns = num_timestep_bins * num_patterns_per_bin
-        self.pattern_head = nn.Linear(scale_dim, total_patterns)
+
+        print(f"  [{block_name}] Creating ProjectiveHead for timestep classification...")
+        self.timestep_head = ProjectiveHead(
+            input_dim=scale_dim,
+            num_classes=num_timestep_bins,
+            num_experts=num_experts,
+            compression_ratio=compression_ratio,
+            num_gate_heads=num_gate_heads,
+            expert_dropout=expert_dropout,
+            attention_dropout=attention_dropout,
+            temperature_init=head_temperature,
+            use_sparsity=use_head_sparsity,
+            sparsity_threshold=head_sparsity_threshold
+        )
+
+        print(f"  [{block_name}] Creating ProjectiveHead for pattern classification...")
+        self.pattern_head = ProjectiveHead(
+            input_dim=scale_dim,
+            num_classes=total_patterns,
+            num_experts=num_experts,
+            compression_ratio=compression_ratio,
+            num_gate_heads=num_gate_heads,
+            expert_dropout=expert_dropout,
+            attention_dropout=attention_dropout,
+            temperature_init=head_temperature,
+            use_sparsity=use_head_sparsity,
+            sparsity_threshold=head_sparsity_threshold
+        )
 
     def _init_projection_weights(self):
-        """Xavier initialization for stable gradients."""
-        for layer in self.projection.modules():
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=0.5)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
+        """Initialize projection weights for stable training."""
+        for module in self.projection.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.5)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def _init_pentachora_validated(
             self,
             num_bins: int,
             num_patterns: int,
-            scale_dim: int,
-            simplex_k: int,
-            seed_base: int
+            dim: int,
+            k: int,
+            seed: int
     ) -> nn.Parameter:
         """
-        Initialize pentachora using SimplexFactory with validation.
+        Initialize pentachora with SimplexFactory validation.
 
-        This creates geometrically valid k-simplices that prevent
-        training divergence through:
-        - Non-zero volume (no collapse)
-        - Proper edge structure (regularity)
-        - Valid Gram matrix (proper embedding)
+        Creates validated k-simplices that are geometrically valid and
+        well-distributed in the feature space.
+
+        Args:
+            num_bins: Number of timestep bins
+            num_patterns: Patterns per bin
+            dim: Feature dimension
+            k: Simplex dimension (4 for pentachoron)
+            seed: Base seed for reproducibility
+
+        Returns:
+            Initialized pentachora parameter [bins, patterns, k+1, dim]
         """
         if not HAS_SIMPLEX_FACTORY:
-            print(f"    [{self.block_name}] Using random initialization (less stable)")
-            pentachora = torch.randn(
-                num_bins, num_patterns, simplex_k + 1, scale_dim
-            ) * 0.1
-            return nn.Parameter(pentachora)
+            # Fallback: random initialization with normalization
+            print(f"    WARNING: Using fallback initialization (SimplexFactory unavailable)")
+            pentachora = torch.randn(num_bins, num_patterns, k + 1, dim)
+            pentachora = F.normalize(pentachora, dim=-1)
+            return nn.Parameter(pentachora, requires_grad=True)
 
-        # SimplexFactory with validation
+        # Use SimplexFactory for validated initialization
         factory = SimplexFactory(
-            k=simplex_k,
-            embed_dim=scale_dim,
-            method="random"  # Random with geometric validation
+            embed_dim=dim,
+            k=k,
+            method='random',
+            seed=seed,
         )
 
-        total_simplices = num_bins * num_patterns
-        print(f"    [{self.block_name}] Building {total_simplices} validated {simplex_k}-simplices...")
+        pentachora_list = []
+        for bin_idx in range(num_bins):
+            bin_patterns = []
+            for pattern_idx in range(num_patterns):
+                # Unique seed for each simplex
+                subseed = seed + bin_idx * num_patterns + pattern_idx
+                simplex = factory.build(backend="torch", validate=True, seed=subseed)
+                bin_patterns.append(simplex)
+            pentachora_list.append(torch.stack(bin_patterns, dim=0))
 
-        # Build in batches
-        batch_size = 100
-        all_pentachora = []
-
-        with torch.no_grad():
-            for batch_start in range(0, total_simplices, batch_size):
-                batch_end = min(batch_start + batch_size, total_simplices)
-                batch_pentachora = []
-
-                for idx in range(batch_start, batch_end):
-                    # Deterministic seed per pentachoron
-                    seed = seed_base + hash(f"{self.block_name}_penta_{idx}") % (2 ** 31)
-
-                    # Build on CPU, validate geometry
-                    simplex = factory.build(
-                        backend="torch",
-                        device="cpu",
-                        dtype=torch.float32,
-                        seed=seed,
-                        validate=True  # CRITICAL: Ensures geometric validity
-                    )
-                    batch_pentachora.append(simplex)
-
-                # Move to GPU
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                batch_tensor = torch.stack(batch_pentachora).to(device)
-                all_pentachora.append(batch_tensor)
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
-                if batch_end % 500 == 0 or batch_end == total_simplices:
-                    print(f"      {batch_end}/{total_simplices} complete", end='\r')
-
-        print(f"      {total_simplices}/{total_simplices} complete ✓")
-
-        # Reshape: [num_bins, num_patterns, 5, scale_dim]
-        pentachora_tensor = torch.cat(all_pentachora, dim=0)
-        pentachora_tensor = pentachora_tensor.view(
-            num_bins, num_patterns, simplex_k + 1, scale_dim
-        )
-
-        return nn.Parameter(pentachora_tensor)
+        pentachora = torch.stack(pentachora_list, dim=0)
+        print(f"    ✓ Created {num_bins * num_patterns} validated pentachora")
+        return nn.Parameter(pentachora, requires_grad=True)
 
     def forward(
             self,
@@ -686,26 +1014,29 @@ class GeoDavidBlockCompanion(nn.Module):
             timesteps: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with geometric structure.
+        Forward pass with enhanced projective heads.
 
         Args:
-            features: [B, input_dim] - block features from SD1.5
-            timesteps: [B] - continuous timesteps [0, 1000]
+            features: [B, input_dim] or [B, C, H, W] (spatial)
+            timesteps: [B] - diffusion timesteps [0, 999]
 
         Returns:
-            Dict with:
-                'features': [B, scale_dim] - projected features
-                'timestep_logits': [B, num_bins]
-                'pattern_logits': [B, num_bins * num_patterns]
-                'timestep_class': [B] - timestep bins
-                'cantor_values': [B] - Cantor position encoding
+            Dict containing:
+                'features': [B, scale_dim] - projected & normalized features
+                'timestep_logits': [B, num_bins] - timestep classification logits
+                'pattern_logits': [B, num_bins * num_patterns] - pattern logits
+                'timestep_class': [B] - timestep bin indices
+                'cantor_values': [B] - Cantor hierarchical encoding values
         """
-        # Project and normalize
+        # Flatten spatial features if needed
+        if features.dim() > 2:
+            features = features.flatten(1)
+
+        # Project and normalize features
         z = self.projection(features)
         z = F.normalize(z, dim=-1)
 
-        # Timestep classification
-        timestep_logits = self.timestep_head(z)
+        # Compute timestep class (bin index)
         timestep_class = (timesteps / self.num_timestep_steps * self.num_bins).long().clamp(
             0, self.num_bins - 1
         )
@@ -713,8 +1044,10 @@ class GeoDavidBlockCompanion(nn.Module):
         # Cantor hierarchical position encoding
         cantor_values = self.cantor_stairs(z, timestep_class)
 
-        # Pattern classification
-        pattern_logits = self.pattern_head(z)
+        # Enhanced classification heads
+        # (ignore gate outputs during training - they're for analysis only)
+        timestep_logits, _ = self.timestep_head(z, return_gates=False)
+        pattern_logits, _ = self.pattern_head(z, return_gates=False)
 
         return {
             'features': z,
@@ -725,19 +1058,27 @@ class GeoDavidBlockCompanion(nn.Module):
         }
 
 
+# ============================================================================
+# GEOMETRIC MULTI-SCALE LOSS
+# ============================================================================
+
 class GeometricMultiScaleLoss(nn.Module):
     """
     BATCHED geometric loss calculator for multi-block ensemble.
 
-    Processes ALL blocks in parallel instead of sequential loop.
-
     Computes 6 loss components per block:
-    1. Feature similarity - teacher alignment
-    2. Rose loss - pentachoron relational learning
+    1. Feature similarity - alignment with teacher features
+    2. Rose loss - geometric pentachoron alignment
     3. Cross-entropy - pattern classification
     4. Pattern diversity - mode collapse prevention
-    5. Cayley-Menger - geometric solidity (CRITICAL)
+    5. Cayley-Menger - geometric solidity (CRITICAL for stability)
     6. Cantor coherence - hierarchical clustering
+
+    All components are balanced to:
+    - Preserve geometric structure (Cayley + Rose)
+    - Learn accurate classifications (CE)
+    - Prevent collapse (diversity + Cayley)
+    - Maintain hierarchical organization (Cantor)
     """
 
     def __init__(
@@ -760,13 +1101,33 @@ class GeometricMultiScaleLoss(nn.Module):
             rose_temperature: float = 0.07,
             cantor_bandwidth: float = 0.1
     ):
+        """
+        Args:
+            num_timestep_bins: Number of timestep buckets
+            num_patterns_per_bin: Patterns per timestep
+            feature_similarity_weight: Weight for teacher alignment (0.4 default)
+            rose_weight: Weight for Rose loss (0.25 default)
+            ce_weight: Weight for cross-entropy (0.15 default)
+            pattern_diversity_weight: Weight for diversity (0.05 default)
+            cayley_weight: Weight for Cayley-Menger (0.10 default - CRITICAL)
+            cantor_coherence_weight: Weight for Cantor coherence (0.05 default)
+            use_soft_assignment: Use soft pattern assignment
+            temperature: Temperature for soft assignment
+            cayley_volume_floor: Minimum pentachoron volume
+            cayley_chaos_scale: Scale for volume chaos penalty
+            cayley_edge_weight: Weight for edge uniformity
+            cayley_gram_weight: Weight for Gram conditioning
+            rose_margin: Margin for Rose loss
+            rose_temperature: Temperature for Rose loss
+            cantor_bandwidth: Bandwidth for Cantor coherence
+        """
         super().__init__()
 
         self.num_bins = num_timestep_bins
         self.num_patterns = num_patterns_per_bin
         self.num_classes = num_timestep_bins * num_patterns_per_bin
 
-        # Loss weights
+        # Loss weights (must sum to ~1.0 for balanced training)
         self.feature_sim_weight = feature_similarity_weight
         self.rose_weight = rose_weight
         self.ce_weight = ce_weight
@@ -791,526 +1152,243 @@ class GeometricMultiScaleLoss(nn.Module):
             temperature=rose_temperature
         )
 
-    def assign_patterns(
+    def compute_pattern_diversity(
             self,
-            features: torch.Tensor,
-            timestep_class: torch.Tensor,
-            pentachora: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Assign patterns using pentachoron centroid matching (single block)."""
-        B = features.size(0)
-
-        # Get pentachora for timestep bins
-        batch_pentachora = pentachora[timestep_class]  # [B, num_patterns, 5, D]
-
-        # Use centroids
-        centroids = batch_pentachora.mean(dim=2)  # [B, num_patterns, D]
-
-        # Cosine similarity
-        features_expanded = features.unsqueeze(1)
-        similarities = F.cosine_similarity(features_expanded, centroids, dim=2)
-
-        # Assign to nearest
-        pattern_ids = similarities.argmax(dim=1)
-        full_class_ids = timestep_class * self.num_patterns + pattern_ids
-
-        return pattern_ids, full_class_ids
-
-    def compute_soft_assignment(
-            self,
-            features: torch.Tensor,
-            timestep_class: torch.Tensor,
-            pentachora: torch.Tensor
+            pentachora: torch.Tensor,
+            pattern_probs: torch.Tensor
     ) -> torch.Tensor:
-        """Soft pattern assignment with temperature (single block)."""
-        B, D = features.shape
-        device = features.device
-
-        batch_pentachora = pentachora[timestep_class]
-        centroids = batch_pentachora.mean(dim=2)
-
-        features_expanded = features.unsqueeze(1)
-        similarities = F.cosine_similarity(features_expanded, centroids, dim=2)
-
-        pattern_probs = F.softmax(similarities / self.temperature, dim=1)
-
-        soft_targets = torch.zeros(B, self.num_classes, device=device)
-        for i in range(B):
-            bin_idx = timestep_class[i].item()
-            start_idx = bin_idx * self.num_patterns
-            end_idx = start_idx + self.num_patterns
-            soft_targets[i, start_idx:end_idx] = pattern_probs[i]
-
-        return soft_targets
-
-    def batch_assign_patterns(
-            self,
-            features: torch.Tensor,  # [num_blocks * B, D]
-            timestep_class: torch.Tensor,  # [num_blocks * B]
-            pentachora: torch.Tensor,  # [num_blocks, num_bins, num_patterns, 5, D]
-            block_indices: torch.Tensor  # [num_blocks * B] - which block each sample belongs to
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Batched pattern assignment across all blocks.
+        Compute pattern diversity loss to prevent mode collapse.
+
+        Encourages the model to use all patterns rather than
+        collapsing to a few dominant ones.
+
+        Args:
+            pentachora: [num_classes, 5, D] - pentachora for each pattern
+            pattern_probs: [B, num_classes] - pattern probabilities
 
         Returns:
-            pattern_ids: [num_blocks * B] - pattern within timestep bin
-            full_class_ids: [num_blocks * B] - full class ID (bin * patterns + pattern)
+            diversity_loss: scalar - diversity penalty
         """
-        total_samples = features.size(0)
-        D = features.size(1)
-        device = features.device
+        # Average usage across batch
+        pattern_usage = pattern_probs.mean(dim=0)  # [num_classes]
 
-        # Get pentachora for each sample's block and timestep
-        # [num_blocks * B, num_patterns, 5, D]
-        batch_pentachora = pentachora[block_indices, timestep_class]
+        # Entropy of pattern usage (higher = more diverse)
+        entropy = -(pattern_usage * torch.log(pattern_usage + 1e-8)).sum()
+        max_entropy = torch.log(torch.tensor(float(self.num_classes)))
 
-        # Compute centroids: [num_blocks * B, num_patterns, D]
-        centroids = batch_pentachora.mean(dim=2)
+        # Diversity loss: encourage high entropy
+        diversity_loss = max_entropy - entropy
 
-        # Cosine similarity
-        features_expanded = features.unsqueeze(1)  # [num_blocks * B, 1, D]
-        similarities = F.cosine_similarity(features_expanded, centroids, dim=2)  # [num_blocks * B, num_patterns]
+        return diversity_loss
 
-        # Assign to nearest
-        pattern_ids = similarities.argmax(dim=1)  # [num_blocks * B]
-        full_class_ids = timestep_class * self.num_patterns + pattern_ids
-
-        return pattern_ids, full_class_ids
-
-    def batch_compute_soft_assignment(
+    def compute_cantor_coherence(
             self,
-            features: torch.Tensor,
-            timestep_class: torch.Tensor,
-            pentachora: torch.Tensor,
-            block_indices: torch.Tensor
+            cantor_values: torch.Tensor,
+            timestep_class: torch.Tensor
     ) -> torch.Tensor:
-        """Batched soft pattern assignment."""
-        total_samples = features.size(0)
-        device = features.device
+        """
+        Compute Cantor coherence loss for hierarchical organization.
 
-        # Get pentachora
-        batch_pentachora = pentachora[block_indices, timestep_class]
-        centroids = batch_pentachora.mean(dim=2)
+        Encourages samples in the same timestep bin to have similar
+        Cantor values (hierarchical clustering).
 
-        # Similarities
-        features_expanded = features.unsqueeze(1)
-        similarities = F.cosine_similarity(features_expanded, centroids, dim=2)
-        pattern_probs = F.softmax(similarities / self.temperature, dim=1)
+        Args:
+            cantor_values: [B] - Cantor position encodings
+            timestep_class: [B] - timestep bin indices
 
-        # Build soft targets
-        soft_targets = torch.zeros(total_samples, self.num_classes, device=device)
-        for i in range(total_samples):
-            bin_idx = timestep_class[i].item()
-            start_idx = bin_idx * self.num_patterns
-            end_idx = start_idx + self.num_patterns
-            soft_targets[i, start_idx:end_idx] = pattern_probs[i]
+        Returns:
+            coherence_loss: scalar - coherence penalty
+        """
+        B = cantor_values.shape[0]
 
-        return soft_targets
+        # Create pairwise mask: same timestep = 1, different = 0
+        same_timestep = (timestep_class.unsqueeze(0) == timestep_class.unsqueeze(1)).float()
 
-    def batch_compute_cantor_coherence(
-            self,
-            cantor_values: torch.Tensor,  # [num_blocks * B]
-            pattern_ids: torch.Tensor,
-            timestep_class: torch.Tensor,
-            block_indices: torch.Tensor
-    ) -> torch.Tensor:
-        """Batched Cantor coherence across all blocks."""
-        device = cantor_values.device
+        # Pairwise Cantor distances
+        cantor_diff = (cantor_values.unsqueeze(0) - cantor_values.unsqueeze(1)).abs()
 
-        # Full class IDs including block identity
-        # We need to make classes unique per block
-        full_class_ids = (
-                block_indices * self.num_classes +
-                timestep_class * self.num_patterns +
-                pattern_ids
-        )
+        # Weighted distance (penalize large distances within same timestep)
+        weighted_dist = (cantor_diff * same_timestep).sum() / (same_timestep.sum() + 1e-8)
 
-        unique_classes = torch.unique(full_class_ids)
+        # Apply bandwidth
+        coherence_loss = weighted_dist / self.cantor_bandwidth
 
-        if len(unique_classes) < 2:
-            return torch.tensor(0.0, device=device)
-
-        coherence_losses = []
-        for class_id in unique_classes:
-            mask = full_class_ids == class_id
-            class_cantor = cantor_values[mask]
-
-            if class_cantor.size(0) > 1:
-                coherence_losses.append(class_cantor.var())
-
-        if len(coherence_losses) == 0:
-            return torch.tensor(0.0, device=device)
-
-        return torch.stack(coherence_losses).mean()
-
-    def batch_compute_pattern_diversity(
-            self,
-            pattern_ids: torch.Tensor,
-            block_indices: torch.Tensor,
-            num_blocks: int
-    ) -> torch.Tensor:
-        """Compute pattern diversity per block, then average."""
-        device = pattern_ids.device
-        diversity_losses = []
-
-        for block_idx in range(num_blocks):
-            block_mask = block_indices == block_idx
-            block_patterns = pattern_ids[block_mask]
-
-            if block_patterns.size(0) == 0:
-                continue
-
-            pattern_counts = torch.bincount(
-                block_patterns, minlength=self.num_patterns
-            ).float()
-            pattern_probs = pattern_counts / pattern_counts.sum()
-            pattern_probs = pattern_probs[pattern_probs > 0]
-
-            if len(pattern_probs) > 1:
-                pattern_entropy = -(pattern_probs * pattern_probs.log()).sum()
-                max_entropy = torch.log(torch.tensor(float(self.num_patterns)))
-                diversity_loss = (max_entropy - pattern_entropy) / max_entropy
-            else:
-                diversity_loss = torch.tensor(1.0, device=device)
-
-            diversity_losses.append(diversity_loss)
-
-        if len(diversity_losses) == 0:
-            return torch.tensor(0.0, device=device)
-
-        return torch.stack(diversity_losses).mean()
+        return coherence_loss
 
     def forward(
             self,
             companions_outputs: Dict[str, Dict[str, torch.Tensor]],
             teacher_features_dict: Dict[str, torch.Tensor],
-            timesteps: torch.Tensor,  # [B]
-            companions: Dict[str, 'GeoDavidBlockCompanion'],
-            block_weights: Optional[Dict[str, float]] = None
+            timesteps: torch.Tensor,
+            companions: nn.ModuleDict,
+            block_weights: Dict[str, float]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        BATCHED computation across all blocks (handles variable feature dims).
+        Compute multi-block geometric loss.
 
         Args:
-            companions_outputs: Dict[block_name, outputs_dict]
-                Each outputs_dict has:
-                    'features': [B, D_block] - D can vary per block!
-                    'timestep_logits': [B, num_bins]
-                    'pattern_logits': [B, num_classes]
-                    'timestep_class': [B]
-                    'cantor_values': [B]
-            teacher_features_dict: Dict[block_name, teacher_features [B, D_teacher]]
-            timesteps: [B] - timesteps for all samples
-            companions: Dict[block_name, companion]
-            block_weights: Optional per-block importance weights
+            companions_outputs: Dict[block_name, outputs] from all companions
+            teacher_features_dict: Dict[block_name, teacher_features] targets
+            timesteps: [B] - diffusion timesteps
+            companions: ModuleDict of all companions (for accessing pentachora)
+            block_weights: Dict[block_name, importance_weight]
 
         Returns:
-            total_loss: Weighted aggregate loss
-            all_metrics: Comprehensive metrics dict
+            total_loss: scalar - weighted sum of all losses
+            metrics: Dict[str, float] - detailed metrics for logging
         """
-        block_names = list(companions_outputs.keys())
-        num_blocks = len(block_names)
-        B = timesteps.size(0)
-        device = timesteps.device
+        total_loss = 0.0
+        metrics = {}
 
-        if block_weights is None:
-            block_weights = {name: 1.0 for name in block_names}
-
-        # ==================================================================
-        # STEP 1: Collect block data (DON'T concatenate features yet!)
-        # ==================================================================
-
-        # These can be stacked (same dims across blocks)
-        timestep_logits_list = []
-        pattern_logits_list = []
-        timestep_class_list = []
-        cantor_values_list = []
-        block_indices_list = []
-
-        # These have variable dims - keep as lists
-        features_list = []
-        teacher_features_list = []
-        pentachora_list = []
-        projection_list = []
-
-        for block_idx, block_name in enumerate(block_names):
-            outputs = companions_outputs[block_name]
+        # Process each block
+        for block_name, outputs in companions_outputs.items():
             companion = companions[block_name]
+            block_weight = block_weights[block_name]
+            teacher_features = teacher_features_dict[block_name]
 
-            # Variable dimension - keep in list
-            features_list.append(outputs['features'])
-            teacher_features_list.append(teacher_features_dict[block_name])
-            pentachora_list.append(companion.crystal_pentachora)
-            projection_list.append(companion.projection)
+            # Extract outputs
+            z = outputs['features']  # [B, D]
+            timestep_logits = outputs['timestep_logits']  # [B, num_bins]
+            pattern_logits = outputs['pattern_logits']  # [B, num_classes]
+            timestep_class = outputs['timestep_class']  # [B]
+            cantor_values = outputs['cantor_values']  # [B]
 
-            # Fixed dimension - can stack
-            timestep_logits_list.append(outputs['timestep_logits'])
-            pattern_logits_list.append(outputs['pattern_logits'])
-            timestep_class_list.append(outputs['timestep_class'])
-            cantor_values_list.append(outputs['cantor_values'])
+            B, D = z.shape
 
-            # Block indices for tracking
-            block_indices_list.append(
-                torch.full((B,), block_idx, dtype=torch.long, device=device)
+            # Get pentachora
+            pentachora_bins = companion.crystal_pentachora  # [bins, patterns, 5, D]
+            pentachora_flat = pentachora_bins.view(-1, 5, D)  # [num_classes, 5, D]
+
+            # ================================================================
+            # 1. FEATURE SIMILARITY (teacher alignment)
+            # ================================================================
+            teacher_z = companion.projection(teacher_features)
+            teacher_z = F.normalize(teacher_z, dim=-1)
+            feature_sim_loss = 1.0 - F.cosine_similarity(z, teacher_z, dim=-1).mean()
+
+
+            # ================================================================
+            # 2. ROSE LOSS (geometric alignment)
+            # ================================================================
+            # Compute pattern targets based on timestep and local pattern index
+            # For simplicity: use pattern 0 for each timestep
+            pattern_targets = timestep_class * companion.num_patterns
+
+            rose_loss_value = self.rose_loss(z, pentachora_flat, pattern_targets)
+
+            # ================================================================
+            # 3. CROSS-ENTROPY (classification)
+            # ================================================================
+            ce_timestep = F.cross_entropy(timestep_logits, timestep_class)
+            ce_pattern = F.cross_entropy(pattern_logits, pattern_targets)
+            ce_loss = (ce_timestep + ce_pattern) / 2.0
+
+            # ================================================================
+            # 4. PATTERN DIVERSITY (anti-collapse)
+            # ================================================================
+            pattern_probs = F.softmax(pattern_logits, dim=-1)
+            diversity_loss = self.compute_pattern_diversity(pentachora_flat, pattern_probs)
+
+            # ================================================================
+            # 5. CAYLEY-MENGER (geometric stability) - CRITICAL
+            # ================================================================
+            # Sample pentachora for Cayley loss (avoid full batch computation)
+            sample_size = min(B * 5, pentachora_flat.shape[0])
+            sample_indices = torch.randperm(pentachora_flat.shape[0], device=z.device)[:sample_size]
+            pentachora_sample = pentachora_flat[sample_indices]
+
+            cayley_loss_value = self.cayley_loss(pentachora_sample)
+
+            # ================================================================
+            # 6. CANTOR COHERENCE (hierarchical organization)
+            # ================================================================
+            cantor_coherence_loss = self.compute_cantor_coherence(cantor_values, timestep_class)
+
+            # ================================================================
+            # COMBINE LOSSES
+            # ================================================================
+            block_loss = (
+                    self.feature_sim_weight * feature_sim_loss +
+                    self.rose_weight * rose_loss_value +
+                    self.ce_weight * ce_loss +
+                    self.pattern_diversity_weight * diversity_loss +
+                    self.cayley_weight * cayley_loss_value +
+                    self.cantor_coherence_weight * cantor_coherence_loss
             )
 
-        # Stack only fixed-dimension tensors
-        timestep_logits_batched = torch.cat(timestep_logits_list, dim=0)  # [num_blocks*B, num_bins]
-        pattern_logits_batched = torch.cat(pattern_logits_list, dim=0)  # [num_blocks*B, num_classes]
-        timestep_class_batched = torch.cat(timestep_class_list, dim=0)  # [num_blocks*B]
-        cantor_values_batched = torch.cat(cantor_values_list, dim=0)  # [num_blocks*B]
-        block_indices = torch.cat(block_indices_list, dim=0)  # [num_blocks*B]
+            # Weight by block importance
+            total_loss += block_weight * block_loss
 
-        # ==================================================================
-        # STEP 2: Pattern assignment (per-block due to variable dims)
-        # ==================================================================
-
-        pattern_ids_list = []
-        full_class_ids_list = []
-
-        for block_idx, block_name in enumerate(block_names):
-            features = features_list[block_idx]  # [B, D_block]
-            timestep_class = timestep_class_list[block_idx]  # [B]
-            pentachora = pentachora_list[block_idx]  # [num_bins, num_patterns, 5, D_block]
-
-            # Assign patterns for this block
-            pattern_ids, full_class_ids = self.assign_patterns(
-                features, timestep_class, pentachora
-            )
-
-            pattern_ids_list.append(pattern_ids)
-            full_class_ids_list.append(full_class_ids)
-
-        # Stack pattern assignments
-        pattern_ids_batched = torch.cat(pattern_ids_list, dim=0)  # [num_blocks * B]
-        full_class_ids_batched = torch.cat(full_class_ids_list, dim=0)  # [num_blocks * B]
-
-        # ==================================================================
-        # STEP 3: Compute loss components (per-block for feature-dependent)
-        # ==================================================================
-
-        # 3a. Feature similarity (MUST be per-block due to variable dims + projections)
-        feat_sim_losses = []
-        for block_idx, block_name in enumerate(block_names):
-            features = features_list[block_idx]
-            teacher_features = teacher_features_list[block_idx]
-            projection = projection_list[block_idx]
-
+            # ================================================================
+            # METRICS
+            # ================================================================
             with torch.no_grad():
-                teacher_projected = projection(teacher_features)
+                # Accuracies
+                timestep_acc = (timestep_logits.argmax(dim=-1) == timestep_class).float().mean()
+                pattern_acc = (pattern_logits.argmax(dim=-1) == pattern_targets).float().mean()
 
-            teacher_norm = F.normalize(teacher_projected, dim=-1)
-            features_norm = F.normalize(features, dim=-1)
-            feature_sim = F.cosine_similarity(features_norm, teacher_norm, dim=1)
-            feat_sim_loss = (1.0 - feature_sim).mean()
-            feat_sim_losses.append(feat_sim_loss)
+                # Joint accuracy (both correct)
+                timestep_correct = (timestep_logits.argmax(dim=-1) == timestep_class)
+                pattern_correct = (pattern_logits.argmax(dim=-1) == pattern_targets)
+                full_acc = (timestep_correct & pattern_correct).float().mean()
 
-        feat_sim_loss_total = torch.stack(feat_sim_losses).mean()
+            # Store metrics
+            metrics[f'{block_name}/feature_sim'] = feature_sim_loss.item()
+            metrics[f'{block_name}/rose'] = rose_loss_value.item()
+            metrics[f'{block_name}/ce'] = ce_loss.item()
+            metrics[f'{block_name}/diversity'] = diversity_loss.item()
+            metrics[f'{block_name}/cayley'] = cayley_loss_value.item()
+            metrics[f'{block_name}/cantor'] = cantor_coherence_loss.item()
+            metrics[f'{block_name}/total'] = block_loss.item()
+            metrics[f'{block_name}/timestep_acc'] = timestep_acc.item()
+            metrics[f'{block_name}/pattern_acc'] = pattern_acc.item()
+            metrics[f'{block_name}/full_acc'] = full_acc.item()
+            metrics[f'{block_name}/cantor_alpha'] = companion.cantor_stairs.get_alpha()
 
-        # 3b. Rose loss (per-block due to variable feature dims)
-        rose_losses = []
-        for block_idx, block_name in enumerate(block_names):
-            features = features_list[block_idx]  # [B, D_block]
-            pentachora = pentachora_list[block_idx]  # [num_bins, num_patterns, 5, D_block]
-            full_class_ids = full_class_ids_list[block_idx]  # [B]
-
-            # Reshape pentachora to [num_classes, 5, D]
-            pentachora_all_classes = pentachora.view(-1, 5, pentachora.size(-1))
-
-            rose_loss = self.rose_loss(features, pentachora_all_classes, full_class_ids)
-            rose_losses.append(rose_loss)
-
-        rose_loss_total = torch.stack(rose_losses).mean()
-
-        # 3c. Cross-entropy (can batch - same logits structure)
-        if self.use_soft_assignment:
-            # Compute soft targets per-block
-            soft_targets_list = []
-            for block_idx in range(num_blocks):
-                features = features_list[block_idx]
-                timestep_class = timestep_class_list[block_idx]
-                pentachora = pentachora_list[block_idx]
-
-                soft_targets = self.compute_soft_assignment(
-                    features, timestep_class, pentachora
-                )
-                soft_targets_list.append(soft_targets)
-
-            soft_targets_batched = torch.cat(soft_targets_list, dim=0)
-            log_probs = F.log_softmax(pattern_logits_batched, dim=1)
-            ce_loss_total = -(soft_targets_batched * log_probs).sum(dim=1).mean()
-        else:
-            ce_loss_total = F.cross_entropy(pattern_logits_batched, full_class_ids_batched)
-
-        # 3d. Pattern diversity (per-block, then averaged)
-        pattern_div_loss_total = self.batch_compute_pattern_diversity(
-            pattern_ids_batched,
-            block_indices,
-            num_blocks
-        )
-
-        # 3e. Cayley loss (per-block due to variable pentachora dims)
-        cayley_losses = []
-        for block_idx, block_name in enumerate(block_names):
-            pentachora = pentachora_list[block_idx]  # [num_bins, num_patterns, 5, D_block]
-            timestep_class = timestep_class_list[block_idx]  # [B]
-            pattern_ids = pattern_ids_list[block_idx]  # [B]
-
-            # Get assigned pentachora: [B, 5, D_block]
-            batch_pentachora = pentachora[timestep_class, pattern_ids]
-
-            cayley_loss = self.cayley_loss(batch_pentachora)
-            cayley_losses.append(cayley_loss)
-
-        cayley_loss_total = torch.stack(cayley_losses).mean()
-
-        # 3f. Cantor coherence (batched - scalar values)
-        cantor_coherence_total = self.batch_compute_cantor_coherence(
-            cantor_values_batched,
-            pattern_ids_batched,
-            timestep_class_batched,
-            block_indices
-        )
-
-        # ==================================================================
-        # STEP 4: Aggregate losses with block weighting
-        # ==================================================================
-
-        # Compute weighted average for shared losses (CE, diversity, cantor)
-        # These are computed on batched data but should respect block importance
-        total_block_weight = sum(block_weights.get(name, 1.0) for name in block_names)
-
-        # Aggregate per-block losses with weights
-        weighted_feat_sim = sum(
-            block_weights.get(block_names[i], 1.0) * feat_sim_losses[i]
-            for i in range(num_blocks)
-        ) / total_block_weight
-
-        weighted_rose = sum(
-            block_weights.get(block_names[i], 1.0) * rose_losses[i]
-            for i in range(num_blocks)
-        ) / total_block_weight
-
-        weighted_cayley = sum(
-            block_weights.get(block_names[i], 1.0) * cayley_losses[i]
-            for i in range(num_blocks)
-        ) / total_block_weight
-
-        # Shared losses (already aggregated across all blocks)
-        # These represent the full batch, so we use them directly
-        weighted_ce = ce_loss_total
-        weighted_diversity = pattern_div_loss_total
-        weighted_cantor = cantor_coherence_total
-
-        # Total loss with component weights
-        total_loss = (
-                self.feature_sim_weight * weighted_feat_sim +
-                self.rose_weight * weighted_rose +
-                self.ce_weight * weighted_ce +
-                self.pattern_diversity_weight * weighted_diversity +
-                self.cayley_weight * weighted_cayley +
-                self.cantor_coherence_weight * weighted_cantor
-        )
-
-        # ==================================================================
-        # STEP 5: Compute accuracies (per-block for detailed metrics)
-        # ==================================================================
-
-        accuracies = {}
-        for block_idx, block_name in enumerate(block_names):
-            block_mask = block_indices == block_idx
-
-            block_timestep_logits = timestep_logits_batched[block_mask]
-            block_pattern_logits = pattern_logits_batched[block_mask]
-            block_timestep_class = timestep_class_list[block_idx]
-            block_pattern_ids = pattern_ids_list[block_idx]
-            block_full_class_ids = full_class_ids_list[block_idx]
-
-            pred_timestep = block_timestep_logits.argmax(dim=1)
-            timestep_acc = (pred_timestep == block_timestep_class).float().mean().item()
-
-            pred_patterns = block_pattern_logits.argmax(dim=1) % self.num_patterns
-            pattern_acc = (pred_patterns == block_pattern_ids).float().mean().item()
-
-            pred_full = block_pattern_logits.argmax(dim=1)
-            full_acc = (pred_full == block_full_class_ids).float().mean().item()
-
-            accuracies[block_name] = {
-                'timestep_acc': timestep_acc,
-                'pattern_acc': pattern_acc,
-                'full_acc': full_acc
-            }
-
-        # ==================================================================
-        # STEP 6: Build metrics dict
-        # ==================================================================
-
-        all_metrics = {}
-
-        # Per-block metrics
-        for block_idx, block_name in enumerate(block_names):
-            companion = companions[block_name]
-
-            # Per-block loss values
-            all_metrics[f'{block_name}/feat_sim'] = feat_sim_losses[block_idx].item()
-            all_metrics[f'{block_name}/rose'] = rose_losses[block_idx].item()
-            all_metrics[f'{block_name}/cayley'] = cayley_losses[block_idx].item()
-
-            # Shared loss values (same for all blocks since computed on batched data)
-            all_metrics[f'{block_name}/ce'] = ce_loss_total.item()
-            all_metrics[f'{block_name}/diversity'] = pattern_div_loss_total.item()
-            all_metrics[f'{block_name}/cantor'] = cantor_coherence_total.item()
-
-            # Accuracies (per-block)
-            all_metrics[f'{block_name}/timestep_acc'] = accuracies[block_name]['timestep_acc']
-            all_metrics[f'{block_name}/pattern_acc'] = accuracies[block_name]['pattern_acc']
-            all_metrics[f'{block_name}/full_acc'] = accuracies[block_name]['full_acc']
-
-            # Cantor alpha (per-block)
-            all_metrics[f'{block_name}/cantor_alpha'] = companion.cantor_stairs.get_alpha()
-
-        # Averaged metrics
-        all_metrics['avg/timestep_acc'] = sum(
-            v for k, v in all_metrics.items() if k.endswith('/timestep_acc')
+        # Aggregate metrics
+        num_blocks = len(companions_outputs)
+        metrics['avg/cayley'] = sum(
+            metrics[f'{b}/cayley'] for b in companions_outputs.keys()
         ) / num_blocks
-        all_metrics['avg/pattern_acc'] = sum(
-            v for k, v in all_metrics.items() if k.endswith('/pattern_acc')
+        metrics['avg/timestep_acc'] = sum(
+            metrics[f'{b}/timestep_acc'] for b in companions_outputs.keys()
         ) / num_blocks
-        all_metrics['avg/full_acc'] = sum(
-            v for k, v in all_metrics.items() if k.endswith('/full_acc')
+        metrics['avg/pattern_acc'] = sum(
+            metrics[f'{b}/pattern_acc'] for b in companions_outputs.keys()
+        ) / num_blocks
+        metrics['avg/full_acc'] = sum(
+            metrics[f'{b}/full_acc'] for b in companions_outputs.keys()
         ) / num_blocks
 
-        # Weighted average cayley (consistent with total loss computation)
-        total_block_weight = sum(block_weights.get(name, 1.0) for name in block_names)
-        all_metrics['avg/cayley'] = sum(
-            block_weights.get(block_names[i], 1.0) * cayley_losses[i].item()
-            for i in range(num_blocks)
-        ) / total_block_weight
+        metrics['total_loss'] = total_loss.item()
 
-        all_metrics['total_loss'] = total_loss.item()
+        return total_loss, metrics
 
-        return total_loss, all_metrics
+
+# ============================================================================
+# GEODAVID COLLECTIVE - ENHANCED
+# ============================================================================
 
 class GeoDavidCollective(nn.Module):
     """
-    Geometric David Collective: Multi-Block Diffusion Distillation System
+    Multi-block geometric ensemble for SD1.5 distillation - ENHANCED VERSION.
 
     Complete geometric architecture for learning SD1.5 block representations
     using pentachoron structures, Cantor hierarchical encoding, and geometric
     solidity enforcement.
 
-    Architecture:
-    - Multiple block companions (one per SD1.5 block)
-    - Each companion: pentachoron patterns + Cantor staircase
-    - Geometric multi-scale loss with 6 components
-    - Per-block weighting for importance
+    ENHANCEMENT: Uses ProjectiveHead architecture for richer projective
+    representations in both timestep and pattern classification heads.
 
-    Training paradigm:
-    - Pattern-supervised learning (timestep + pattern classification)
-    - Geometric solidity enforcement (Cayley-Menger)
-    - Relational learning (Rose loss with pentachoron roles)
-    - Hierarchical position encoding (Cantor staircase)
+    Each block companion learns:
+    - Geometric feature projection to pentachoron space
+    - Timestep classification (which diffusion step)
+    - Pattern classification (which sub-pattern within timestep)
+    - Hierarchical Cantor position encoding
+
+    The multi-block ensemble combines knowledge from different SD1.5
+    scales/blocks with learnable importance weights.
     """
 
     def __init__(
@@ -1324,10 +1402,33 @@ class GeoDavidCollective(nn.Module):
         """
         Args:
             block_configs: Dict[block_name, config_dict]
-                config_dict contains: input_dim, scale_dim, etc.
-            num_timestep_bins: Number of timestep buckets
-            num_patterns_per_bin: Patterns per timestep
-            block_weights: Optional importance weights per block
+                Required in config_dict:
+                    - input_dim: Input feature dimension
+                    - scale_dim: Geometric feature space dimension
+
+                Optional in config_dict (with defaults):
+                    - use_belly: Use expanded projection (default: True)
+                    - belly_expand: Belly expansion factor (default: 2.0)
+                    - temperature: Rose loss temperature (default: 0.07)
+                    - cantor_alpha_init: Initial Cantor alpha (default: 0.5)
+                    - cantor_tau: Cantor tau parameter (default: 0.25)
+                    - cantor_levels: Hierarchical levels (default: 12)
+                    - simplex_k: Simplex dimension (default: 4)
+                    - simplex_seed_base: Seed for initialization (default: 42)
+
+                ProjectiveHead config (auto-selected by scale_dim if not provided):
+                    - num_experts: Number of expert pathways
+                    - compression_ratio: Bottleneck compression
+                    - num_gate_heads: Number of gating heads
+                    - expert_dropout: Dropout for experts
+                    - attention_dropout: Dropout for attention
+                    - head_temperature: Temperature for head
+                    - use_head_sparsity: Enable sparsity
+                    - head_sparsity_threshold: Sparsity threshold
+
+            num_timestep_bins: Number of timestep buckets (default: 100)
+            num_patterns_per_bin: Patterns per timestep (default: 10)
+            block_weights: Optional importance weights per block (default: uniform)
             loss_config: Optional loss configuration overrides
         """
         super().__init__()
@@ -1340,17 +1441,39 @@ class GeoDavidCollective(nn.Module):
         }
 
         print("=" * 80)
-        print("GeoDavidCollective: Initializing Geometric Multi-Block System")
+        print("GeoDavidCollective: Initializing ENHANCED Geometric Multi-Block System")
         print("=" * 80)
+        print(f"  Architecture: ProjectiveHead with multi-expert gating")
+        print(f"  Timestep bins: {num_timestep_bins}")
+        print(f"  Patterns per bin: {num_patterns_per_bin}")
+        print(f"  Total classes: {num_timestep_bins * num_patterns_per_bin}")
 
         # Build companions (one per block)
         self.companions = nn.ModuleDict()
         for block_name, config in block_configs.items():
             print(f"\n[{block_name}] Creating geometric companion...")
+            print(f"  Input dim: {config['input_dim']}")
+            print(f"  Scale dim: {config['scale_dim']}")
+
+            # Auto-select ProjectiveHead config if not specified
+            scale_dim = config['scale_dim']
+            head_config = get_projective_head_config(scale_dim)
+
+            # Override with user-provided values
+            for key in head_config.keys():
+                if key in config:
+                    head_config[key] = config[key]
+
+            print(f"  ProjectiveHead config:")
+            print(f"    Experts: {head_config['num_experts']}")
+            print(f"    Compression: {head_config['compression_ratio']}x")
+            print(f"    Gate heads: {head_config['num_gate_heads']}")
+
+            # Create companion with ProjectiveHead
             companion = GeoDavidBlockCompanion(
                 block_name=block_name,
                 input_dim=config['input_dim'],
-                scale_dim=config['scale_dim'],
+                scale_dim=scale_dim,
                 num_timestep_bins=num_timestep_bins,
                 num_patterns_per_bin=num_patterns_per_bin,
                 use_belly=config.get('use_belly', True),
@@ -1360,7 +1483,9 @@ class GeoDavidCollective(nn.Module):
                 cantor_tau=config.get('cantor_tau', 0.25),
                 cantor_levels=config.get('cantor_levels', 12),
                 simplex_k=config.get('simplex_k', 4),
-                simplex_seed_base=config.get('simplex_seed_base', 42)
+                simplex_seed_base=config.get('simplex_seed_base', 42),
+                # ProjectiveHead parameters
+                **head_config
             )
             self.companions[block_name] = companion
 
@@ -1380,7 +1505,7 @@ class GeoDavidCollective(nn.Module):
         )
 
         print("\n" + "=" * 80)
-        print(f"GeoDavidCollective Initialized Successfully")
+        print(f"GeoDavidCollective Initialized Successfully (ENHANCED)")
         print(f"  Blocks: {len(self.companions)}")
         print(f"  Timestep bins: {num_timestep_bins}")
         print(f"  Patterns per bin: {num_patterns_per_bin}")
@@ -1397,14 +1522,11 @@ class GeoDavidCollective(nn.Module):
         Forward pass through all block companions.
 
         Args:
-            features_dict: Dict[block_name, features]
-                features: [B, input_dim] per block
-            timesteps: [B] - continuous timesteps [0, 1000]
+            features_dict: Dict[block_name, features] - features from each block
+            timesteps: [B] - diffusion timesteps
 
         Returns:
-            Dict[block_name, outputs] where outputs contains:
-                'features', 'timestep_logits', 'pattern_logits',
-                'timestep_class', 'cantor_values'
+            Dict[block_name, outputs] - outputs from each companion
         """
         outputs = {}
         for block_name, features in features_dict.items():
@@ -1425,12 +1547,12 @@ class GeoDavidCollective(nn.Module):
 
         Args:
             companions_outputs: Outputs from forward()
-            teacher_features_dict: Dict[block_name, teacher_features]
-            timesteps: [B] - timesteps
+            teacher_features_dict: Teacher feature targets
+            timesteps: Diffusion timesteps
 
         Returns:
-            total_loss: Scalar loss
-            metrics: Dict of all metrics
+            loss: Total weighted loss
+            metrics: Detailed metrics dict
         """
         return self.loss_calculator(
             companions_outputs,
@@ -1448,16 +1570,8 @@ class GeoDavidCollective(nn.Module):
         """Get all companions."""
         return dict(self.companions)
 
-    def get_pentachora(
-            self,
-            block_name: str
-    ) -> torch.Tensor:
-        """
-        Get pentachora for a specific block.
-
-        Returns:
-            pentachora: [num_bins, num_patterns, 5, scale_dim]
-        """
+    def get_pentachora(self, block_name: str) -> torch.Tensor:
+        """Get pentachora for a specific block."""
         return self.companions[block_name].crystal_pentachora
 
     def get_cantor_alphas(self) -> Dict[str, float]:
@@ -1474,7 +1588,7 @@ class GeoDavidCollective(nn.Module):
     def get_model_info(self) -> Dict:
         """Get comprehensive model information."""
         info = {
-            'architecture': 'GeoDavidCollective',
+            'architecture': 'GeoDavidCollective (ENHANCED with ProjectiveHead)',
             'num_blocks': len(self.companions),
             'blocks': list(self.block_names),
             'num_timestep_bins': self.num_bins,
@@ -1495,202 +1609,102 @@ class GeoDavidCollective(nn.Module):
                 'scale_dim': companion.scale_dim,
                 'simplex_k': companion.simplex_k,
                 'num_vertices': companion.num_vertices,
-                'parameters': sum(p.numel() for p in companion.parameters())
+                'timestep_head': {
+                    'type': 'ProjectiveHead',
+                    'num_experts': companion.timestep_head.num_experts,
+                    'bottleneck_dim': companion.timestep_head.bottleneck_dim,
+                    'num_gate_heads': companion.timestep_head.num_gate_heads
+                },
+                'pattern_head': {
+                    'type': 'ProjectiveHead',
+                    'num_experts': companion.pattern_head.num_experts,
+                    'bottleneck_dim': companion.pattern_head.bottleneck_dim,
+                    'num_gate_heads': companion.pattern_head.num_gate_heads
+                }
             }
 
         return info
 
     def __repr__(self):
         info = self.get_model_info()
-        lines = [
-            "GeoDavidCollective(Geometric Multi-Block Diffusion System)",
-            f"  Blocks: {info['num_blocks']} ({', '.join(info['blocks'])})",
-            f"  Timestep bins: {info['num_timestep_bins']}",
-            f"  Patterns per bin: {info['num_patterns_per_bin']}",
-            f"  Total classes: {info['total_classes']}",
-            f"  Parameters: {info['total_parameters']:,}",
-            "  Geometric Features:",
-            "    ✓ Pentachoron structure (5-vertex simplices)",
-            "    ✓ SimplexFactory validation",
-            "    ✓ Cantor staircase encoding",
-            "    ✓ Cayley-Menger solidity",
-            "    ✓ Rose relational learning"
-        ]
-        return "\n".join(lines)
+        return (
+            f"GeoDavidCollective(ENHANCED with ProjectiveHead)\n"
+            f"  Blocks: {info['num_blocks']}\n"
+            f"  Timestep bins: {info['num_timestep_bins']}\n"
+            f"  Patterns: {info['num_patterns_per_bin']}/bin\n"
+            f"  Parameters: {info['total_parameters']:,}"
+        )
+
 
 # ============================================================================
-# DEMO & TESTING
+# DEMO / TESTING CODE
 # ============================================================================
 
 if __name__ == "__main__":
     print("\n" + "=" * 80)
-    print("GeoDavidCollective: Comprehensive Demo")
-    print("=" * 80)
-    print("\nThis demo shows the complete geometric multi-block system working:")
-    print("  1. Multi-block ensemble creation")
-    print("  2. Synthetic data generation")
-    print("  3. Forward pass through all blocks")
-    print("  4. Geometric loss computation (6 components)")
-    print("  5. Accuracy metrics (timestep + pattern)")
-    print("  6. Geometric health checks (volumes, Cayley)")
-    print("\n" + "=" * 80 + "\n")
+    print("GeoDavidCollective Demo - ENHANCED Version")
+    print("Testing multi-block geometric architecture with ProjectiveHead")
+    print("=" * 80 + "\n")
 
     # ========================================================================
     # 1. CONFIGURATION
     # ========================================================================
 
-    print("Step 1: Configuring multi-block ensemble...")
+    print("Step 1: Setting up configuration...")
 
-    # Block configurations for ALL SD1.5 blocks (9 total)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"  Device: {device}")
+
+    # Block configurations (mimicking SD1.5 UNet structure)
     block_configs = {
-        # Down blocks (4)
         'down_0': {
             'input_dim': 320,
-            'scale_dim': 384,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 42
+            'scale_dim': 128,
+            # ProjectiveHead params will be auto-selected
         },
         'down_1': {
             'input_dim': 640,
-            'scale_dim': 512,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 43
+            'scale_dim': 192,
         },
-        'down_2': {
-            'input_dim': 1280,
-            'scale_dim': 768,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 44
-        },
-        'down_3': {
-            'input_dim': 1280,
-            'scale_dim': 768,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 45
-        },
-        # Mid block (1)
         'mid': {
             'input_dim': 1280,
-            'scale_dim': 1024,
-            'use_belly': True,
-            'belly_expand': 2.5,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 46
-        },
-        # Up blocks (4)
-        'up_0': {
-            'input_dim': 1280,
-            'scale_dim': 768,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 47
-        },
-        'up_1': {
-            'input_dim': 1280,
-            'scale_dim': 768,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 48
-        },
-        'up_2': {
-            'input_dim': 640,
-            'scale_dim': 512,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 49
+            'scale_dim': 256,
+            # Can override ProjectiveHead params if desired
+            'num_experts': 4,  # Custom: use 4 experts for mid block
         },
         'up_3': {
-            'input_dim': 320,
-            'scale_dim': 384,
-            'use_belly': True,
-            'belly_expand': 2.0,
-            'temperature': 0.07,
-            'cantor_alpha_init': 0.5,
-            'cantor_tau': 0.25,
-            'cantor_levels': 12,
-            'simplex_k': 4,
-            'simplex_seed_base': 50
+            'input_dim': 640,
+            'scale_dim': 192,
         }
     }
 
-    # Block importance weights (mid-block most important)
+    # Block importance weights
     block_weights = {
-        'down_0': 0.8,
-        'down_1': 1.0,
-        'down_2': 1.2,
-        'down_3': 1.3,
-        'mid': 1.5,  # Highest importance
-        'up_0': 1.3,
-        'up_1': 1.2,
-        'up_2': 1.0,
-        'up_3': 0.8
+        'down_0': 1.0,
+        'down_1': 1.2,
+        'mid': 1.5,  # Mid block is most important
+        'up_3': 1.0
     }
 
-    # Geometric loss configuration
+    # Loss configuration
     loss_config = {
         'feature_similarity_weight': 0.4,
         'rose_weight': 0.25,
         'ce_weight': 0.15,
         'pattern_diversity_weight': 0.05,
-        'cayley_weight': 0.10,
-        'cantor_coherence_weight': 0.05,
-        'use_soft_assignment': True,
-        'temperature': 0.1
+        'cayley_weight': 0.10,  # Critical for stability
+        'cantor_coherence_weight': 0.05
     }
 
-    print("✓ Configured 4 blocks (down_0, down_1, mid, up_0)")
-    print(f"✓ Loss weights: feature={loss_config['feature_similarity_weight']}, "
-          f"rose={loss_config['rose_weight']}, ce={loss_config['ce_weight']}")
-    print(f"✓ Block weights: mid={block_weights['mid']} (highest)\n")
+    print(f"✓ Configured {len(block_configs)} blocks")
+    print(f"  Blocks: {list(block_configs.keys())}")
+    print(f"  Loss weights: {list(loss_config.keys())}\n")
 
     # ========================================================================
-    # 2. MODEL CREATION
+    # 2. MODEL INSTANTIATION
     # ========================================================================
 
-    print("Step 2: Creating GeoDavidCollective...")
+    print("Step 2: Creating GeoDavidCollective model (ENHANCED)...")
 
     model = GeoDavidCollective(
         block_configs=block_configs,
@@ -1700,18 +1714,15 @@ if __name__ == "__main__":
         loss_config=loss_config
     )
 
-    print("\n✓ Model created successfully!")
-    print(f"  Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"  Total classes: {100 * 10} (100 timestep bins × 10 patterns)\n")
+    print()
 
     # ========================================================================
     # 3. SYNTHETIC DATA GENERATION
     # ========================================================================
 
-    print("Step 3: Generating synthetic teacher features...")
+    print("Step 3: Generating synthetic data...")
 
     batch_size = 16
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = model.to(device)
 
     # Create synthetic teacher features (would normally come from SD1.5)
@@ -1891,7 +1902,7 @@ if __name__ == "__main__":
     # ========================================================================
 
     print("\n" + "=" * 80)
-    print("SUMMARY: GeoDavidCollective Demo Complete")
+    print("SUMMARY: GeoDavidCollective Demo Complete (ENHANCED)")
     print("=" * 80)
 
     print("\n✅ All systems operational!")
@@ -1899,6 +1910,9 @@ if __name__ == "__main__":
     print("\n🎯 Key Features Demonstrated:")
     print("  ✓ Multi-block ensemble (4 blocks)")
     print("  ✓ Pentachoron structure (5-vertex simplices)")
+    print("  ✓ ProjectiveHead classification heads")
+    print("  ✓ Multi-expert pathways with cross-attention")
+    print("  ✓ Multi-head gating for ensemble predictions")
     print("  ✓ Cantor staircase hierarchical encoding")
     print("  ✓ 6 geometric loss components")
     print("  ✓ Per-block importance weighting")
@@ -1911,6 +1925,7 @@ if __name__ == "__main__":
     print("  4. Watch accuracies improve (target: >90%)")
     print("  5. Tune block weights based on performance")
     print("  6. Adjust loss component weights if needed")
+    print("  7. Experiment with ProjectiveHead configurations")
 
     print("\n💡 Architecture Highlights:")
     model_info = model.get_model_info()
@@ -1920,9 +1935,18 @@ if __name__ == "__main__":
     print(f"  Timestep bins:       {model_info['num_timestep_bins']}")
     print(f"  Patterns per bin:    {model_info['num_patterns_per_bin']}")
 
+    print("\n  ProjectiveHead Info:")
+    for block_name, info in model_info['companions'].items():
+        print(f"    {block_name}:")
+        print(f"      Timestep: {info['timestep_head']['num_experts']} experts, "
+              f"{info['timestep_head']['num_gate_heads']} gates")
+        print(f"      Pattern:  {info['pattern_head']['num_experts']} experts, "
+              f"{info['pattern_head']['num_gate_heads']} gates")
+
     print("\n" + "=" * 80)
     print("Demo finished successfully! 🚀")
     print("=" * 80)
 
     # Show model architecture
     print("\n" + str(model))
+
