@@ -45,6 +45,7 @@ class SimplexFactory(FactoryBase):
         embed_dim: int,
         method: str = "random",
         scale: float = 1.0,
+        seed: Optional[int] = None
     ):
         if k < 0:
             raise ValueError(f"k must be non-negative, got {k}")
@@ -60,6 +61,7 @@ class SimplexFactory(FactoryBase):
         self.method = method
         self.scale = scale
         self.num_vertices = k + 1
+        self.seed = seed
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # NumPy Backend
@@ -78,6 +80,8 @@ class SimplexFactory(FactoryBase):
         Returns:
             Array of shape (k+1, embed_dim) representing simplex vertices
         """
+        if self.seed is not None:
+            seed = self.seed
         rng = np.random.default_rng(seed)
 
         if self.method == "random":
@@ -188,6 +192,7 @@ class SimplexFactory(FactoryBase):
         if not HAS_TORCH:
             raise RuntimeError("PyTorch required for build_torch")
 
+        seed = seed if seed is not None else self.seed
         target_dtype = dtype or self._infer_torch_dtype(device)
         dev = torch.device(device)
 

@@ -26,9 +26,6 @@ import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional
 from collections import OrderedDict
 
-# Import geometric components
-from geovocab2.train.model.core.geo_fractal_david import CantorStaircase
-
 try:
     from geovocab2.shapes.factory import SimplexFactory
 
@@ -525,12 +522,14 @@ class GeoDavidBlockCompanion(nn.Module):
             scale_dim: int,
             num_timestep_bins: int = 100,
             num_patterns_per_bin: int = 10,
+            num_timestep_steps: int = 1000,
             use_belly: bool = True,
             belly_expand: float = 2.0,
             temperature: float = 0.07,
             cantor_alpha_init: float = 0.5,
             cantor_tau: float = 0.25,
             cantor_levels: int = 12,
+            cantor_base: int = 3,
             simplex_k: int = 4,
             simplex_seed_base: int = 42
     ):
@@ -544,11 +543,12 @@ class GeoDavidBlockCompanion(nn.Module):
         self.temperature = temperature
         self.simplex_k = simplex_k
         self.num_vertices = simplex_k + 1
+        self.num_timestep_steps = num_timestep_steps
 
         # Feature projection
         if use_belly:
             belly_dim = int(scale_dim * belly_expand)
-            dropout_rate = 1.0 / (scale_dim ** 0.5)
+            dropout_rate = min(0.0, max(1.0 / (scale_dim ** 0.5), 0.2))
             self.projection = nn.Sequential(
                 nn.Linear(input_dim, belly_dim),
                 nn.ReLU(),
@@ -585,7 +585,7 @@ class GeoDavidBlockCompanion(nn.Module):
             feature_dim=scale_dim,
             alpha_init=cantor_alpha_init,
             tau=cantor_tau,
-            base=3,
+            base=cantor_base,
             levels=cantor_levels
         )
 
@@ -706,7 +706,7 @@ class GeoDavidBlockCompanion(nn.Module):
 
         # Timestep classification
         timestep_logits = self.timestep_head(z)
-        timestep_class = (timesteps / 1000.0 * self.num_bins).long().clamp(
+        timestep_class = (timesteps / self.num_timestep_steps * self.num_bins).long().clamp(
             0, self.num_bins - 1
         )
 
@@ -773,6 +773,7 @@ class GeometricMultiScaleLoss(nn.Module):
         self.pattern_diversity_weight = pattern_diversity_weight
         self.cayley_weight = cayley_weight
         self.cantor_coherence_weight = cantor_coherence_weight
+        self.cantor_bandwidth = cantor_bandwidth
 
         self.use_soft_assignment = use_soft_assignment
         self.temperature = temperature
