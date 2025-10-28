@@ -25,7 +25,7 @@ class CantorLinearConfig:
     out_features: int
     depth: int = 8                          # Cantor recursion depth
     bias: bool = True                       # Standard linear layer bias
-    mask_mode: str = "scale"                # ['prune', 'scale']
+    mask_mode: str = "alpha"                # ['prune', 'scale', 'alpha']
     mask_floor: float = 0.25                # Minimum mask scaled value
     mask_scale: float = 0.5                 # Scaling factor for cantor mask
     dtype: torch.dtype = torch.float32
@@ -99,6 +99,13 @@ class CantorLinear(nn.Module):
             torch.empty(cfg.out_features, dtype=cfg.dtype, device=cfg.device)
         ) if cfg.bias else None
 
+        if self.mask_mode == "alpha":
+            self.alpha = nn.Parameter(
+                torch.tensor(cfg.mask_scale, dtype=cfg.dtype, device=cfg.device)
+            )
+        else:
+            self.alpha = None
+
         # Build Cantor mask once
         mask = self._build_cantor_mask(cfg.out_features, cfg.in_features, cfg.depth)
         self.register_buffer("mask", mask, persistent=False)
@@ -147,7 +154,11 @@ class CantorLinear(nn.Module):
         """
         if self.mask_mode == "scale":
             effective_weight = self.weight * (self.mask_floor + self.mask_scale * self.mask)
-        else:
+
+        elif self.mask_mode == "alpha":
+            alpha = self.alpha
+            effective_weight = self.weight * (self.mask_floor + alpha * self.mask)
+        else:  # "prune"
             effective_weight = self.weight * self.mask
         return F.linear(x, effective_weight, self.bias)
 
