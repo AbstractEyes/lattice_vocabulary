@@ -25,7 +25,7 @@ class CantorAttentionConfig:
     out_features: int
     depth: int = 8                    # Cantor recursion depth
     bias: bool = True
-    gate_mode: str = "scale"         # ['scale', 'sigmoid', 'softmax']
+    gate_mode: str = "sigmoid"         # ['scale', 'sigmoid', 'softmax']
     dtype: torch.dtype = torch.float32
     device: str | None = None
 
