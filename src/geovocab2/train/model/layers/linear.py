@@ -23,9 +23,11 @@ import math
 class CantorLinearConfig:
     in_features: int
     out_features: int
-    depth: int = 8               # Cantor recursion depth
-    bias: bool = True
-    mask_mode: str = "prune"     # ['prune', 'scale']
+    depth: int = 8                          # Cantor recursion depth
+    bias: bool = True                       # Standard linear layer bias
+    mask_mode: str = "scale"                # ['prune', 'scale']
+    mask_floor: float = 0.25                # Minimum mask scaled value
+    mask_scale: float = 0.5                 # Scaling factor for cantor mask
     dtype: torch.dtype = torch.float32
     device: str | None = None
 
@@ -86,6 +88,8 @@ class CantorLinear(nn.Module):
         self.out_features = cfg.out_features
         self.depth = cfg.depth
         self.mask_mode = cfg.mask_mode
+        self.mask_floor = cfg.mask_floor
+        self.mask_scale = cfg.mask_scale
 
         # Parameters
         self.weight = nn.Parameter(
@@ -142,7 +146,7 @@ class CantorLinear(nn.Module):
         If mask_mode == 'scale', removed weights are attenuated by 0.5.
         """
         if self.mask_mode == "scale":
-            effective_weight = self.weight * (0.5 + 0.5 * self.mask)
+            effective_weight = self.weight * (self.mask_floor + self.mask_scale * self.mask)
         else:
             effective_weight = self.weight * self.mask
         return F.linear(x, effective_weight, self.bias)
