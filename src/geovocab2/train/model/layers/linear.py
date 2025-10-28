@@ -1,7 +1,8 @@
-# cantor_linear.py
+# geovocab2.train.model.layers.linear.py
 # ============================================================
 # CantorLinear: Fractal‑structured linear transformation layer
 # Author: AbstractPhil
+# Assistant: Quartermaster Mirel GPT 4o + GPT 5 intervention
 # Date: 2025‑10‑28
 # License: MIT
 # ============================================================
