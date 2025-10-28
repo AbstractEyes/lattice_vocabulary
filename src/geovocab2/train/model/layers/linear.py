@@ -65,29 +65,6 @@ def cantor_mask_for_index(index: int, depth: int) -> list[int]:
         x -= d
         digits.append(d)
     return digits
-def _build_cantor_mask(self, out_dim: int, in_dim: int, depth: int) -> torch.Tensor:
-    """
-    Constructs a true recursive Cantor mask.
-    Each (i, j) connection is retained only if
-    the full ternary expansion has no '1's.
-    """
-    mask = torch.zeros(out_dim, in_dim)
-    for i in range(out_dim):
-        for j in range(in_dim):
-            # Normalize combined index to [0, 1]
-            index_val = (i * in_dim + j) / (out_dim * in_dim + 1e-9)
-            valid = True
-            x = index_val
-            for _ in range(depth):
-                x *= 3.0
-                digit = int(x)
-                x -= digit
-                if digit == 1:
-                    valid = False
-                    break
-            if valid:
-                mask[i, j] = 1.0
-    return mask
 
 
 # ============================================================
