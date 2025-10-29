@@ -8,7 +8,7 @@ import torch.nn as nn
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass
 
-from geovocab2.train.trainers.distillery.trainer_core import Trainer, LossComposer, TrainerConfig
+from geovocab2.train.trainers.trainer_core import Trainer, LossComposer, TrainerConfig
 
 
 @dataclass

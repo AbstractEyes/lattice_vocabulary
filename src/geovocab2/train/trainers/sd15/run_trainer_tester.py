@@ -124,7 +124,7 @@ def ablation_example():
     print("ABLATION STUDY EXAMPLE")
     print("=" * 80)
 
-    from geovocab2.train.trainers.sd15_trainers.core.assistant_model import NullAssistant
+    from geovocab2.train.trainers.sd15.core.assistant_model import NullAssistant
     from geovocab2.train.trainers.trainer_core import LossComposer
 
     class NoDAVIDTrainer(SD15FlowTrainer):

@@ -12,11 +12,11 @@ from typing import Dict
 
 # Core training components
 from geovocab2.train.trainers.trainer_core import LossComposer, TrainerConfig
-from geovocab2.train.trainers.sd15_trainers.core.arbitrator import Arbitrator, ArbitratorConfig
-from geovocab2.train.trainers.sd15_trainers.core.checkpointing import Checkpointer, CheckpointConfig
-from geovocab2.train.trainers.sd15_trainers.core.assistant_model import DavidAssistant
-from geovocab2.train.trainers.sd15_trainers.core.teacher_model import SD15Teacher
-from geovocab2.train.trainers.sd15_trainers.core.student_model import SD15Student, feature_distillation_loss
+from geovocab2.train.trainers.sd15.core.arbitrator import Arbitrator, ArbitratorConfig
+from geovocab2.train.trainers.sd15.core.checkpointing import Checkpointer, CheckpointConfig
+from geovocab2.train.trainers.sd15.core.assistant_model import DavidAssistant
+from geovocab2.train.trainers.sd15.core.teacher_model import SD15Teacher
+from geovocab2.train.trainers.sd15.core.student_model import SD15Student, feature_distillation_loss
 
 # External deps (from your repo and HF)
 from diffusers import StableDiffusionPipeline, DDPMScheduler
