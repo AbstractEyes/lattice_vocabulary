@@ -13,8 +13,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-# Assuming CantorConv2d is importable - adjust path as needed
+# Assuming CantorConv2d and CantorLinear are importable - adjust path as needed
 from geovocab2.train.model.layers.conv import CantorConv2d, CantorConv2dConfig
+from geovocab2.train.model.layers.linear import CantorLinear, CantorLinearConfig
 
 
 # ============================================================
@@ -244,7 +245,12 @@ class CantorResNet(nn.Module):
 
         # Classification head
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block_class.expansion, cfg.num_classes)
+        self.fc = CantorLinear(CantorLinearConfig(
+            in_features=512 * block_class.expansion,
+            out_features=cfg.num_classes,
+            bias=True,
+            **self.cantor_cfg
+        ))
 
         # Initialize weights
         self._initialize_weights()
@@ -296,13 +302,10 @@ class CantorResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _initialize_weights(self):
-        """Initialize batch norm and linear layers."""
+        """Initialize batch norm layers (CantorConv2d and CantorLinear handle their own init)."""
         for m in self.modules():
             if isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -323,7 +326,7 @@ class CantorResNet(nn.Module):
         return x
 
     def get_alpha_stats(self) -> dict[str, list[float]]:
-        """Collect alpha statistics from all CantorConv2d layers."""
+        """Collect alpha statistics from all CantorConv2d and CantorLinear layers."""
         stats = {
             "layer_names": [],
             "alpha_means": [],
@@ -332,7 +335,7 @@ class CantorResNet(nn.Module):
         }
 
         for name, module in self.named_modules():
-            if isinstance(module, CantorConv2d):
+            if isinstance(module, (CantorConv2d, CantorLinear)):
                 alpha_stats = module.get_alpha_stats()
                 if alpha_stats:
                     stats["layer_names"].append(name)
