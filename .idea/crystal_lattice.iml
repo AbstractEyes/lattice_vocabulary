@@ -8,6 +8,8 @@
       <excludeFolder url="file://$MODULE_DIR$/proof_theory" />
       <excludeFolder url="file://$MODULE_DIR$/src/geometricvocab.egg-info" />
       <excludeFolder url="file://$MODULE_DIR$/src/geovocab2/train/checkpoints" />
+      <excludeFolder url="file://$MODULE_DIR$/src/geovocab2/data/prompt/benchmark_results" />
+      <excludeFolder url="file://$MODULE_DIR$/src/geovocab2/train/hf_handling" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.12 (crystal_lattice)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

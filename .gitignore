@@ -49,3 +49,4 @@ Thumbs.db
 *checkpoints/
 *benchmark_results/
 *temp_student_pipeline/
+*hf_handling/
