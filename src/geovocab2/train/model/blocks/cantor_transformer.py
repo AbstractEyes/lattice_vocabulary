@@ -1,6 +1,7 @@
 """
     Complete Cantor Transformer Block
     Matches standard Transformer architecture but with O(n) Cantor attention
+    Now with harmonized Cantor Position Encoding
 """
 
 import torch
@@ -9,7 +10,12 @@ import torch.nn.functional as F
 from typing import Optional
 from dataclasses import dataclass
 
-from geovocab2.train.model.layers.attention.cantor_global import CantorGlobalAttention, CantorGlobalAttentionConfig
+from geovocab2.train.model.layers.attention.cantor_global import (
+    CantorGlobalAttention, CantorGlobalAttentionConfig
+)
+from geovocab2.train.model.positional.cantor import (
+    CantorPositionEncoding, SimpleCantorPE
+)
 
 
 @dataclass
@@ -193,9 +199,9 @@ class FeedForward(nn.Module):
 
 class CantorTransformer(nn.Module):
     """
-    Full Transformer model with Cantor O(n) attention.
+    Full Transformer model with Cantor O(n) attention and position encoding.
 
-    Stack of CantorTransformerBlocks with optional embeddings.
+    Complete O(n) architecture with harmonized Cantor PE and attention.
     """
 
     def __init__(
@@ -203,8 +209,10 @@ class CantorTransformer(nn.Module):
             config: CantorTransformerBlockConfig,
             num_layers: int = 12,
             vocab_size: Optional[int] = None,
-            max_seq_len: Optional[int] = None,
-            num_classes: Optional[int] = None
+            num_classes: Optional[int] = None,
+            use_simple_pe: bool = False,  # True = pure Cantor, False = Cantor+sin
+            learnable_pe: bool = False,
+            pe_dropout: float = 0.1
     ):
         super().__init__()
         self.config = config
@@ -216,11 +224,22 @@ class CantorTransformer(nn.Module):
         else:
             self.token_embedding = None
 
-        # Position embeddings (if max_seq_len provided)
-        if max_seq_len is not None:
-            self.pos_embedding = nn.Embedding(max_seq_len, config.dim)
+        # Cantor Position Encoding - HARMONIZED with attention!
+        if use_simple_pe:
+            self.pos_encoding = SimpleCantorPE(
+                dim=config.dim,
+                max_seq_len=config.cantor_max_seq_len,
+                depth=config.cantor_depth,  # SAME as attention depth!
+                dropout=pe_dropout
+            )
         else:
-            self.pos_embedding = None
+            self.pos_encoding = CantorPositionEncoding(
+                dim=config.dim,
+                max_seq_len=config.cantor_max_seq_len,
+                depth=config.cantor_depth,  # SAME as attention depth!
+                learnable=learnable_pe,
+                dropout=pe_dropout
+            )
 
         # Transformer blocks
         self.blocks = nn.ModuleList([
@@ -242,6 +261,14 @@ class CantorTransformer(nn.Module):
 
         # Dropout for embeddings
         self.emb_dropout = nn.Dropout(config.dropout)
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights."""
+        if self.token_embedding is not None:
+            nn.init.normal_(self.token_embedding.weight, std=0.02)
 
     def forward(
             self,
@@ -266,12 +293,8 @@ class CantorTransformer(nn.Module):
         if self.token_embedding is not None and x.dtype in [torch.long, torch.int]:
             x = self.token_embedding(x)  # (batch, seq_len, dim)
 
-        # Position embeddings
-        if self.pos_embedding is not None:
-            positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
-            pos_emb = self.pos_embedding(positions)
-            x = x + pos_emb
-
+        # Add Cantor position encodings (harmonized with attention!)
+        x = self.pos_encoding(x)
         x = self.emb_dropout(x)
 
         # Pass through transformer blocks
@@ -322,7 +345,6 @@ def test_transformer_block():
 
     block = CantorTransformerBlock(config)
 
-    print(f"\nConfig: {config}")
     print(f"\nBlock parameters: {sum(p.numel() for p in block.parameters()):,}")
 
     # Test forward pass
@@ -346,9 +368,9 @@ def test_transformer_block():
 
 
 def test_full_transformer():
-    """Test a full Cantor Transformer model."""
+    """Test a full Cantor Transformer model with integrated PE."""
     print("\n" + "=" * 70)
-    print("FULL CANTOR TRANSFORMER TEST")
+    print("FULL CANTOR TRANSFORMER TEST (with Cantor PE)")
     print("=" * 70)
 
     config = CantorTransformerBlockConfig(
@@ -363,19 +385,20 @@ def test_full_transformer():
 
     # Language model example
     vocab_size = 10000
-    max_seq_len = 1024
     num_layers = 6
 
     model = CantorTransformer(
         config=config,
         num_layers=num_layers,
         vocab_size=vocab_size,
-        max_seq_len=max_seq_len,
-        num_classes=None  # Language modeling (predict next token)
+        num_classes=None,
+        use_simple_pe=False,  # Use Cantor+sinusoidal
+        learnable_pe=False
     )
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {num_layers} layers, {total_params:,} parameters")
+    print(f"Cantor depth (PE & Attention): {config.cantor_depth}")
 
     # Test forward pass
     batch_size = 2
@@ -394,9 +417,7 @@ def test_full_transformer():
 
     print("\n✓ Full transformer working correctly")
 
-    # Compare to standard transformer parameters
-    # Standard attention: O(n²) per layer
-    # Cantor attention: O(n*k) per layer where k=32
+    # Compare to standard transformer
     standard_attn_ops = seq_len * seq_len
     cantor_attn_ops = seq_len * 32
     speedup = standard_attn_ops / cantor_attn_ops
@@ -407,6 +428,72 @@ def test_full_transformer():
     print(f"  Theoretical speedup: {speedup:.1f}x")
 
     return model
+
+
+def test_pe_variants():
+    """Test different PE variants."""
+    print("\n" + "=" * 70)
+    print("POSITION ENCODING VARIANTS TEST")
+    print("=" * 70)
+
+    config = CantorTransformerBlockConfig(
+        dim=128,
+        num_heads=4,
+        cantor_depth=6,
+        cantor_max_seq_len=512,
+        cantor_local_window=32,
+        dropout=0.1
+    )
+
+    vocab_size = 5000
+    num_layers = 3
+
+    # Test 1: Cantor + Sinusoidal (default)
+    print("\n[1] Cantor + Sinusoidal PE")
+    model1 = CantorTransformer(
+        config=config,
+        num_layers=num_layers,
+        vocab_size=vocab_size,
+        use_simple_pe=False,
+        learnable_pe=False
+    )
+    print(f"  Parameters: {sum(p.numel() for p in model1.parameters()):,}")
+
+    # Test 2: Pure Cantor PE
+    print("\n[2] Pure Cantor PE")
+    model2 = CantorTransformer(
+        config=config,
+        num_layers=num_layers,
+        vocab_size=vocab_size,
+        use_simple_pe=True,
+        learnable_pe=False
+    )
+    print(f"  Parameters: {sum(p.numel() for p in model2.parameters()):,}")
+
+    # Test 3: Learnable Cantor PE
+    print("\n[3] Learnable Cantor PE")
+    model3 = CantorTransformer(
+        config=config,
+        num_layers=num_layers,
+        vocab_size=vocab_size,
+        use_simple_pe=False,
+        learnable_pe=True
+    )
+    print(f"  Parameters: {sum(p.numel() for p in model3.parameters()):,}")
+
+    # Test all forward passes
+    batch_size = 2
+    seq_len = 128
+    tokens = torch.randint(0, vocab_size, (batch_size, seq_len))
+
+    for i, model in enumerate([model1, model2, model3], 1):
+        output = model(tokens)
+        assert output.shape == (batch_size, seq_len, config.dim)
+        assert not torch.isnan(output).any()
+        print(f"  Model {i}: ✓ PASS")
+
+    print("\n✓ All PE variants working correctly")
+    return model1, model2, model3
 
 
 def test_classification():
@@ -433,8 +520,9 @@ def test_classification():
         config=config,
         num_layers=num_layers,
         vocab_size=vocab_size,
-        max_seq_len=512,
-        num_classes=num_classes
+        num_classes=num_classes,
+        use_simple_pe=False,
+        learnable_pe=False
     )
 
     print(f"\nClassification model: {num_layers} layers, {num_classes} classes")
@@ -467,13 +555,20 @@ def test_classification():
 if __name__ == "__main__":
     block = test_transformer_block()
     model = test_full_transformer()
+    models = test_pe_variants()
     classifier = test_classification()
 
     print("\n" + "=" * 70)
     print("ALL TRANSFORMER TESTS COMPLETE")
     print("=" * 70)
     print("\n✓ CANTOR TRANSFORMER FULLY OPERATIONAL")
+    print("\nFeatures:")
+    print("  ✓ O(n) Cantor Global Attention")
+    print("  ✓ Harmonized Cantor Position Encoding")
+    print("  ✓ Multiple PE variants (pure, hybrid, learnable)")
+    print("  ✓ Same depth for PE and attention (mathematical harmony)")
     print("\nReady for:")
+    print("  - O(n) complexity experiments")
     print("  - Language modeling")
     print("  - Classification tasks")
     print("  - Long-context processing (up to 100k+ tokens)")
