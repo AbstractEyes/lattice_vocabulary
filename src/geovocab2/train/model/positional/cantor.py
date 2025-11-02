@@ -336,7 +336,7 @@ def test_with_attention():
     print("=" * 70)
 
     from geovocab2.train.model.layers.attention.cantor_global import (
-        CantorGlobalAttention, CantorGlobalAttentionConfig
+        CantorAttention, CantorAttentionConfig
     )
 
     # Matching configuration
@@ -353,14 +353,14 @@ def test_with_attention():
     )
 
     # Attention
-    attn_config = CantorGlobalAttentionConfig(
+    attn_config = CantorAttentionConfig(
         dim=dim,
         depth=depth,  # SAME as PE
         max_seq_len=max_seq_len,
         local_window=64,
         num_heads=8
     )
-    attn = CantorGlobalAttention(attn_config)
+    attn = CantorAttention(attn_config)
 
     print(f"\nConfiguration:")
     print(f"  Dim: {dim}")
