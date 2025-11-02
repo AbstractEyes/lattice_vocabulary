@@ -236,7 +236,7 @@ class CantorAttention(nn.Module):
             seq_len: int
     ) -> torch.Tensor:
         """
-        Sparse attention using Cantor routing.
+        Sparse attention using Cantor routing with optional causal masking.
 
         Each query attends only to k neighbors determined by Cantor distance,
         achieving O(n*k) = O(n) complexity instead of O(n²).
@@ -278,6 +278,22 @@ class CantorAttention(nn.Module):
         # k_gathered: (batch, heads, seq_len, k, head_dim)
         # Result: (batch, heads, seq_len, k)
         scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered) * self.scale
+
+        # Apply causal mask if needed
+        if self.config.causal:
+            # Create causal mask: mask out attention to future positions
+            # routes: (seq_len, k) contains indices of neighbors
+            # position_idx: (seq_len, 1) contains current position
+            position_idx = torch.arange(seq_len, device=device).unsqueeze(1)  # (seq_len, 1)
+            causal_mask = routes > position_idx  # (seq_len, k) - True where neighbor is in future
+
+            # Expand mask for batch and heads dimensions
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, k)
+            causal_mask = causal_mask.expand(batch_size, num_heads, -1, -1)  # (batch, heads, seq_len, k)
+
+            # Apply mask: set future positions to -inf before softmax
+            # This ensures they get 0 weight after softmax
+            scores = scores.masked_fill(causal_mask, float('-inf'))
 
         # Softmax over neighbors
         attn_weights = F.softmax(scores, dim=-1)
