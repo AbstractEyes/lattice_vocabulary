@@ -10,8 +10,8 @@ from collections import defaultdict
 # ========================================================================
 # CONFIG
 # ========================================================================
-PT_PATH = "E:/sd15/sd15_flowmatch_david_weighted_e11.pt"  # Your checkpoint
-OUTPUT_CHECKPOINT = "E:/sd15/sd15_flowmatch_david_weighted_e11_FIXED.safetensors"  # The file you tried to load in ComfyUI
+PT_PATH = "E:/sd15/sd15_flowmatch_david_weighted_e13.pt"  # Your checkpoint
+OUTPUT_CHECKPOINT = "E:/sd15/sd15_flowmatch_david_weighted_e13_FIXED.safetensors"  # The file you tried to load in ComfyUI
 # ========================================================================
 
 print("=" * 80)
