@@ -1,3 +1,38 @@
+"""
+    Cantor Global Attention O(n)
+    ---------------------------------
+    This is an early attempt at implementing a true O(n) attention mechanism that can attend globally.
+    It uses a hierarchical Cantor set-based routing strategy to select attention neighbors.
+
+    The concept is based on bifurcating the attention space using Cantor set properties to ensure that each token
+    can attend to a logarithmic number of other tokens in a structured manner, while still covering the entire sequence.
+    This allows for a global receptive field with linear complexity.
+
+    This is a completely untested theory and must be validated empirically.
+
+    The fractal nature of Cantor sets allows us to cover the entire sequence with a limited number of connections,
+    enabling global context while maintaining linear complexity.
+
+    It also enables the potential of high-degradation attention patterns, which can be explored in future work.
+
+    This is the first implementation and a prototype for experimentation.
+
+    If the system can be made stable and effective, it could revolutionize long-sequence attention mechanisms.
+    This is due to Cantor's step being deterministic and not learned, allowing for fixed O(n) patterns and
+    potentially very efficient implementations as sparse matrix multiplications rather than explicit loops.
+
+    This will also allow for very long sequences (e.g., 100k tokens) to be processed with minimal memory and
+    computational overhead if it can be made to work well in practice. Effectively, this is a proof-of-concept
+    for a new class of attention mechanisms using cantor proofs as guidance for connectivity.
+
+    Authors: AbstractPhil
+    Assistant: Claude Sonnet 4.5
+    Date: 11/2/2025
+
+    License: MIT
+
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,9 +41,11 @@ from typing import Tuple, Optional
 import numpy as np
 
 
-class CantorGlobalAttentionO_n(nn.Module):
+class CantorGlobalAttention(nn.Module):
     """
-    TRUE O(n) ATTENTION WITH GLOBAL RECEPTIVE FIELD
+        ATTEMPTED TRUE O(n) ATTENTION WITH GLOBAL RECEPTIVE FIELD
+        Likely imperfect in it's early implementation by a large degree.
+        Experimental changes will be enforced over time.
     """
 
     def __init__(
@@ -216,7 +253,7 @@ def test_complexity():
     print("-" * 40)
 
     print("\nInitializing model...")
-    model = CantorGlobalAttentionO_n(
+    model = CantorGlobalAttention(
         dim=dim,
         depth=depth,
         max_seq_len=4096,
@@ -279,7 +316,7 @@ def test_output_quality():
     seq_len = 512
     batch_size = 4
 
-    model = CantorGlobalAttentionO_n(
+    model = CantorGlobalAttention(
         dim=dim,
         depth=6,
         max_seq_len=2048,
