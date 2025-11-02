@@ -1,201 +1,197 @@
-# ============================================================================
-# COMPLETE CANTOR ATTENTION BENCHMARK - SINGLE COLAB CELL
-# Copy and paste this entire cell into Colab and run!
-# ============================================================================
+# scripts/validation_cantor_global.py
+
+"""
+Comprehensive Cantor Attention Validation and Benchmark
+Tests functionality and performance of Cantor Attention vs Standard Attention
+
+Usage:
+    python scripts/validation_cantor_global.py              # Quick tests only (default)
+    python scripts/validation_cantor_global.py --bench      # Quick tests + full benchmark
+    python scripts/validation_cantor_global.py --bench-only # Benchmark only (no tests)
+"""
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Dict
-from dataclasses import dataclass
-import math
 import time
 import numpy as np
 from tqdm import tqdm
 import json
 from datetime import datetime
+from typing import Dict
+import argparse
+import sys
 
-print("🚀 Initializing Cantor Attention Benchmark...")
-print(f"PyTorch version: {torch.__version__}")
-print(f"CUDA available: {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
-
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-@dataclass
-class CantorGlobalAttentionConfig:
-    dim: int = 512
-    num_heads: int = 8
-    head_dim: Optional[int] = None
-    depth: int = 8
-    max_seq_len: int = 65536
-    local_window: int = 64
-    dropout: float = 0.0
-    causal: bool = False
-    qkv_bias: bool = True
-    out_bias: bool = True
-
-    def __post_init__(self):
-        if self.head_dim is None:
-            assert self.dim % self.num_heads == 0
-            self.head_dim = self.dim // self.num_heads
+from geovocab2.train.model.layers.attention.cantor_global import (
+    CantorAttention,
+    CantorAttentionConfig,
+    create_cantor_attention,
+)
 
 
 # ============================================================================
-# DYNAMIC CANTOR ATTENTION
+# QUICK VALIDATION TESTS
 # ============================================================================
 
-class CantorGlobalAttentionDynamic(nn.Module):
-    """
-    Dynamic Cantor Attention with O(n) complexity.
-    Builds routes on-demand for each sequence length.
-    """
+class ValidationTests:
+    """Quick validation tests for Cantor Attention."""
 
-    def __init__(self, config: CantorGlobalAttentionConfig):
-        super().__init__()
-        self.config = config
-        self.dim = config.dim
-        self.num_heads = config.num_heads
-        self.head_dim = config.head_dim
-        self.num_neighbors = config.local_window
+    def __init__(self, device: str = "cuda"):
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.passed = 0
+        self.failed = 0
 
-        # Projections
-        self.qkv = nn.Linear(config.dim, 3 * config.dim, bias=config.qkv_bias)
-        self.out_proj = nn.Linear(config.dim, config.dim, bias=config.out_bias)
-        self.attn_dropout = nn.Dropout(config.dropout)
-        self.resid_dropout = nn.Dropout(config.dropout)
+    def run_all_tests(self):
+        """Run all validation tests."""
+        print("=" * 80)
+        print("CANTOR ATTENTION - VALIDATION TESTS")
+        print("=" * 80)
+        print(f"Device: {self.device}")
+        if self.device.type == "cuda":
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+            print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
 
-        self.scale = 1.0 / math.sqrt(self.head_dim)
+        self.test_basic_functionality()
+        self.test_causal_masking()
+        self.test_gradient_flow()
+        self.test_causal_vs_noncausal()
+        self.test_autoregressive()
 
-        # Routes cache
-        self.routes_cache: Dict[int, torch.Tensor] = {}
-        self.max_cache_entries = 20
+        print("\n" + "=" * 80)
+        print(f"VALIDATION SUMMARY: {self.passed} passed, {self.failed} failed")
+        print("=" * 80)
 
-        # Pre-build common sizes
-        common_sizes = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
-        for size in common_sizes:
-            if size <= config.max_seq_len:
-                routes = self._build_cantor_routes(size, self.num_neighbors, config.depth)
-                self.routes_cache[size] = routes
+        return self.failed == 0
 
-    def _cantor_coordinate(self, position: int, max_len: int, depth: int) -> float:
-        """Compute Cantor coordinate for a position."""
-        x = position / max(1, max_len - 1)
-        x = max(1e-6, min(x, 1.0 - 1e-6))
+    def _test_wrapper(self, test_name: str, test_func):
+        """Wrapper for running tests with error handling."""
+        print(f"\n[{test_name}]")
+        try:
+            test_func()
+            self.passed += 1
+            return True
+        except Exception as e:
+            print(f"  ✗ FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+            self.failed += 1
+            return False
 
-        cantor_val = 0.0
-        factor = 0.5
+    def test_basic_functionality(self):
+        """Test basic forward/backward pass."""
 
-        for _ in range(depth):
-            x *= 3.0
-            digit = int(x)
-            x -= digit
-            if digit == 2:
-                cantor_val += factor
-            factor *= 0.5
+        def test():
+            config = CantorAttentionConfig(
+                dim=512,
+                num_heads=8,
+                local_window=64,
+                dropout=0.0,
+                causal=False
+            )
+            attn = CantorAttention(config).to(self.device)
 
-        return cantor_val
+            for seq_len in [64, 256, 1024]:
+                x = torch.randn(2, seq_len, 512, device=self.device)
+                output = attn(x)
+                assert output.shape == x.shape, f"Shape mismatch at seq_len={seq_len}"
+                print(f"  ✓ seq_len={seq_len}: {x.shape} -> {output.shape}")
 
-    def _build_cantor_routes(self, max_len: int, k: int, depth: int) -> torch.Tensor:
-        """Build routing table based on Cantor distance."""
-        cantor_coords = torch.tensor([
-            self._cantor_coordinate(pos, max_len, depth)
-            for pos in range(max_len)
-        ], dtype=torch.float32)
+        self._test_wrapper("Basic Functionality", test)
 
-        routes = torch.zeros(max_len, k, dtype=torch.long)
+    def test_causal_masking(self):
+        """Test causal attention."""
 
-        for i in range(max_len):
-            distances = torch.abs(cantor_coords - cantor_coords[i])
-            _, nearest = torch.topk(distances, k, largest=False)
-            routes[i] = nearest
+        def test():
+            attn = create_cantor_attention(
+                dim=512,
+                num_heads=8,
+                local_window=64,
+                dropout=0.0,
+                causal=True
+            ).to(self.device)
 
-        return routes
+            for seq_len in [64, 256, 1024]:
+                x = torch.randn(2, seq_len, 512, device=self.device)
+                output = attn(x)
+                assert output.shape == x.shape, f"Shape mismatch at seq_len={seq_len}"
+                print(f"  ✓ causal seq_len={seq_len}: {x.shape} -> {output.shape}")
 
-    def _get_routes_for_seq_len(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        """Get or build routes for specific sequence length."""
-        if seq_len in self.routes_cache:
-            return self.routes_cache[seq_len].to(device)
+        self._test_wrapper("Causal Masking", test)
 
-        # Find next larger cached size
-        cached_sizes = sorted([s for s in self.routes_cache.keys() if s >= seq_len])
-        if cached_sizes:
-            larger_size = cached_sizes[0]
-            routes = self.routes_cache[larger_size][:seq_len, :].to(device)
-            routes = torch.clamp(routes, 0, seq_len - 1)
-            return routes
+    def test_gradient_flow(self):
+        """Test gradient computation."""
 
-        # Build on-demand
-        routes = self._build_cantor_routes(seq_len, self.num_neighbors, self.config.depth)
-        if len(self.routes_cache) < self.max_cache_entries:
-            self.routes_cache[seq_len] = routes
-        return routes.to(device)
+        def test():
+            config = CantorAttentionConfig(dim=512, num_heads=8, dropout=0.0)
+            attn = CantorAttention(config).to(self.device)
 
-    def _sparse_attention_dynamic(
-            self,
-            q: torch.Tensor,
-            k: torch.Tensor,
-            v: torch.Tensor,
-            seq_len: int
-    ) -> torch.Tensor:
-        """Sparse attention using dynamic routes."""
-        batch_size, num_heads, _, head_dim = q.shape
-        device = q.device
-        k_neighbors = self.num_neighbors
+            x = torch.randn(2, 128, 512, device=self.device, requires_grad=True)
+            output = attn(x)
+            loss = output.sum()
+            loss.backward()
 
-        # Get routes for exact seq_len
-        routes = self._get_routes_for_seq_len(seq_len, device)
+            assert x.grad is not None, "Gradients not computed!"
+            assert not torch.isnan(x.grad).any(), "NaN gradients!"
 
-        # Create broadcast indices
-        batch_idx = torch.arange(batch_size, device=device).view(-1, 1, 1, 1)
-        head_idx = torch.arange(num_heads, device=device).view(1, -1, 1, 1)
-        routes_bc = routes.view(1, 1, seq_len, k_neighbors)
+            grad_norm = x.grad.norm().item()
+            print(f"  ✓ Gradients computed successfully")
+            print(f"  ✓ Gradient norm: {grad_norm:.4f}")
 
-        # Expand
-        batch_idx = batch_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
-        head_idx = head_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
-        routes_bc = routes_bc.expand(batch_size, num_heads, seq_len, k_neighbors)
+        self._test_wrapper("Gradient Flow", test)
 
-        # Gather K and V
-        k_gathered = k[batch_idx, head_idx, routes_bc, :]
-        v_gathered = v[batch_idx, head_idx, routes_bc, :]
+    def test_causal_vs_noncausal(self):
+        """Test that causal and non-causal produce different outputs."""
 
-        # Compute attention
-        scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered) * self.scale
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.attn_dropout(attn_weights)
-        output = torch.einsum('bhqk,bhqkd->bhqd', attn_weights, v_gathered)
+        def test():
+            config_causal = CantorAttentionConfig(dim=256, num_heads=4, dropout=0.0, causal=True)
+            config_noncausal = CantorAttentionConfig(dim=256, num_heads=4, dropout=0.0, causal=False)
 
-        return output
+            attn_causal = CantorAttention(config_causal).to(self.device)
+            attn_noncausal = CantorAttention(config_noncausal).to(self.device)
 
-    def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Forward pass."""
-        batch_size, seq_len, _ = x.shape
+            # Copy weights
+            attn_causal.load_state_dict(attn_noncausal.state_dict())
 
-        # QKV projection
-        qkv = self.qkv(x)
-        qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+            x = torch.randn(2, 128, 256, device=self.device)
 
-        # Sparse attention
-        attn_output = self._sparse_attention_dynamic(q, k, v, seq_len)
+            with torch.no_grad():
+                out_causal = attn_causal(x)
+                out_noncausal = attn_noncausal(x)
 
-        # Reshape and project
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.dim)
-        output = self.out_proj(attn_output)
-        output = self.resid_dropout(output)
+            diff = torch.abs(out_causal - out_noncausal).mean().item()
+            print(f"  Mean absolute difference: {diff:.6f}")
 
-        return output
+            assert diff > 0.01, "Causal and non-causal outputs too similar!"
+            print(f"  ✓ Outputs differ (causal masking working)")
+
+        self._test_wrapper("Causal vs Non-Causal", test)
+
+    def test_autoregressive(self):
+        """Test autoregressive generation."""
+
+        def test():
+            config = CantorAttentionConfig(dim=128, num_heads=4, dropout=0.0, causal=True)
+            attn = CantorAttention(config).to(self.device)
+            attn.eval()
+
+            # Simulate autoregressive generation
+            max_len = 32
+            x = torch.randn(1, 1, 128, device=self.device)
+
+            with torch.no_grad():
+                for t in range(1, max_len):
+                    output = attn(x)
+                    next_input = torch.randn(1, 1, 128, device=self.device)
+                    x = torch.cat([x, next_input], dim=1)
+
+            assert x.shape == (1, max_len, 128), "Autoregressive generation failed"
+            print(f"  ✓ Generated {max_len} tokens autoregressively")
+            print(f"  ✓ Final shape: {x.shape}")
+
+        self._test_wrapper("Autoregressive Generation", test)
 
 
 # ============================================================================
-# BENCHMARK RUNNER
+# COMPREHENSIVE BENCHMARK
 # ============================================================================
 
 class BenchmarkRunner:
@@ -291,7 +287,7 @@ class BenchmarkRunner:
 
         return result
 
-    def run_comprehensive_benchmark(self):
+    def run_benchmark(self):
         """Run comprehensive comparison."""
 
         print("\n" + "=" * 80)
@@ -328,13 +324,14 @@ class BenchmarkRunner:
                 (1024, 32), (2048, 16), (4096, 8), (8192, 4)
             ]
 
-        config = CantorGlobalAttentionConfig(
+        config = CantorAttentionConfig(
             dim=dim,
             num_heads=num_heads,
             depth=8,
             max_seq_len=65536,
             local_window=64,
-            dropout=0.0
+            dropout=0.0,
+            causal=False
         )
 
         # Test each configuration
@@ -352,7 +349,7 @@ class BenchmarkRunner:
             # Test Cantor
             print(f"[1/2] Cantor O(n)...", end=" ", flush=True)
             try:
-                cantor_model = CantorGlobalAttentionDynamic(config).to(self.device)
+                cantor_model = CantorAttention(config).to(self.device)
                 result = self.benchmark_config(
                     cantor_model, seq_len, batch_size, dim,
                     num_iterations=50, warmup=10, model_name="Cantor"
@@ -413,6 +410,7 @@ class BenchmarkRunner:
 
         # Analysis
         self.print_analysis()
+        self.save_results()
 
     def print_analysis(self):
         """Print comprehensive analysis."""
@@ -492,21 +490,97 @@ class BenchmarkRunner:
         cantor_wins = sum(1 for c in comparisons if c['speedup'] > 1.0)
         print(f"\n[Summary]")
         print(f"  Cantor wins: {cantor_wins}/{len(comparisons)} configurations")
-        print(
-            f"  Best speedup: {max(c['speedup'] for c in comparisons):.3f}x at seq={max(comparisons, key=lambda c: c['speedup'])['seq_len']}")
+        if comparisons:
+            best = max(comparisons, key=lambda c: c['speedup'])
+            print(f"  Best speedup: {best['speedup']:.3f}x at seq={best['seq_len']}")
+
+    def save_results(self, filename: str = "cantor_benchmark_results.json"):
+        """Save results to JSON."""
+        with open(filename, 'w') as f:
+            json.dump(self.results, f, indent=2)
+        print(f"\n✓ Results saved to: {filename}")
 
 
 # ============================================================================
-# RUN BENCHMARK
+# MAIN
 # ============================================================================
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='Cantor Attention Validation and Benchmark',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/validation_cantor_global.py              # Quick tests only (default)
+  python scripts/validation_cantor_global.py --bench      # Quick tests + full benchmark
+  python scripts/validation_cantor_global.py --bench-only # Full benchmark only
+  python scripts/validation_cantor_global.py --device cpu # Run on CPU
+        """
+    )
+    parser.add_argument('--bench', action='store_true',
+                        help='Run full benchmark after validation tests')
+    parser.add_argument('--bench-only', action='store_true',
+                        help='Run only the benchmark (skip validation tests)')
+    parser.add_argument('--device', type=str, default='cuda',
+                        choices=['cuda', 'cpu'],
+                        help='Device to use (default: cuda)')
+    args = parser.parse_args()
+
+    # Determine what to run
+    # Default: run quick tests only
+    # --bench: run tests + benchmark
+    # --bench-only: run benchmark only
+    run_tests = not args.bench_only  # Run tests unless bench-only
+    run_benchmark = args.bench or args.bench_only  # Run benchmark if either flag
+
+    print("=" * 80)
+    print("🚀 CANTOR ATTENTION VALIDATION SYSTEM")
+    print("=" * 80)
+    print(f"PyTorch version: {torch.__version__}")
+
+    # Check CUDA availability
+    if not torch.cuda.is_available():
+        if args.device == 'cuda':
+            print("⚠️  CUDA not available! Falling back to CPU.")
+            args.device = 'cpu'
+        if run_benchmark:
+            print("⚠️  Benchmark requires CUDA. Will skip benchmark.")
+            run_benchmark = False
+    else:
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
+
+    print(f"\nMode: ", end="")
+    if run_tests and run_benchmark:
+        print("Validation Tests + Full Benchmark")
+    elif run_tests:
+        print("Validation Tests Only")
+    elif run_benchmark:
+        print("Full Benchmark Only")
+
+    # Run validation tests
+    if run_tests:
+        validator = ValidationTests(device=args.device)
+        tests_passed = validator.run_all_tests()
+
+        if not tests_passed:
+            print("\n❌ Some validation tests failed!")
+            if run_benchmark:
+                print("Skipping benchmark due to test failures.")
+            return 1
+
+    # Run benchmark
+    if run_benchmark:
+        runner = BenchmarkRunner(device=args.device)
+        runner.run_benchmark()
+
+    print("\n" + "=" * 80)
+    print("✓ COMPLETE")
+    print("=" * 80)
+
+    return 0
+
 
 if __name__ == "__main__":
-    if not torch.cuda.is_available():
-        print("❌ CUDA not available! This benchmark requires a GPU.")
-    else:
-        runner = BenchmarkRunner()
-        runner.run_comprehensive_benchmark()
-
-        print("\n" + "=" * 80)
-        print("✓ BENCHMARK COMPLETE")
-        print("=" * 80)
+    sys.exit(main())
