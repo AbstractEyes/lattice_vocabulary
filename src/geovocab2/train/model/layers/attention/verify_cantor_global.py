@@ -1,13 +1,15 @@
-# scripts/validation_cantor_global.py
+# geovocab2/train/model/layers/attention/validation_cantor_global.py
 
 """
 Comprehensive Cantor Attention Validation and Benchmark
 Tests functionality and performance of Cantor Attention vs Standard Attention
+Includes testing of adaptive window sizing for improved memory efficiency
 
 Usage:
-    python scripts/validation_cantor_global.py              # Quick tests only (default)
-    python scripts/validation_cantor_global.py --bench      # Quick tests + full benchmark
-    python scripts/validation_cantor_global.py --bench-only # Benchmark only (no tests)
+    python -m geovocab2.train.model.layers.attention.validation_cantor_global              # Quick tests only (default)
+    python -m geovocab2.train.model.layers.attention.validation_cantor_global --bench      # Quick tests + full benchmark
+    python -m geovocab2.train.model.layers.attention.validation_cantor_global --bench-only # Benchmark only (no tests)
+    python -m geovocab2.train.model.layers.attention.validation_cantor_global --adaptive   # Test adaptive window mode
 """
 
 import torch
@@ -35,8 +37,9 @@ from geovocab2.train.model.layers.attention.cantor_global import (
 class ValidationTests:
     """Quick validation tests for Cantor Attention."""
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", test_adaptive: bool = False):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.test_adaptive = test_adaptive
         self.passed = 0
         self.failed = 0
 
@@ -55,6 +58,10 @@ class ValidationTests:
         self.test_gradient_flow()
         self.test_causal_vs_noncausal()
         self.test_autoregressive()
+
+        if self.test_adaptive:
+            self.test_adaptive_window()
+            self.test_adaptive_vs_fixed()
 
         print("\n" + "=" * 80)
         print(f"VALIDATION SUMMARY: {self.passed} passed, {self.failed} failed")
@@ -85,7 +92,8 @@ class ValidationTests:
                 num_heads=8,
                 local_window=64,
                 dropout=0.0,
-                causal=False
+                causal=False,
+                adaptive_window=False
             )
             attn = CantorAttention(config).to(self.device)
 
@@ -189,6 +197,83 @@ class ValidationTests:
 
         self._test_wrapper("Autoregressive Generation", test)
 
+    def test_adaptive_window(self):
+        """Test adaptive window sizing."""
+
+        def test():
+            config = CantorAttentionConfig(
+                dim=512,
+                num_heads=8,
+                adaptive_window=True,
+                min_window=16,
+                max_window=64,
+                sparsity_target=0.25,
+                dropout=0.0
+            )
+
+            attn = CantorAttention(config).to(self.device)
+
+            test_cases = [
+                (64, 16),  # 25% of 64 = 16
+                (128, 32),  # 25% of 128 = 32
+                (256, 64),  # 25% of 256 = 64 (capped)
+                (512, 64),  # 25% of 512 = 128, but capped at 64
+                (1024, 64),  # 25% of 1024 = 256, but capped at 64
+            ]
+
+            for seq_len, expected_k in test_cases:
+                actual_k = config.get_window_size(seq_len)
+                assert actual_k == expected_k, f"Window size mismatch: got {actual_k}, expected {expected_k}"
+
+                x = torch.randn(2, seq_len, 512, device=self.device)
+                output = attn(x)
+                assert output.shape == x.shape, f"Shape mismatch at seq_len={seq_len}"
+
+                coverage = 100 * actual_k / seq_len
+                print(f"  ✓ seq_len={seq_len:4d}: k={actual_k:2d} ({coverage:5.1f}% coverage)")
+
+        self._test_wrapper("Adaptive Window Sizing", test)
+
+    def test_adaptive_vs_fixed(self):
+        """Test that adaptive and fixed modes produce valid outputs."""
+
+        def test():
+            config_fixed = CantorAttentionConfig(
+                dim=256,
+                num_heads=4,
+                local_window=32,
+                adaptive_window=False,
+                dropout=0.0
+            )
+
+            config_adaptive = CantorAttentionConfig(
+                dim=256,
+                num_heads=4,
+                adaptive_window=True,
+                min_window=16,
+                max_window=32,
+                sparsity_target=0.25,
+                dropout=0.0
+            )
+
+            attn_fixed = CantorAttention(config_fixed).to(self.device)
+            attn_adaptive = CantorAttention(config_adaptive).to(self.device)
+
+            # Test at seq_len where both should use k=32
+            seq_len = 256  # 25% of 256 = 64, but capped at 32
+            x = torch.randn(2, seq_len, 256, device=self.device)
+
+            with torch.no_grad():
+                out_fixed = attn_fixed(x)
+                out_adaptive = attn_adaptive(x)
+
+            assert out_fixed.shape == out_adaptive.shape == x.shape
+            print(f"  ✓ Both modes produce valid outputs at seq_len={seq_len}")
+            print(f"  ✓ Fixed: k=32 (fixed)")
+            print(f"  ✓ Adaptive: k={config_adaptive.get_window_size(seq_len)} (from 25% target)")
+
+        self._test_wrapper("Adaptive vs Fixed Mode", test)
+
 
 # ============================================================================
 # COMPREHENSIVE BENCHMARK
@@ -197,13 +282,15 @@ class ValidationTests:
 class BenchmarkRunner:
     """Comprehensive benchmark runner."""
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", test_adaptive: bool = False):
         self.device = torch.device(device)
+        self.test_adaptive = test_adaptive
         self.results = {
             'device_name': torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU',
             'device_memory_gb': torch.cuda.get_device_properties(
                 0).total_memory / 1024 ** 3 if torch.cuda.is_available() else 0,
             'timestamp': datetime.now().isoformat(),
+            'adaptive_mode': test_adaptive,
             'benchmarks': []
         }
 
@@ -291,7 +378,8 @@ class BenchmarkRunner:
         """Run comprehensive comparison."""
 
         print("\n" + "=" * 80)
-        print("COMPREHENSIVE BENCHMARK - CANTOR vs STANDARD ATTENTION")
+        mode_str = "ADAPTIVE WINDOW" if self.test_adaptive else "FIXED WINDOW"
+        print(f"COMPREHENSIVE BENCHMARK - CANTOR ({mode_str}) vs STANDARD")
         print("=" * 80)
         print(f"Device: {self.results['device_name']}")
         print(f"VRAM: {self.results['device_memory_gb']:.1f} GB")
@@ -317,27 +405,49 @@ class BenchmarkRunner:
                 (1024, 32), (2048, 32), (4096, 16), (8192, 8),
                 (16384, 4)
             ]
-        else:  # T4, V100
+        else:  # T4, V100, L4
             print("Detected standard GPU - testing up to 8K sequence length!")
             test_configs = [
                 (64, 32), (128, 32), (256, 32), (512, 32),
                 (1024, 32), (2048, 16), (4096, 8), (8192, 4)
             ]
 
-        config = CantorAttentionConfig(
-            dim=dim,
-            num_heads=num_heads,
-            depth=8,
-            max_seq_len=65536,
-            local_window=64,
-            dropout=0.0,
-            causal=False
-        )
+        # Create Cantor config
+        if self.test_adaptive:
+            config = CantorAttentionConfig(
+                dim=dim,
+                num_heads=num_heads,
+                depth=8,
+                max_seq_len=65536,
+                adaptive_window=True,
+                min_window=16,
+                max_window=64,
+                sparsity_target=0.25,
+                dropout=0.0,
+                causal=False
+            )
+            print("Using ADAPTIVE window sizing (k=16-64, target=25% coverage)")
+        else:
+            config = CantorAttentionConfig(
+                dim=dim,
+                num_heads=num_heads,
+                depth=8,
+                max_seq_len=65536,
+                local_window=64,
+                adaptive_window=False,
+                dropout=0.0,
+                causal=False
+            )
+            print("Using FIXED window sizing (k=64)")
 
         # Test each configuration
         for seq_len, batch_size in test_configs:
             print(f"\n{'=' * 80}")
-            print(f"seq_len={seq_len:>6}, batch={batch_size:>3}")
+            if self.test_adaptive:
+                k = config.get_window_size(seq_len)
+                print(f"seq_len={seq_len:>6}, batch={batch_size:>3}, k={k:>2} ({100 * k / seq_len:.1f}%)")
+            else:
+                print(f"seq_len={seq_len:>6}, batch={batch_size:>3}")
             print(f"{'=' * 80}")
 
             comparison = {
@@ -345,6 +455,10 @@ class BenchmarkRunner:
                 'batch_size': batch_size,
                 'results': {}
             }
+
+            if self.test_adaptive:
+                comparison['window_size'] = config.get_window_size(seq_len)
+                comparison['coverage_pct'] = 100 * comparison['window_size'] / seq_len
 
             # Test Cantor
             print(f"[1/2] Cantor O(n)...", end=" ", flush=True)
@@ -428,7 +542,10 @@ class BenchmarkRunner:
 
         # Summary table
         print("\n" + "─" * 80)
-        print(f"{'Seq Len':<10} {'Batch':<8} {'Cantor (ms)':<15} {'Standard (ms)':<15} {'Speedup':<12}")
+        if self.test_adaptive:
+            print(f"{'Seq Len':<10} {'Batch':<8} {'k':<5} {'Cantor (ms)':<15} {'Standard (ms)':<15} {'Speedup':<12}")
+        else:
+            print(f"{'Seq Len':<10} {'Batch':<8} {'Cantor (ms)':<15} {'Standard (ms)':<15} {'Speedup':<12}")
         print("─" * 80)
 
         for comp in comparisons:
@@ -437,9 +554,15 @@ class BenchmarkRunner:
             speedup = comp['speedup']
             winner = "🚀" if speedup > 1.0 else "  "
 
-            print(f"{comp['seq_len']:<10} {comp['batch_size']:<8} "
-                  f"{cantor_time:>10.2f}      {standard_time:>10.2f}        "
-                  f"{speedup:>7.3f}x {winner}")
+            if self.test_adaptive:
+                k = comp.get('window_size', 64)
+                print(f"{comp['seq_len']:<10} {comp['batch_size']:<8} {k:<5} "
+                      f"{cantor_time:>10.2f}      {standard_time:>10.2f}        "
+                      f"{speedup:>7.3f}x {winner}")
+            else:
+                print(f"{comp['seq_len']:<10} {comp['batch_size']:<8} "
+                      f"{cantor_time:>10.2f}      {standard_time:>10.2f}        "
+                      f"{speedup:>7.3f}x {winner}")
 
         print("─" * 80)
 
@@ -450,6 +573,9 @@ class BenchmarkRunner:
             if comp['speedup'] > 1.0:
                 crossover_seq = comp['seq_len']
                 print(f"✓ Cantor faster at seq_len={crossover_seq}: {comp['speedup']:.3f}x speedup")
+                if self.test_adaptive:
+                    k = comp.get('window_size', 64)
+                    print(f"  (using k={k}, {comp.get('coverage_pct', 0):.1f}% coverage)")
                 break
 
         if not crossover_seq:
@@ -483,19 +609,29 @@ class BenchmarkRunner:
             cantor_mem = comp['results']['cantor']['memory_mb']
             standard_mem = comp['results']['standard']['memory_mb']
             ratio = cantor_mem / standard_mem
-            print(f"  seq={comp['seq_len']:5d}: Cantor {cantor_mem:6.0f}MB, "
-                  f"Standard {standard_mem:6.0f}MB (ratio: {ratio:.2f}x)")
+            if self.test_adaptive:
+                k = comp.get('window_size', 64)
+                print(f"  seq={comp['seq_len']:5d} (k={k:2d}): Cantor {cantor_mem:6.0f}MB, "
+                      f"Standard {standard_mem:6.0f}MB (ratio: {ratio:.2f}x)")
+            else:
+                print(f"  seq={comp['seq_len']:5d}: Cantor {cantor_mem:6.0f}MB, "
+                      f"Standard {standard_mem:6.0f}MB (ratio: {ratio:.2f}x)")
 
         # Summary
         cantor_wins = sum(1 for c in comparisons if c['speedup'] > 1.0)
         print(f"\n[Summary]")
+        print(f"  Mode: {'ADAPTIVE' if self.test_adaptive else 'FIXED'} window")
         print(f"  Cantor wins: {cantor_wins}/{len(comparisons)} configurations")
         if comparisons:
             best = max(comparisons, key=lambda c: c['speedup'])
             print(f"  Best speedup: {best['speedup']:.3f}x at seq={best['seq_len']}")
 
-    def save_results(self, filename: str = "cantor_benchmark_results.json"):
+    def save_results(self, filename: str = None):
         """Save results to JSON."""
+        if filename is None:
+            mode = "adaptive" if self.test_adaptive else "fixed"
+            filename = f"cantor_benchmark_{mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
         with open(filename, 'w') as f:
             json.dump(self.results, f, indent=2)
         print(f"\n✓ Results saved to: {filename}")
@@ -512,27 +648,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/validation_cantor_global.py              # Quick tests only (default)
-  python scripts/validation_cantor_global.py --bench      # Quick tests + full benchmark
-  python scripts/validation_cantor_global.py --bench-only # Full benchmark only
-  python scripts/validation_cantor_global.py --device cpu # Run on CPU
+  python -m geovocab2.train.model.layers.attention.validation_cantor_global              # Quick tests only (default)
+  python -m geovocab2.train.model.layers.attention.validation_cantor_global --bench      # Quick tests + full benchmark
+  python -m geovocab2.train.model.layers.attention.validation_cantor_global --bench-only # Full benchmark only
+  python -m geovocab2.train.model.layers.attention.validation_cantor_global --adaptive   # Test adaptive window mode
+  python -m geovocab2.train.model.layers.attention.validation_cantor_global --bench --adaptive  # Benchmark with adaptive window
         """
     )
     parser.add_argument('--bench', action='store_true',
                         help='Run full benchmark after validation tests')
     parser.add_argument('--bench-only', action='store_true',
                         help='Run only the benchmark (skip validation tests)')
+    parser.add_argument('--adaptive', action='store_true',
+                        help='Test adaptive window mode (variable k based on seq_len)')
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cuda', 'cpu'],
                         help='Device to use (default: cuda)')
     args = parser.parse_args()
 
     # Determine what to run
-    # Default: run quick tests only
-    # --bench: run tests + benchmark
-    # --bench-only: run benchmark only
-    run_tests = not args.bench_only  # Run tests unless bench-only
-    run_benchmark = args.bench or args.bench_only  # Run benchmark if either flag
+    run_tests = not args.bench_only
+    run_benchmark = args.bench or args.bench_only
 
     print("=" * 80)
     print("🚀 CANTOR ATTENTION VALIDATION SYSTEM")
@@ -551,7 +687,10 @@ Examples:
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
 
-    print(f"\nMode: ", end="")
+    mode_str = "ADAPTIVE" if args.adaptive else "FIXED"
+    print(f"\nWindow Mode: {mode_str}")
+
+    print(f"Run Mode: ", end="")
     if run_tests and run_benchmark:
         print("Validation Tests + Full Benchmark")
     elif run_tests:
@@ -561,7 +700,7 @@ Examples:
 
     # Run validation tests
     if run_tests:
-        validator = ValidationTests(device=args.device)
+        validator = ValidationTests(device=args.device, test_adaptive=args.adaptive)
         tests_passed = validator.run_all_tests()
 
         if not tests_passed:
@@ -572,7 +711,7 @@ Examples:
 
     # Run benchmark
     if run_benchmark:
-        runner = BenchmarkRunner(device=args.device)
+        runner = BenchmarkRunner(device=args.device, test_adaptive=args.adaptive)
         runner.run_benchmark()
 
     print("\n" + "=" * 80)
