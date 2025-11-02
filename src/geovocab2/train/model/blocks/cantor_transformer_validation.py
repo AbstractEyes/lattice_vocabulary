@@ -12,7 +12,7 @@ import numpy as np
 from typing import Dict, List
 
 from geovocab2.train.model.layers.attention.cantor_global import (
-    CantorGlobalAttention, CantorGlobalAttentionConfig
+    CantorAttention, CantorAttentionConfig
 )
 
 
@@ -61,7 +61,7 @@ def profile_attention_complexity():
         print(f"\nSequence length: {seq_len}")
 
         # Create Cantor attention
-        cantor_config = CantorGlobalAttentionConfig(
+        cantor_config = CantorAttentionConfig(
             dim=dim,
             num_heads=num_heads,
             head_dim=head_dim,
@@ -70,7 +70,7 @@ def profile_attention_complexity():
             local_window=k_neighbors,
             dropout=0.0
         )
-        cantor_attn = CantorGlobalAttention(cantor_config).to(device)
+        cantor_attn = CantorAttention(cantor_config).to(device)
 
         # Input
         x = torch.randn(batch_size, seq_len, dim, device=device, requires_grad=True)
@@ -343,7 +343,7 @@ def check_attention_patterns():
     k = 32
     batch_size = 2
 
-    config = CantorGlobalAttentionConfig(
+    config = CantorAttentionConfig(
         dim=dim,
         num_heads=num_heads,
         depth=6,
@@ -352,7 +352,7 @@ def check_attention_patterns():
         dropout=0.0
     )
 
-    cantor_attn = CantorGlobalAttention(config)
+    cantor_attn = CantorAttention(config)
 
     # Check routes
     routes = cantor_attn.cantor_routes[:seq_len, :k]
