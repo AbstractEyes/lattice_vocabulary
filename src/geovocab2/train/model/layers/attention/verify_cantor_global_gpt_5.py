@@ -424,7 +424,11 @@ class BenchmarkRunner:
                 max_window=64,
                 sparsity_target=0.25,
                 dropout=0.0,
-                causal=False
+                causal=False,
+                use_gather_impl=True,
+                per_device_route_cache=True,
+                deterministic_topk=True,
+                enable_attention_mask=True
             )
             print("Using ADAPTIVE window sizing (k=16-64, target=25% coverage)")
         else:
@@ -436,7 +440,11 @@ class BenchmarkRunner:
                 local_window=64,
                 adaptive_window=False,
                 dropout=0.0,
-                causal=False
+                causal=False,
+                use_gather_impl=True,
+                per_device_route_cache=True,
+                deterministic_topk=True,
+                enable_attention_mask=True
             )
             print("Using FIXED window sizing (k=64)")
 
