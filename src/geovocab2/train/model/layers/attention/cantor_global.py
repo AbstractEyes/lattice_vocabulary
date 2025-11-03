@@ -60,7 +60,7 @@ class CantorAttentionConfig:
     num_heads: int = 8
     head_dim: Optional[int] = None
     depth: int = 8
-    max_seq_len: int = 65536
+    max_seq_len: int = 524_288
     local_window: int = 64
     adaptive_window: bool = False
     min_window: int = 16
@@ -100,12 +100,12 @@ class CantorAttentionConfig:
         Returns:
             Window size (k) for this sequence length
 
-        Example:
-            >>> config = CantorAttentionConfig(adaptive_window=True, sparsity_target=0.25)
-            >>> config.get_window_size(64)   # Returns 16 (25% of 64)
-            >>> config.get_window_size(256)  # Returns 64 (25% of 256, capped at max)
-            >>> config.get_window_size(4096) # Returns 64 (capped at max_window)
-        """
+        #Example:
+        #    >>> config = CantorAttentionConfig(adaptive_window=True, sparsity_target=0.25)
+        #    >>> config.get_window_size(64)   # Returns 16 (25% of 64)
+        #    >>> config.get_window_size(256)  # Returns 64 (25% of 256, capped at max)
+        #    >>> config.get_window_size(4096) # Returns 64 (capped at max_window)
+        #"""
         if not self.adaptive_window:
             return self.local_window
 
@@ -444,16 +444,16 @@ def create_cantor_attention(
     Returns:
         CantorAttention layer
 
-    Example:
-        >>> # Fixed window
-        >>> attn = create_cantor_attention(dim=512, num_heads=8)
-        >>>
-        >>> # Adaptive window (better for mixed sequence lengths)
-        >>> attn = create_cantor_attention(dim=512, num_heads=8, adaptive_window=True)
-        >>>
-        >>> x = torch.randn(4, 1024, 512)
-        >>> output = attn(x)
-    """
+    #Example:
+    #    >>> # Fixed window
+    #    >>> attn = create_cantor_attention(dim=512, num_heads=8)
+    #    >>>
+    #    >>> # Adaptive window (better for mixed sequence lengths)
+    #    >>> attn = create_cantor_attention(dim=512, num_heads=8, adaptive_window=True)
+    #    >>>
+    #    >>> x = torch.randn(4, 1024, 512)
+    #    >>> output = attn(x)
+    #"""
     config = CantorAttentionConfig(
         dim=dim,
         num_heads=num_heads,
