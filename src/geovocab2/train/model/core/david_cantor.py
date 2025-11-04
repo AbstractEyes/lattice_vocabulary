@@ -709,6 +709,7 @@ class GeometricAttentionGate(nn.Module):
         self.use_angular = use_angular_attention
         self.temperature = nn.Parameter(torch.tensor(temperature))
         self.scale_dim_aware = scale_dim_aware
+        self.use_angular = use_angular_attention
 
         # Query/Key/Value projections for multi-head attention
         self.q_proj = nn.Linear(feature_dim, feature_dim)
@@ -726,7 +727,7 @@ class GeometricAttentionGate(nn.Module):
             self.scale_embeddings = None
 
         # Pentachoron role weights
-        if use_angular:
+        if self.use_angular:
             role_weights = torch.tensor([1.0, -0.75, 0.75, 0.75, -0.75])
             self.register_buffer("role_weights", role_weights)
 
