@@ -622,6 +622,24 @@ class DavidPresets:
         )
 
     @staticmethod
+    def clip_vit_bigG_cantor_decoupled() -> DavidArchitectureConfig:
+        """CLIP ViT-bigG/14 with Cantor routing."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_bigg14_cantor_decoupled",
+            uid="c.david.david_clip_vit_bigg14_cantor_decoupled",
+            feature_dim=1280,
+            scales=[384, 512, 768, 1024, 1280, 1536, 1792, 2048],
+            sharing_mode="decoupled",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            shared_feature_dim=1536,
+            cantor_num_heads=8,
+            cantor_depth=10,
+            cantor_local_window=5,
+            progressive_training=True,
+        )
+
+    @staticmethod
     def get_preset(name: str) -> DavidArchitectureConfig:
         """Get preset by name."""
         presets = {
@@ -683,6 +701,7 @@ class DavidPresets:
             'clip_vit_h14_geometric',
             'clip_vit_bigg14',
             'clip_vit_bigg14_cantor',
+            'clip_vit_bigg14_cantor_decoupled',
         ]
 
 
