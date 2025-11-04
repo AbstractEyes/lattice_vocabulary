@@ -374,10 +374,46 @@ class DavidPresets:
             uid="c.david.clip_vit_b16_cantor",
             feature_dim=512,
             scales=[256, 512, 768, 1024],
-            sharing_mode="partial_shared",
+            sharing_mode="decoupled",
             fusion_mode="cantor_scale",
             use_belly=True,
             cantor_num_heads=4,
+            cantor_depth=8,
+            cantor_local_window=3,
+            progressive_training=True,
+        )
+
+
+    @staticmethod
+    def clip_vit_b16_cantor_decoupled_moderate() -> DavidArchitectureConfig:
+        """CLIP ViT-B/16 with Cantor routing."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_b16_cantor_decoupled_massive",
+            uid="c.david.clip_vit_b16_cantor_decoupled_massive",
+            feature_dim=512,
+            scales=[256, 512, 768, 1024],
+            sharing_mode="decoupled",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            cantor_num_heads=8,
+            cantor_depth=8,
+            cantor_local_window=3,
+            progressive_training=True,
+        )
+
+
+    @staticmethod
+    def clip_vit_b16_cantor_decoupled_massive() -> DavidArchitectureConfig:
+        """CLIP ViT-B/16 with Cantor routing."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_b16_cantor_decoupled_massive",
+            uid="c.david.clip_vit_b16_cantor_decoupled_massive",
+            feature_dim=512,
+            scales=[512, 4096, 8192, 16384],
+            sharing_mode="decoupled",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            cantor_num_heads=8,
             cantor_depth=8,
             cantor_local_window=3,
             progressive_training=True,
@@ -599,6 +635,8 @@ class DavidPresets:
             'clip_vit_b16': DavidPresets.clip_vit_b16,
             'clip_vit_b16_geometric': DavidPresets.clip_vit_b16_geometric,
             'clip_vit_b16_cantor': DavidPresets.clip_vit_b16_cantor,
+            'clip_vit_b16_cantor_decoupled_moderate': DavidPresets.clip_vit_b16_cantor_decoupled_moderate,
+            'clip_vit_b16_cantor_decoupled_massive': DavidPresets.clip_vit_b16_cantor_decoupled_massive,
             'clip_vit_l14': DavidPresets.clip_vit_l14,
             'clip_vit_l14_geometric': DavidPresets.clip_vit_l14_geometric,
             'clip_vit_l14_cantor': DavidPresets.clip_vit_l14_cantor,
@@ -632,6 +670,8 @@ class DavidPresets:
             'clip_vit_b16',
             'clip_vit_b16_geometric',
             'clip_vit_b16_cantor',
+            'clip_vit_b16_cantor_decoupled_moderate',
+            'clip_vit_b16_cantor_decoupled_massive',
             'clip_vit_l14',
             'clip_vit_l14_geometric',
             'clip_vit_l14_cantor',
