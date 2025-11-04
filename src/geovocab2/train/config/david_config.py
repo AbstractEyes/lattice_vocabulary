@@ -37,6 +37,8 @@ class FusionMode(Enum):
     DEEP_EFFICIENCY = "deep_efficiency"
     MAX_CONFIDENCE = "max_confidence"
     PROGRESSIVE = "progressive"
+    GEOMETRIC_ATTENTION = "geometric_attention"     # NEW: Geometric + Cayley-Menger attention
+    CANTOR_SCALE = "cantor_scale"                   # NEW: Fractal-based scale routing
 
 
 # ============================================================================
@@ -87,6 +89,18 @@ class DavidArchitectureConfig:
     expert_dropout: float = 0.1
     attention_dropout: float = 0.1
 
+    # Geometric attention parameters (for GEOMETRIC_ATTENTION mode)
+    geometric_num_heads: int = 4
+    geometric_use_cayley: bool = True
+    geometric_use_angular: bool = True
+    geometric_scale_dim_aware: bool = True
+
+    # Cantor scale fusion parameters (for CANTOR_SCALE mode)
+    cantor_num_heads: int = 4
+    cantor_depth: int = 8
+    cantor_local_window: int = 3  # How many scales to attend to
+    cantor_use_scale_embeddings: bool = True
+
     # Progressive training
     progressive_training: bool = True
     scale_warmup_epochs: Optional[Dict[int, int]] = None
@@ -110,6 +124,7 @@ class DavidArchitectureConfig:
             'fusion_mode': self.fusion_mode,
             'use_belly': self.use_belly,
             'belly_expand': self.belly_expand,
+            'projection_temperature': self.projection_temperature,
             'shared_feature_dim': self.shared_feature_dim,
             'shared_layers': self.shared_layers,
             'shared_dropout': self.shared_dropout,
@@ -120,6 +135,14 @@ class DavidArchitectureConfig:
             'compression_ratio': self.compression_ratio,
             'expert_dropout': self.expert_dropout,
             'attention_dropout': self.attention_dropout,
+            'geometric_num_heads': self.geometric_num_heads,
+            'geometric_use_cayley': self.geometric_use_cayley,
+            'geometric_use_angular': self.geometric_use_angular,
+            'geometric_scale_dim_aware': self.geometric_scale_dim_aware,
+            'cantor_num_heads': self.cantor_num_heads,
+            'cantor_depth': self.cantor_depth,
+            'cantor_local_window': self.cantor_local_window,
+            'cantor_use_scale_embeddings': self.cantor_use_scale_embeddings,
             'progressive_training': self.progressive_training,
             'scale_warmup_epochs': self.scale_warmup_epochs,
         }
@@ -225,6 +248,50 @@ class DavidPresets:
         )
 
     @staticmethod
+    def geometric_fusion() -> DavidArchitectureConfig:
+        """Geometric attention with pentachoron-inspired routing."""
+        return DavidArchitectureConfig(
+            name="david_geometric_fusion",
+            uid="c.david.geometric_fusion",
+            feature_dim=512,
+            scales=[256, 512, 768, 1024, 1280],
+            sharing_mode="partial_shared",
+            fusion_mode="geometric_attention",
+            use_belly=True,
+            belly_expand=2.0,
+            shared_feature_dim=768,
+            shared_layers=2,
+            geometric_num_heads=4,
+            geometric_use_cayley=True,
+            geometric_use_angular=True,
+            geometric_scale_dim_aware=True,
+            fusion_temperature=0.07,
+            progressive_training=True,
+        )
+
+    @staticmethod
+    def cantor_routing() -> DavidArchitectureConfig:
+        """Fractal-based scale routing with Cantor geometry."""
+        return DavidArchitectureConfig(
+            name="david_cantor_routing",
+            uid="c.david.cantor_routing",
+            feature_dim=512,
+            scales=[256, 512, 768, 1024, 1280],
+            sharing_mode="partial_shared",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            belly_expand=2.0,
+            shared_feature_dim=768,
+            shared_layers=2,
+            cantor_num_heads=4,
+            cantor_depth=8,
+            cantor_local_window=3,
+            cantor_use_scale_embeddings=True,
+            fusion_temperature=0.07,
+            progressive_training=True,
+        )
+
+    @staticmethod
     def gated_expert_team() -> DavidArchitectureConfig:
         """Maximum accuracy configuration."""
         return DavidArchitectureConfig(
@@ -283,6 +350,40 @@ class DavidPresets:
         )
 
     @staticmethod
+    def clip_vit_b16_geometric() -> DavidArchitectureConfig:
+        """CLIP ViT-B/16 with geometric attention."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_b16_geometric",
+            uid="c.david.clip_vit_b16_geometric",
+            feature_dim=512,
+            scales=[256, 512, 768, 1024],
+            sharing_mode="partial_shared",
+            fusion_mode="geometric_attention",
+            use_belly=True,
+            geometric_num_heads=4,
+            geometric_use_cayley=True,
+            geometric_use_angular=True,
+            progressive_training=True,
+        )
+
+    @staticmethod
+    def clip_vit_b16_cantor() -> DavidArchitectureConfig:
+        """CLIP ViT-B/16 with Cantor routing."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_b16_cantor",
+            uid="c.david.clip_vit_b16_cantor",
+            feature_dim=512,
+            scales=[256, 512, 768, 1024],
+            sharing_mode="partial_shared",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            cantor_num_heads=4,
+            cantor_depth=8,
+            cantor_local_window=3,
+            progressive_training=True,
+        )
+
+    @staticmethod
     def clip_vit_l14() -> DavidArchitectureConfig:
         """CLIP ViT-L/14 optimized."""
         return DavidArchitectureConfig(
@@ -295,6 +396,42 @@ class DavidPresets:
             use_belly=True,
             shared_feature_dim=1024,
             num_experts=4,
+            progressive_training=True,
+        )
+
+    @staticmethod
+    def clip_vit_l14_geometric() -> DavidArchitectureConfig:
+        """CLIP ViT-L/14 with geometric attention."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_l14_geometric",
+            uid="c.david.clip_vit_l14_geometric",
+            feature_dim=768,
+            scales=[384, 768, 1024, 1280, 1536],
+            sharing_mode="partial_shared",
+            fusion_mode="geometric_attention",
+            use_belly=True,
+            shared_feature_dim=1024,
+            geometric_num_heads=6,
+            geometric_use_cayley=True,
+            geometric_use_angular=True,
+            progressive_training=True,
+        )
+
+    @staticmethod
+    def clip_vit_l14_cantor() -> DavidArchitectureConfig:
+        """CLIP ViT-L/14 with Cantor routing."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_l14_cantor",
+            uid="c.david.clip_vit_l14_cantor",
+            feature_dim=768,
+            scales=[384, 768, 1024, 1280, 1536],
+            sharing_mode="partial_shared",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            shared_feature_dim=1024,
+            cantor_num_heads=6,
+            cantor_depth=8,
+            cantor_local_window=4,  # More scales = more neighbors
             progressive_training=True,
         )
 
@@ -316,6 +453,25 @@ class DavidPresets:
         )
 
     @staticmethod
+    def clip_vit_l14_deep_cantor() -> DavidArchitectureConfig:
+        """CLIP ViT-L/14 deep with Cantor routing (10 scales)."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_l14_deep_cantor",
+            uid="c.david.clip_vit_l14_deep_cantor",
+            feature_dim=768,
+            scales=[256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560],
+            sharing_mode="partial_shared",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            shared_feature_dim=1024,
+            shared_layers=4,
+            cantor_num_heads=8,
+            cantor_depth=10,  # Deeper fractal for more scales
+            cantor_local_window=5,
+            progressive_training=True,
+        )
+
+    @staticmethod
     def clip_vit_l14_very_deep() -> DavidArchitectureConfig:
         """CLIP ViT-L/14 with very deep architecture."""
         return DavidArchitectureConfig(
@@ -327,9 +483,9 @@ class DavidPresets:
             fusion_mode="deep_efficiency",
             use_belly=True,
             belly_expand=2.5,
-            shared_feature_dim=1536,  # Richer shared space
-            shared_layers=8,  # Much deeper
-            num_experts=8,  # One expert per 1.25 scales
+            shared_feature_dim=1536,
+            shared_layers=8,
+            num_experts=8,
             progressive_training=True,
             scale_warmup_epochs={
                 256: 0, 512: 1, 768: 2, 1024: 3, 1280: 4,
@@ -348,10 +504,10 @@ class DavidPresets:
             sharing_mode="partial_shared",
             fusion_mode="deep_efficiency",
             use_belly=True,
-            belly_expand=3.0,  # Maximum expansion
-            shared_feature_dim=2048,  # HUGE shared representation
-            shared_layers=12,  # ResNet-level depth
-            num_experts=10,  # One expert per scale
+            belly_expand=3.0,
+            shared_feature_dim=2048,
+            shared_layers=12,
+            num_experts=10,
             progressive_training=True,
             scale_warmup_epochs={
                 256: 0, 512: 1, 768: 2, 1024: 3, 1280: 4,
@@ -377,8 +533,26 @@ class DavidPresets:
         )
 
     @staticmethod
+    def clip_vit_h14_geometric() -> DavidArchitectureConfig:
+        """CLIP ViT-H/14 with geometric attention."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_h14_geometric",
+            uid="c.david.clip_vit_h14_geometric",
+            feature_dim=1024,
+            scales=[512, 768, 1024, 1280, 1536, 1792],
+            sharing_mode="partial_shared",
+            fusion_mode="geometric_attention",
+            use_belly=True,
+            shared_feature_dim=1280,
+            geometric_num_heads=8,
+            geometric_use_cayley=True,
+            geometric_use_angular=True,
+            progressive_training=True,
+        )
+
+    @staticmethod
     def clip_vit_bigG() -> DavidArchitectureConfig:
-        """CLIP ViT-H/14 optimized."""
+        """CLIP ViT-bigG/14 optimized."""
         return DavidArchitectureConfig(
             name="david_clip_vit_bigg14",
             uid="c.david.clip_vit_bigg14",
@@ -394,21 +568,48 @@ class DavidPresets:
         )
 
     @staticmethod
+    def clip_vit_bigG_cantor() -> DavidArchitectureConfig:
+        """CLIP ViT-bigG/14 with Cantor routing."""
+        return DavidArchitectureConfig(
+            name="david_clip_vit_bigg14_cantor",
+            uid="c.david.clip_vit_bigg14_cantor",
+            feature_dim=1280,
+            scales=[384, 512, 768, 1024, 1280, 1536, 1792, 2048],
+            sharing_mode="partial_shared",
+            fusion_mode="cantor_scale",
+            use_belly=True,
+            shared_feature_dim=1536,
+            cantor_num_heads=8,
+            cantor_depth=10,
+            cantor_local_window=5,
+            progressive_training=True,
+        )
+
+    @staticmethod
     def get_preset(name: str) -> DavidArchitectureConfig:
         """Get preset by name."""
         presets = {
             'small_fast': DavidPresets.small_fast,
             'balanced': DavidPresets.balanced,
             'high_accuracy': DavidPresets.high_accuracy,
+            'geometric_fusion': DavidPresets.geometric_fusion,
+            'cantor_routing': DavidPresets.cantor_routing,
             'hierarchical_refinement': DavidPresets.hierarchical_refinement,
             'gated_expert_team': DavidPresets.gated_expert_team,
             'clip_vit_b16': DavidPresets.clip_vit_b16,
+            'clip_vit_b16_geometric': DavidPresets.clip_vit_b16_geometric,
+            'clip_vit_b16_cantor': DavidPresets.clip_vit_b16_cantor,
             'clip_vit_l14': DavidPresets.clip_vit_l14,
+            'clip_vit_l14_geometric': DavidPresets.clip_vit_l14_geometric,
+            'clip_vit_l14_cantor': DavidPresets.clip_vit_l14_cantor,
             'clip_vit_l14_deep': DavidPresets.clip_vit_l14_deep,
+            'clip_vit_l14_deep_cantor': DavidPresets.clip_vit_l14_deep_cantor,
             'clip_vit_l14_very_deep': DavidPresets.clip_vit_l14_very_deep,
             'clip_vit_l14_ultra_deep': DavidPresets.clip_vit_l14_ultra_deep,
             'clip_vit_h14': DavidPresets.clip_vit_h14,
+            'clip_vit_h14_geometric': DavidPresets.clip_vit_h14_geometric,
             'clip_vit_bigg14': DavidPresets.clip_vit_bigG,
+            'clip_vit_bigg14_cantor': DavidPresets.clip_vit_bigG_cantor,
         }
         if name not in presets:
             raise ValueError(
@@ -424,15 +625,24 @@ class DavidPresets:
             'small_fast',
             'balanced',
             'high_accuracy',
+            'geometric_fusion',
+            'cantor_routing',
             'hierarchical_refinement',
             'gated_expert_team',
             'clip_vit_b16',
+            'clip_vit_b16_geometric',
+            'clip_vit_b16_cantor',
             'clip_vit_l14',
+            'clip_vit_l14_geometric',
+            'clip_vit_l14_cantor',
             'clip_vit_l14_deep',
+            'clip_vit_l14_deep_cantor',
             'clip_vit_l14_very_deep',
             'clip_vit_l14_ultra_deep',
-            'clip_vit_bigg14',
             'clip_vit_h14',
+            'clip_vit_h14_geometric',
+            'clip_vit_bigg14',
+            'clip_vit_bigg14_cantor',
         ]
 
 
@@ -441,6 +651,45 @@ class DavidPresets:
 # ============================================================================
 
 if __name__ == "__main__":
+    print("="*80)
+    print("David Configuration System")
+    print("="*80)
+
+    # Example 1: List presets
+    print("\n[1] Available Presets:")
+    for preset_name in DavidPresets.list_presets():
+        config = DavidPresets.get_preset(preset_name)
+        print(f"  • {preset_name:35s} - {len(config.scales)} scales, {config.fusion_mode}")
+
+    # Example 2: Get geometric preset
+    print("\n[2] Geometric Fusion Preset:")
+    config = DavidPresets.get_preset('geometric_fusion')
+    print(f"  {config}")
+    print(f"  Geometric heads: {config.geometric_num_heads}")
+    print(f"  Use Cayley: {config.geometric_use_cayley}")
+
+    # Example 3: Get Cantor preset
+    print("\n[3] Cantor Routing Preset:")
+    config = DavidPresets.get_preset('cantor_routing')
+    print(f"  {config}")
+    print(f"  Cantor depth: {config.cantor_depth}")
+    print(f"  Local window: {config.cantor_local_window}")
+
+    # Example 4: Custom config with new modes
+    print("\n[4] Custom Geometric Configuration:")
+    custom = DavidArchitectureConfig(
+        name="my_geometric",
+        feature_dim=512,
+        num_classes=100,
+        scales=[128, 256, 512, 768],
+        fusion_mode="geometric_attention",
+        geometric_num_heads=8,
+        geometric_use_cayley=True,
+        geometric_use_angular=True,
+    )
+    print(f"  {custom}")
+
+    print("\n" + "="*80)
     print("="*80)
     print("David Configuration System")
     print("="*80)
@@ -485,3 +734,5 @@ if __name__ == "__main__":
     os.unlink(path)
 
     print("\n" + "="*80)
+    print("Config path cleaned up and temporary file deleted.")
+    print("All tests completed successfully.")

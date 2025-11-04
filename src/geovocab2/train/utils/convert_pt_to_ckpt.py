@@ -11,8 +11,8 @@ from diffusers import StableDiffusionPipeline
 # ========================================================================
 # CONFIG
 # ========================================================================
-PT_PATH = r"E:/sd15/sd15_flowmatch_david_weighted_2_e15.pt"
-OUTPUT_PATH = r"I:\AIImageGen\AUTOMATIC1111\stable-diffusion-webui\models\Stable-diffusion\sd1\sd15_flowmatch_david_weighted_2_e15_COMFYUI.safetensors"
+PT_PATH = r"E:/sd15/sd15_flowmatch_david_weighted_2_e34.pt"
+OUTPUT_PATH = r"I:\AIImageGen\AUTOMATIC1111\stable-diffusion-webui\models\Stable-diffusion\sd1\sd15_flowmatch_david_weighted_2_e34_COMFYUI.safetensors"
 BASE_MODEL = "runwayml/stable-diffusion-v1-5"
 USE_FP16 = True
 # ========================================================================
