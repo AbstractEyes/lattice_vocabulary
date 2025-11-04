@@ -666,6 +666,7 @@ class DavidPresets:
             'clip_vit_h14_geometric': DavidPresets.clip_vit_h14_geometric,
             'clip_vit_bigg14': DavidPresets.clip_vit_bigG,
             'clip_vit_bigg14_cantor': DavidPresets.clip_vit_bigG_cantor,
+            'clip_vit_bigg14_cantor_decoupled': DavidPresets.clip_vit_bigG_cantor_decoupled,
         }
         if name not in presets:
             raise ValueError(
