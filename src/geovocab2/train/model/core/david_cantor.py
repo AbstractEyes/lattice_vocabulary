@@ -686,24 +686,23 @@ class DeepEfficiencyGating(nn.Module):
 class GeometricAttentionGate(nn.Module):
     """
     Geometric attention gate using pentachoron-inspired multi-scale fusion.
-
-    Uses geometric relationships (angles, volumes, edge lengths) between
-    scale representations to compute attention weights.
     """
 
     def __init__(
-        self,
-        feature_dim: int,
-        num_scales: int = 5,
-        num_heads: int = 4,
-        use_cayley_attention: bool = True,
-        use_angular_attention: bool = True,
-        temperature: float = 0.07,
-        dropout: float = 0.1,
-        scale_dim_aware: bool = True
+            self,
+            feature_dim: int,
+            num_scales: int = 5,
+            scales: Optional[List[int]] = None,  # ✓ ADDED: actual scale dimensions
+            num_heads: int = 4,
+            use_cayley_attention: bool = True,
+            use_angular_attention: bool = True,
+            temperature: float = 0.07,
+            dropout: float = 0.1,
+            scale_dim_aware: bool = True
     ):
         super().__init__()
         self.num_scales = num_scales
+        self.scales = scales  # ✓ Store actual scale dimensions
         self.num_heads = num_heads
         self.head_dim = feature_dim // num_heads
         self.use_cayley = use_cayley_attention
@@ -716,12 +715,17 @@ class GeometricAttentionGate(nn.Module):
         self.k_proj = nn.Linear(feature_dim, feature_dim)
         self.v_proj = nn.Linear(feature_dim, feature_dim)
 
-        # Scale-specific geometric embeddings
-        self.scale_embeddings = nn.Parameter(
-            torch.randn(num_scales, feature_dim) * 0.02
-        )
+        # ✓ FIXED: Scale-specific geometric embeddings (one per scale)
+        # Each embedding matches its scale's dimension
+        if scales is not None:
+            self.scale_embeddings = nn.ParameterList([
+                nn.Parameter(torch.randn(scale) * 0.02)
+                for scale in scales
+            ])
+        else:
+            self.scale_embeddings = None
 
-        # Pentachoron role weights (if using geometric attention)
+        # Pentachoron role weights
         if use_angular:
             role_weights = torch.tensor([1.0, -0.75, 0.75, 0.75, -0.75])
             self.register_buffer("role_weights", role_weights)
@@ -740,13 +744,11 @@ class GeometricAttentionGate(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _compute_geometric_attention(
-        self,
-        features: torch.Tensor,
-        scale_features: List[torch.Tensor]
+            self,
+            features: torch.Tensor,
+            scale_features: List[torch.Tensor]
     ) -> torch.Tensor:
         """Compute attention based on geometric relationships."""
-        B = features.shape[0]
-
         features_norm = F.normalize(features, dim=-1)
 
         geometric_scores = []
@@ -764,17 +766,14 @@ class GeometricAttentionGate(nn.Module):
         return attention
 
     def _compute_cayley_attention(
-        self,
-        features: torch.Tensor,
-        scale_features: List[torch.Tensor]
+            self,
+            features: torch.Tensor,
+            scale_features: List[torch.Tensor]
     ) -> torch.Tensor:
         """Compute attention based on Cayley-Menger volumes."""
-        B = features.shape[0]
-
         volume_scores = []
 
         for scale_feat in scale_features:
-            # Create pseudo-simplex: feature + 4 projections of scale_feat
             points = [features, scale_feat]
 
             for j in range(3):
@@ -783,7 +782,6 @@ class GeometricAttentionGate(nn.Module):
                 points.append(rot_feat)
 
             simplex = torch.stack(points, dim=1)
-
             diff = simplex.unsqueeze(2) - simplex.unsqueeze(1)
             distsq = (diff * diff).sum(dim=-1)
 
@@ -796,9 +794,9 @@ class GeometricAttentionGate(nn.Module):
         return attention
 
     def _compute_multihead_attention(
-        self,
-        features: torch.Tensor,
-        scale_features: List[torch.Tensor]
+            self,
+            features: torch.Tensor,
+            scale_features: List[torch.Tensor]
     ) -> torch.Tensor:
         """Standard multi-head attention over scales."""
         B = features.shape[0]
@@ -808,7 +806,11 @@ class GeometricAttentionGate(nn.Module):
 
         K_list, V_list = [], []
         for i, scale_feat in enumerate(scale_features):
-            scale_feat_emb = scale_feat + self.scale_embeddings[i]
+            # ✓ FIXED: Add embedding if available and dimensions match
+            if self.scale_embeddings is not None:
+                scale_feat_emb = scale_feat + self.scale_embeddings[i]
+            else:
+                scale_feat_emb = scale_feat
 
             K = self.k_proj(scale_feat_emb).view(B, self.num_heads, self.head_dim)
             V = self.v_proj(scale_feat_emb).view(B, self.num_heads, self.head_dim)
@@ -828,16 +830,16 @@ class GeometricAttentionGate(nn.Module):
         return attn_avg
 
     def forward(
-        self,
-        features: torch.Tensor,
-        logits_list: List[torch.Tensor],
-        scale_features: Optional[List[torch.Tensor]] = None
+            self,
+            features: torch.Tensor,
+            logits_list: List[torch.Tensor],
+            scale_features: Optional[List[torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             features: Base features [B, D]
             logits_list: List of scale logits [B, num_classes]
-            scale_features: Optional list of scale-specific features
+            scale_features: Optional list of scale-specific features [B, D_scale]
 
         Returns:
             combined_logits, attention_weights
@@ -871,10 +873,9 @@ class GeometricAttentionGate(nn.Module):
         )
 
         # Optional: Apply scale-dimensional awareness
-        if self.scale_dim_aware and hasattr(self, 'scale_embeddings'):
+        if self.scale_dim_aware and self.scales is not None:
             scale_dims = torch.tensor(
-                [feat.shape[-1] if len(feat.shape) > 1 else features.shape[-1]
-                 for feat in scale_features],
+                self.scales,
                 device=features.device, dtype=torch.float32
             )
             dim_weights = scale_dims / scale_dims.sum()
@@ -886,7 +887,7 @@ class GeometricAttentionGate(nn.Module):
         # Apply attention to logits
         combined_logits = torch.zeros_like(logits_list[0])
         for i, logits in enumerate(logits_list):
-            combined_logits += combined_attention[:, i:i+1] * logits
+            combined_logits += combined_attention[:, i:i + 1] * logits
 
         return combined_logits, combined_attention
 
@@ -894,24 +895,18 @@ class GeometricAttentionGate(nn.Module):
 class CantorScaleFusion(nn.Module):
     """
     Cantor-based multi-scale fusion using fractal geometry for scale routing.
-
-    Adapts CantorAttention's global routing for the multi-scale fusion problem.
-    Instead of routing over sequence positions, routes over scale dimensions.
-
-    Key idea: Map each scale to a Cantor coordinate, then use fractal distance
-    to determine which scales should be attended together for each sample.
     """
 
     def __init__(
-        self,
-        feature_dim: int,
-        scales: List[int],
-        num_heads: int = 4,
-        cantor_depth: int = 8,
-        local_window: int = 3,  # How many scales to attend to
-        temperature: float = 0.07,
-        dropout: float = 0.1,
-        use_scale_embeddings: bool = True
+            self,
+            feature_dim: int,
+            scales: List[int],
+            num_heads: int = 4,
+            cantor_depth: int = 8,
+            local_window: int = 3,
+            temperature: float = 0.07,
+            dropout: float = 0.1,
+            use_scale_embeddings: bool = True
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -928,13 +923,14 @@ class CantorScaleFusion(nn.Module):
         self.k_proj = nn.Linear(feature_dim, feature_dim)
         self.v_proj = nn.Linear(feature_dim, feature_dim)
 
-        # Scale embeddings (geometric properties of each scale)
+        # ✓ FIXED: Scale embeddings (one per scale, matching each scale's dimension)
         if use_scale_embeddings:
-            self.scale_embeddings = nn.Parameter(
-                torch.randn(self.num_scales, feature_dim) * 0.02
-            )
+            self.scale_embeddings = nn.ParameterList([
+                nn.Parameter(torch.randn(scale) * 0.02)
+                for scale in scales
+            ])
         else:
-            self.register_parameter('scale_embeddings', None)
+            self.scale_embeddings = None
 
         # Pre-compute Cantor coordinates for scales
         self.register_buffer(
@@ -942,7 +938,7 @@ class CantorScaleFusion(nn.Module):
             self._compute_scale_cantor_coordinates()
         )
 
-        # Pre-compute scale routing (which scales attend to which)
+        # Pre-compute scale routing
         self.register_buffer(
             'scale_routes',
             self._build_scale_routes()
@@ -952,7 +948,7 @@ class CantorScaleFusion(nn.Module):
         self.out_proj = nn.Linear(feature_dim, feature_dim)
         self.dropout = nn.Dropout(dropout)
 
-        # Gate network (decides final scale weights)
+        # Gate network
         self.gate_net = nn.Sequential(
             nn.Linear(feature_dim, feature_dim // 2),
             nn.LayerNorm(feature_dim // 2),
@@ -982,12 +978,7 @@ class CantorScaleFusion(nn.Module):
         return cantor_val
 
     def _compute_scale_cantor_coordinates(self) -> torch.Tensor:
-        """
-        Map each scale to a Cantor coordinate based on its dimensionality.
-
-        Larger scales get spread out in Cantor space, creating natural
-        hierarchical groupings.
-        """
+        """Map each scale to a Cantor coordinate."""
         coords = torch.tensor([
             self._cantor_coordinate(i, self.num_scales, self.cantor_depth)
             for i in range(self.num_scales)
@@ -996,55 +987,29 @@ class CantorScaleFusion(nn.Module):
         return coords
 
     def _build_scale_routes(self) -> torch.Tensor:
-        """
-        Build routing table: which scales should attend to which.
-
-        Returns: [num_scales, local_window] - neighbor indices for each scale
-        """
+        """Build routing table: which scales attend to which."""
         routes = torch.zeros(self.num_scales, self.local_window, dtype=torch.long)
 
         for i in range(self.num_scales):
-            # Compute distances in Cantor space
             distances = torch.abs(self.scale_cantor_coords - self.scale_cantor_coords[i])
-
-            # Find k nearest scales (including self)
             _, nearest = torch.topk(distances, self.local_window, largest=False)
             routes[i] = nearest
 
         return routes
 
     def _sparse_scale_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Sparse attention over scales using Cantor routing.
-
-        Args:
-            q: [B, num_heads, 1, head_dim] - query from base features
-            k: [B, num_heads, num_scales, head_dim] - keys from scale features
-            v: [B, num_heads, num_scales, head_dim] - values from scale features
-
-        Returns:
-            [B, num_heads, num_scales] - attention weights for each scale
-        """
+        """Sparse attention over scales using Cantor routing."""
         B, H, _, D = q.shape
         device = q.device
 
-        # For each scale, gather its neighbors
-        routes = self.scale_routes.to(device)  # [num_scales, local_window]
-
-        # Expand for batch and heads
+        routes = self.scale_routes.to(device)
         routes_exp = routes.unsqueeze(0).unsqueeze(0).expand(B, H, -1, -1)
 
-        # Gather neighboring keys and values for each scale
-        # k: [B, H, num_scales, D]
-        # routes_exp: [B, H, num_scales, local_window]
-        # Result: [B, H, num_scales, local_window, D]
-
-        # Create indices for gathering
         batch_idx = torch.arange(B, device=device).view(-1, 1, 1, 1)
         head_idx = torch.arange(H, device=device).view(1, -1, 1, 1)
 
@@ -1054,32 +1019,24 @@ class CantorScaleFusion(nn.Module):
         k_gathered = k[batch_idx, head_idx, routes_exp, :]
         v_gathered = v[batch_idx, head_idx, routes_exp, :]
 
-        # Compute attention scores for each scale with its neighbors
-        # q: [B, H, 1, D] -> broadcast to [B, H, num_scales, D]
         q_exp = q.expand(-1, -1, self.num_scales, -1)
 
-        # Scores: [B, H, num_scales, local_window]
         scores = torch.einsum('bhsd,bhskd->bhsk', q_exp, k_gathered) / math.sqrt(D)
 
-        # Softmax over neighbors
         attn_weights_sparse = F.softmax(scores / self.temperature.abs(), dim=-1)
         attn_weights_sparse = self.dropout(attn_weights_sparse)
 
-        # Apply to values: [B, H, num_scales, local_window] @ [B, H, num_scales, local_window, D]
-        # Result: [B, H, num_scales, D]
         output = torch.einsum('bhsk,bhskd->bhsd', attn_weights_sparse, v_gathered)
 
-        # Compute final scale weights by pooling over heads and dims
-        # This gives us [B, num_scales] weights
-        scale_importance = output.norm(dim=-1).mean(dim=1)  # [B, num_scales]
+        scale_importance = output.norm(dim=-1).mean(dim=1)
 
         return scale_importance
 
     def forward(
-        self,
-        features: torch.Tensor,
-        logits_list: List[torch.Tensor],
-        scale_features: Optional[List[torch.Tensor]] = None
+            self,
+            features: torch.Tensor,
+            logits_list: List[torch.Tensor],
+            scale_features: Optional[List[torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass.
@@ -1090,17 +1047,15 @@ class CantorScaleFusion(nn.Module):
             scale_features: Optional list of scale-specific features [B, D_i]
 
         Returns:
-            combined_logits: [B, num_classes]
-            attention_weights: [B, num_scales]
+            combined_logits, attention_weights
         """
         B = features.shape[0]
         device = features.device
 
-        # If no scale features provided, use base features
         if scale_features is None:
             scale_features = [features] * self.num_scales
 
-        # Add scale embeddings if available
+        # ✓ FIXED: Add scale embeddings properly
         if self.scale_embeddings is not None:
             scale_features = [
                 feat + self.scale_embeddings[i]
@@ -1108,10 +1063,8 @@ class CantorScaleFusion(nn.Module):
             ]
 
         # Project to Q, K, V
-        # Q from base features (what am I looking for?)
         Q = self.q_proj(features).view(B, self.num_heads, 1, self.head_dim)
 
-        # K, V from each scale (what does each scale offer?)
         K_list, V_list = [], []
         for scale_feat in scale_features:
             K = self.k_proj(scale_feat).view(B, self.num_heads, 1, self.head_dim)
@@ -1119,21 +1072,20 @@ class CantorScaleFusion(nn.Module):
             K_list.append(K)
             V_list.append(V)
 
-        K = torch.cat(K_list, dim=2)  # [B, H, num_scales, D]
-        V = torch.cat(V_list, dim=2)  # [B, H, num_scales, D]
+        K = torch.cat(K_list, dim=2)
+        V = torch.cat(V_list, dim=2)
 
         # Sparse attention using Cantor routing
         scale_importance = self._sparse_scale_attention(Q, K, V)
 
         # Combine with learned gating
-        gate_logits = self.gate_net(features)  # [B, num_scales]
+        gate_logits = self.gate_net(features)
 
-        # Combine geometric routing with learned gating
-        # 70% from Cantor routing, 30% from learned gate
+        # 70% Cantor routing, 30% learned gate
         alpha = 0.7
         combined_scores = (
-            alpha * scale_importance +
-            (1 - alpha) * gate_logits
+                alpha * scale_importance +
+                (1 - alpha) * gate_logits
         )
 
         # Final attention weights
@@ -1142,7 +1094,7 @@ class CantorScaleFusion(nn.Module):
         # Apply to logits
         combined_logits = torch.zeros_like(logits_list[0])
         for i, logits in enumerate(logits_list):
-            combined_logits += attention_weights[:, i:i+1] * logits
+            combined_logits += attention_weights[:, i:i + 1] * logits
 
         return combined_logits, attention_weights
 
@@ -1295,9 +1247,9 @@ class David(nn.Module):
                            ))
 
     def _build_fusion(self, shared_feature_dim: int, temperature: float,
-                     dropout: float, tree_depth: int, num_experts: int,
-                     compression_ratio: int, expert_dropout: float,
-                     attention_dropout: float):
+                      dropout: float, tree_depth: int, num_experts: int,
+                      compression_ratio: int, expert_dropout: float,
+                      attention_dropout: float):
         """Build fusion strategy."""
 
         fusion_input_dim = (
@@ -1332,6 +1284,7 @@ class David(nn.Module):
             self.fusion = GeometricAttentionGate(
                 fusion_input_dim,
                 len(self.scales),
+                scales=self.scales,  # ✓ ADDED: Pass actual scale dimensions
                 num_heads=4,
                 use_cayley_attention=True,
                 use_angular_attention=True,
@@ -1342,7 +1295,7 @@ class David(nn.Module):
         elif self.fusion_mode == FusionMode.CANTOR_SCALE:
             self.fusion = CantorScaleFusion(
                 fusion_input_dim,
-                self.scales,
+                self.scales,  # ✓ Already passing scales
                 num_heads=4,
                 cantor_depth=8,
                 local_window=3,
@@ -1358,6 +1311,7 @@ class David(nn.Module):
         elif self.fusion_mode == FusionMode.PROGRESSIVE:
             weights = torch.tensor([0.1, 0.15, 0.25, 0.25, 0.25])
             self.register_buffer("progressive_weights", weights[:len(self.scales)])
+
 
     def _should_use_scale(self, scale: int) -> bool:
         """Check if scale should be active."""
