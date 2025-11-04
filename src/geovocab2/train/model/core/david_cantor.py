@@ -683,216 +683,6 @@ class DeepEfficiencyGating(nn.Module):
         return combined, sparse_gates
 
 
-class GeometricAttentionGate(nn.Module):
-    """
-    Geometric attention gate using pentachoron-inspired multi-scale fusion.
-    """
-
-    def __init__(
-            self,
-            feature_dim: int,
-            num_scales: int = 5,
-            scales: Optional[List[int]] = None,  # ✓ ADDED: actual scale dimensions
-            num_heads: int = 4,
-            use_cayley_attention: bool = True,
-            use_angular_attention: bool = True,
-            temperature: float = 0.07,
-            dropout: float = 0.1,
-            scale_dim_aware: bool = True
-    ):
-        super().__init__()
-        self.num_scales = num_scales
-        self.scales = scales  # ✓ Store actual scale dimensions
-        self.num_heads = num_heads
-        self.head_dim = feature_dim // num_heads
-        self.use_cayley = use_cayley_attention
-        self.use_angular = use_angular_attention
-        self.temperature = nn.Parameter(torch.tensor(temperature))
-        self.scale_dim_aware = scale_dim_aware
-        self.use_angular = use_angular_attention
-
-        # Query/Key/Value projections for multi-head attention
-        self.q_proj = nn.Linear(feature_dim, feature_dim)
-        self.k_proj = nn.Linear(feature_dim, feature_dim)
-        self.v_proj = nn.Linear(feature_dim, feature_dim)
-
-        # ✓ FIXED: Scale-specific geometric embeddings (one per scale)
-        # Each embedding matches its scale's dimension
-        if scales is not None:
-            self.scale_embeddings = nn.ParameterList([
-                nn.Parameter(torch.randn(scale) * 0.02)
-                for scale in scales
-            ])
-        else:
-            self.scale_embeddings = None
-
-        # Pentachoron role weights
-        if self.use_angular:
-            role_weights = torch.tensor([1.0, -0.75, 0.75, 0.75, -0.75])
-            self.register_buffer("role_weights", role_weights)
-
-        # Output projection and gating
-        self.out_proj = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.LayerNorm(feature_dim),
-            nn.GELU(),
-            nn.Dropout(dropout)
-        )
-
-        # Learnable combination weights for different attention types
-        self.attention_weights = nn.Parameter(torch.ones(3) / 3)
-
-        self.dropout = nn.Dropout(dropout)
-
-    def _compute_geometric_attention(
-            self,
-            features: torch.Tensor,
-            scale_features: List[torch.Tensor]
-    ) -> torch.Tensor:
-        """Compute attention based on geometric relationships."""
-        features_norm = F.normalize(features, dim=-1)
-
-        geometric_scores = []
-        for i, scale_feat in enumerate(scale_features):
-            scale_feat_norm = F.normalize(scale_feat, dim=-1)
-
-            cos_sim = (features_norm * scale_feat_norm).sum(dim=-1, keepdim=True)
-            angles = torch.acos(cos_sim.clamp(-1 + 1e-7, 1 - 1e-7))
-
-            geometric_scores.append(angles)
-
-        angles_stack = torch.cat(geometric_scores, dim=1)
-        attention = torch.exp(-angles_stack / self.temperature.abs())
-
-        return attention
-
-    def _compute_cayley_attention(
-            self,
-            features: torch.Tensor,
-            scale_features: List[torch.Tensor]
-    ) -> torch.Tensor:
-        """Compute attention based on Cayley-Menger volumes."""
-        volume_scores = []
-
-        for scale_feat in scale_features:
-            points = [features, scale_feat]
-
-            for j in range(3):
-                angle = (j + 1) * math.pi / 4
-                rot_feat = features * math.cos(angle) + scale_feat * math.sin(angle)
-                points.append(rot_feat)
-
-            simplex = torch.stack(points, dim=1)
-            diff = simplex.unsqueeze(2) - simplex.unsqueeze(1)
-            distsq = (diff * diff).sum(dim=-1)
-
-            volume_proxy = distsq.mean(dim=(1, 2))
-            volume_scores.append(volume_proxy.unsqueeze(1))
-
-        volumes = torch.cat(volume_scores, dim=1)
-        attention = F.softmax(volumes / self.temperature.abs(), dim=-1)
-
-        return attention
-
-    def _compute_multihead_attention(
-            self,
-            features: torch.Tensor,
-            scale_features: List[torch.Tensor]
-    ) -> torch.Tensor:
-        """Standard multi-head attention over scales."""
-        B = features.shape[0]
-
-        Q = self.q_proj(features)
-        Q = Q.view(B, self.num_heads, self.head_dim)
-
-        K_list, V_list = [], []
-        for i, scale_feat in enumerate(scale_features):
-            # ✓ FIXED: Add embedding if available and dimensions match
-            if self.scale_embeddings is not None:
-                scale_feat_emb = scale_feat + self.scale_embeddings[i]
-            else:
-                scale_feat_emb = scale_feat
-
-            K = self.k_proj(scale_feat_emb).view(B, self.num_heads, self.head_dim)
-            V = self.v_proj(scale_feat_emb).view(B, self.num_heads, self.head_dim)
-
-            K_list.append(K.unsqueeze(2))
-            V_list.append(V.unsqueeze(2))
-
-        K = torch.cat(K_list, dim=2)
-        V = torch.cat(V_list, dim=2)
-
-        scores = torch.einsum('bhd,bhsd->bhs', Q, K) / math.sqrt(self.head_dim)
-        attn = F.softmax(scores / self.temperature.abs(), dim=-1)
-        attn = self.dropout(attn)
-
-        attn_avg = attn.mean(dim=1)
-
-        return attn_avg
-
-    def forward(
-            self,
-            features: torch.Tensor,
-            logits_list: List[torch.Tensor],
-            scale_features: Optional[List[torch.Tensor]] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            features: Base features [B, D]
-            logits_list: List of scale logits [B, num_classes]
-            scale_features: Optional list of scale-specific features [B, D_scale]
-
-        Returns:
-            combined_logits, attention_weights
-        """
-        B = features.shape[0]
-
-        if scale_features is None:
-            scale_features = [features] * len(logits_list)
-
-        attention_types = []
-
-        # 1. Standard multi-head attention
-        mha_attention = self._compute_multihead_attention(features, scale_features)
-        attention_types.append(mha_attention)
-
-        # 2. Geometric attention
-        if self.use_angular:
-            geo_attention = self._compute_geometric_attention(features, scale_features)
-            geo_attention = F.softmax(geo_attention, dim=-1)
-            attention_types.append(geo_attention)
-
-        # 3. Cayley-Menger volume attention
-        if self.use_cayley:
-            cayley_attention = self._compute_cayley_attention(features, scale_features)
-            attention_types.append(cayley_attention)
-
-        # Combine attention types with learnable weights
-        attn_weights = F.softmax(self.attention_weights[:len(attention_types)], dim=0)
-        combined_attention = sum(
-            w * attn for w, attn in zip(attn_weights, attention_types)
-        )
-
-        # Optional: Apply scale-dimensional awareness
-        if self.scale_dim_aware and self.scales is not None:
-            scale_dims = torch.tensor(
-                self.scales,
-                device=features.device, dtype=torch.float32
-            )
-            dim_weights = scale_dims / scale_dims.sum()
-            combined_attention = combined_attention * dim_weights.unsqueeze(0)
-
-        # Normalize
-        combined_attention = combined_attention / combined_attention.sum(dim=-1, keepdim=True)
-
-        # Apply attention to logits
-        combined_logits = torch.zeros_like(logits_list[0])
-        for i, logits in enumerate(logits_list):
-            combined_logits += combined_attention[:, i:i + 1] * logits
-
-        return combined_logits, combined_attention
-
-
 class CantorScaleFusion(nn.Module):
     """
     Cantor-based multi-scale fusion using fractal geometry for scale routing.
@@ -919,17 +709,22 @@ class CantorScaleFusion(nn.Module):
         self.local_window = min(local_window, self.num_scales)
         self.temperature = nn.Parameter(torch.tensor(temperature))
 
-        # QKV projections
+        # ✓ FIXED: Per-scale projections to handle different input dimensions
+        self.scale_to_common = nn.ModuleList([
+            nn.Linear(scale, feature_dim)
+            for scale in scales
+        ])
+
+        # QKV projections (now all work on feature_dim)
         self.q_proj = nn.Linear(feature_dim, feature_dim)
         self.k_proj = nn.Linear(feature_dim, feature_dim)
         self.v_proj = nn.Linear(feature_dim, feature_dim)
 
-        # ✓ FIXED: Scale embeddings (one per scale, matching each scale's dimension)
+        # Scale embeddings (optional, now in common space)
         if use_scale_embeddings:
-            self.scale_embeddings = nn.ParameterList([
-                nn.Parameter(torch.randn(scale) * 0.02)
-                for scale in scales
-            ])
+            self.scale_embeddings = nn.Parameter(
+                torch.randn(self.num_scales, feature_dim) * 0.02
+            )
         else:
             self.scale_embeddings = None
 
@@ -1043,9 +838,9 @@ class CantorScaleFusion(nn.Module):
         Forward pass.
 
         Args:
-            features: Base features [B, D]
+            features: Base features [B, feature_dim]
             logits_list: List of scale logits, each [B, num_classes]
-            scale_features: Optional list of scale-specific features [B, D_i]
+            scale_features: List of scale-specific features [B, scale_i]
 
         Returns:
             combined_logits, attention_weights
@@ -1056,25 +851,31 @@ class CantorScaleFusion(nn.Module):
         if scale_features is None:
             scale_features = [features] * self.num_scales
 
-        # ✓ FIXED: Add scale embeddings properly
+        # ✓ FIXED: Project each scale to common dimension first
+        scale_features_common = [
+            self.scale_to_common[i](feat)
+            for i, feat in enumerate(scale_features)
+        ]
+
+        # Add scale embeddings (now all in common space)
         if self.scale_embeddings is not None:
-            scale_features = [
+            scale_features_common = [
                 feat + self.scale_embeddings[i]
-                for i, feat in enumerate(scale_features)
+                for i, feat in enumerate(scale_features_common)
             ]
 
-        # Project to Q, K, V
+        # Project to Q, K, V (now all same dimension)
         Q = self.q_proj(features).view(B, self.num_heads, 1, self.head_dim)
 
         K_list, V_list = [], []
-        for scale_feat in scale_features:
+        for scale_feat in scale_features_common:
             K = self.k_proj(scale_feat).view(B, self.num_heads, 1, self.head_dim)
             V = self.v_proj(scale_feat).view(B, self.num_heads, 1, self.head_dim)
             K_list.append(K)
             V_list.append(V)
 
-        K = torch.cat(K_list, dim=2)
-        V = torch.cat(V_list, dim=2)
+        K = torch.cat(K_list, dim=2)  # [B, H, num_scales, D]
+        V = torch.cat(V_list, dim=2)  # [B, H, num_scales, D]
 
         # Sparse attention using Cantor routing
         scale_importance = self._sparse_scale_attention(Q, K, V)
@@ -1098,6 +899,223 @@ class CantorScaleFusion(nn.Module):
             combined_logits += attention_weights[:, i:i + 1] * logits
 
         return combined_logits, attention_weights
+
+
+class GeometricAttentionGate(nn.Module):
+    """
+    Geometric attention gate using pentachoron-inspired multi-scale fusion.
+    """
+
+    def __init__(
+            self,
+            feature_dim: int,
+            num_scales: int = 5,
+            scales: Optional[List[int]] = None,
+            num_heads: int = 4,
+            use_cayley_attention: bool = True,
+            use_angular_attention: bool = True,
+            temperature: float = 0.07,
+            dropout: float = 0.1,
+            scale_dim_aware: bool = True
+    ):
+        super().__init__()
+        self.num_scales = num_scales
+        self.scales = scales
+        self.num_heads = num_heads
+        self.head_dim = feature_dim // num_heads
+        self.use_cayley = use_cayley_attention
+        self.use_angular = use_angular_attention
+        self.temperature = nn.Parameter(torch.tensor(temperature))
+        self.scale_dim_aware = scale_dim_aware
+
+        # ✓ FIXED: Per-scale projections to common dimension
+        if scales is not None:
+            self.scale_to_common = nn.ModuleList([
+                nn.Linear(scale, feature_dim)
+                for scale in scales
+            ])
+        else:
+            self.scale_to_common = None
+
+        # Query/Key/Value projections (now all work on feature_dim)
+        self.q_proj = nn.Linear(feature_dim, feature_dim)
+        self.k_proj = nn.Linear(feature_dim, feature_dim)
+        self.v_proj = nn.Linear(feature_dim, feature_dim)
+
+        # Scale embeddings (now in common space)
+        self.scale_embeddings = nn.Parameter(
+            torch.randn(num_scales, feature_dim) * 0.02
+        )
+
+        # Pentachoron role weights
+        if self.use_angular:
+            role_weights = torch.tensor([1.0, -0.75, 0.75, 0.75, -0.75])
+            self.register_buffer("role_weights", role_weights)
+
+        # Output projection and gating
+        self.out_proj = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.LayerNorm(feature_dim),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+
+        # Learnable combination weights for different attention types
+        self.attention_weights = nn.Parameter(torch.ones(3) / 3)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def _compute_geometric_attention(
+            self,
+            features: torch.Tensor,
+            scale_features: List[torch.Tensor]
+    ) -> torch.Tensor:
+        """Compute attention based on geometric relationships."""
+        features_norm = F.normalize(features, dim=-1)
+
+        geometric_scores = []
+        for i, scale_feat in enumerate(scale_features):
+            scale_feat_norm = F.normalize(scale_feat, dim=-1)
+
+            cos_sim = (features_norm * scale_feat_norm).sum(dim=-1, keepdim=True)
+            angles = torch.acos(cos_sim.clamp(-1 + 1e-7, 1 - 1e-7))
+
+            geometric_scores.append(angles)
+
+        angles_stack = torch.cat(geometric_scores, dim=1)
+        attention = torch.exp(-angles_stack / self.temperature.abs())
+
+        return attention
+
+    def _compute_cayley_attention(
+            self,
+            features: torch.Tensor,
+            scale_features: List[torch.Tensor]
+    ) -> torch.Tensor:
+        """Compute attention based on Cayley-Menger volumes."""
+        volume_scores = []
+
+        for scale_feat in scale_features:
+            points = [features, scale_feat]
+
+            for j in range(3):
+                angle = (j + 1) * math.pi / 4
+                rot_feat = features * math.cos(angle) + scale_feat * math.sin(angle)
+                points.append(rot_feat)
+
+            simplex = torch.stack(points, dim=1)
+            diff = simplex.unsqueeze(2) - simplex.unsqueeze(1)
+            distsq = (diff * diff).sum(dim=-1)
+
+            volume_proxy = distsq.mean(dim=(1, 2))
+            volume_scores.append(volume_proxy.unsqueeze(1))
+
+        volumes = torch.cat(volume_scores, dim=1)
+        attention = F.softmax(volumes / self.temperature.abs(), dim=-1)
+
+        return attention
+
+    def _compute_multihead_attention(
+            self,
+            features: torch.Tensor,
+            scale_features: List[torch.Tensor]
+    ) -> torch.Tensor:
+        """Standard multi-head attention over scales."""
+        B = features.shape[0]
+
+        Q = self.q_proj(features)
+        Q = Q.view(B, self.num_heads, self.head_dim)
+
+        K_list, V_list = [], []
+        for i, scale_feat in enumerate(scale_features):
+            # Add embedding
+            scale_feat_emb = scale_feat + self.scale_embeddings[i]
+
+            K = self.k_proj(scale_feat_emb).view(B, self.num_heads, self.head_dim)
+            V = self.v_proj(scale_feat_emb).view(B, self.num_heads, self.head_dim)
+
+            K_list.append(K.unsqueeze(2))
+            V_list.append(V.unsqueeze(2))
+
+        K = torch.cat(K_list, dim=2)
+        V = torch.cat(V_list, dim=2)
+
+        scores = torch.einsum('bhd,bhsd->bhs', Q, K) / math.sqrt(self.head_dim)
+        attn = F.softmax(scores / self.temperature.abs(), dim=-1)
+        attn = self.dropout(attn)
+
+        attn_avg = attn.mean(dim=1)
+
+        return attn_avg
+
+    def forward(
+            self,
+            features: torch.Tensor,
+            logits_list: List[torch.Tensor],
+            scale_features: Optional[List[torch.Tensor]] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            features: Base features [B, feature_dim]
+            logits_list: List of scale logits [B, num_classes]
+            scale_features: List of scale-specific features [B, scale_i]
+
+        Returns:
+            combined_logits, attention_weights
+        """
+        B = features.shape[0]
+
+        if scale_features is None:
+            scale_features = [features] * len(logits_list)
+
+        # ✓ FIXED: Project all scales to common dimension
+        if self.scale_to_common is not None:
+            scale_features = [
+                self.scale_to_common[i](feat)
+                for i, feat in enumerate(scale_features)
+            ]
+
+        attention_types = []
+
+        # 1. Standard multi-head attention
+        mha_attention = self._compute_multihead_attention(features, scale_features)
+        attention_types.append(mha_attention)
+
+        # 2. Geometric attention
+        if self.use_angular:
+            geo_attention = self._compute_geometric_attention(features, scale_features)
+            geo_attention = F.softmax(geo_attention, dim=-1)
+            attention_types.append(geo_attention)
+
+        # 3. Cayley-Menger volume attention
+        if self.use_cayley:
+            cayley_attention = self._compute_cayley_attention(features, scale_features)
+            attention_types.append(cayley_attention)
+
+        # Combine attention types with learnable weights
+        attn_weights = F.softmax(self.attention_weights[:len(attention_types)], dim=0)
+        combined_attention = sum(
+            w * attn for w, attn in zip(attn_weights, attention_types)
+        )
+
+        # Optional: Apply scale-dimensional awareness
+        if self.scale_dim_aware and self.scales is not None:
+            scale_dims = torch.tensor(
+                self.scales,
+                device=features.device, dtype=torch.float32
+            )
+            dim_weights = scale_dims / scale_dims.sum()
+            combined_attention = combined_attention * dim_weights.unsqueeze(0)
+
+        # Normalize
+        combined_attention = combined_attention / combined_attention.sum(dim=-1, keepdim=True)
+
+        # Apply attention to logits
+        combined_logits = torch.zeros_like(logits_list[0])
+        for i, logits in enumerate(logits_list):
+            combined_logits += combined_attention[:, i:i + 1] * logits
+
+        return combined_logits, combined_attention
 
 
 # ============================================================================
