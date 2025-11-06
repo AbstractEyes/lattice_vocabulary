@@ -35,7 +35,7 @@ from geovocab2.train.losses.cantor import create_vae_loss
 class TrainerConfig:
     """Training configuration."""
     # Model
-    model_dim: int = 512
+    model_dim: int = 768
     num_heads: int = 8
     num_blocks: int = 6
     seq_len: int = 77
@@ -128,7 +128,7 @@ class TextEmbeddingDataset(Dataset):
         ).to(self.device)
 
         clip_output = self.clip_model(**clip_tokens)
-        clip_embed = clip_output.last_hidden_state.squeeze(0)  # (77, 512)
+        clip_embed = clip_output.last_hidden_state.squeeze(0)  # (77, 768)
 
         # T5 embedding
         t5_tokens = self.t5_tokenizer(
@@ -140,7 +140,7 @@ class TextEmbeddingDataset(Dataset):
         ).to(self.device)
 
         t5_output = self.t5_model(**t5_tokens)
-        t5_embed = t5_output.last_hidden_state.squeeze(0)  # (77, 512)
+        t5_embed = t5_output.last_hidden_state.squeeze(0)  # (77, 768)
 
         return {
             'clip': clip_embed.cpu(),  # Move to CPU for batching
@@ -252,12 +252,12 @@ class CantorRelationalTrainer:
         print("Loading CLIP and T5 models...")
 
         # Load CLIP
-        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-        clip_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        clip_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
 
         # Load T5
-        t5_tokenizer = T5Tokenizer.from_pretrained("t5-small")
-        t5_model = T5EncoderModel.from_pretrained("t5-small")
+        t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
+        t5_model = T5EncoderModel.from_pretrained("t5-base")
 
         # Limit dataset if specified
         if self.config.max_samples:
@@ -297,8 +297,8 @@ class CantorRelationalTrainer:
         Returns:
             Dict of metrics
         """
-        clip_embed = batch['clip'].to(self.device)  # (batch, 77, 512)
-        t5_embed = batch['t5'].to(self.device)  # (batch, 77, 512)
+        clip_embed = batch['clip'].to(self.device)  # (batch, 77, 768)
+        t5_embed = batch['t5'].to(self.device)  # (batch, 77, 768)
 
         # Mixed precision training
         if self.scaler is not None:
