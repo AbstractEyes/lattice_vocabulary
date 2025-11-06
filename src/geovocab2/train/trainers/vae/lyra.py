@@ -1,913 +1,110 @@
-# geovocab2/train/trainers/vae_lyra/trainer.py
-
-"""
-Trainer for VAE Lyra - Multi-Modal Variational Autoencoder with HF Integration
-
-Install via:
-    !pip install git+https://github.com/AbstractPhil/geovocab2.git
-
-Usage:
-    from geovocab2.train.trainers.vae_lyra_trainer import (
-        VAELyraTrainer, VAELyraTrainerConfig
-    )
-"""
+# ============================================================================
+# VAE LYRA + SD1.5 INFERENCE - GEOMETRIC EMBEDDING TRANSFORMATION
+# ============================================================================
 
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
-from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5Tokenizer
-from huggingface_hub import HfApi, hf_hub_download, create_repo, upload_file
-from tqdm.auto import tqdm
-import wandb
-import os
-import json
-from pathlib import Path
-from typing import Optional, Dict, List, Tuple
-from dataclasses import dataclass, asdict
-import requests
-import random
-from collections import Counter
-import shutil
-
-from geovocab2.train.model.vae.vae_lyra import (
-    MultiModalVAE,
-    MultiModalVAEConfig,
-    MultiModalVAELoss,
-    SingleModalityVAE,
-    FusionStrategy
-)
-from geovocab2.data.prompt.symbolic_tree import SynthesisSystem
-
-
-@dataclass
-class VAELyraTrainerConfig:
-    """Training configuration for VAE Lyra."""
-
-    # Model architecture
-    modality_dims: Dict[str, int] = None  # {"clip": 768, "t5": 768}
-    latent_dim: int = 768
-    seq_len: int = 77
-    encoder_layers: int = 3
-    decoder_layers: int = 3
-    hidden_dim: int = 1024
-    dropout: float = 0.1
-
-    # Fusion
-    fusion_strategy: str = "cantor"  # cantor, geometric, concatenate, attention, gated
-    fusion_heads: int = 8
-    fusion_dropout: float = 0.1
-
-    # Loss weights
-    beta_kl: float = 0.1
-    beta_reconstruction: float = 1.0
-    beta_cross_modal: float = 0.05
-    recon_type: str = 'mse'  # 'mse' or 'cosine'
-
-    # KL annealing
-    use_kl_annealing: bool = True
-    kl_anneal_epochs: int = 10
-    kl_start_beta: float = 0.0
-
-    # Training hyperparameters
-    batch_size: int = 32
-    num_epochs: int = 100
-    learning_rate: float = 1e-4
-    weight_decay: float = 1e-5
-    gradient_clip: float = 1.0
-
-    # Scheduler
-    use_scheduler: bool = True
-    scheduler_type: str = 'cosine'  # 'cosine' or 'onecycle'
-
-    # Data
-    num_samples: int = 10000
-    synthetic_ratio: float = 0.15
-
-    # Checkpointing
-    checkpoint_dir: str = './checkpoints_lyra'
-    save_every: int = 1000
-    keep_last_n: int = 3
-
-    # HuggingFace Hub
-    hf_repo: str = "AbstractPhil/vae-lyra"
-    push_to_hub: bool = True
-    push_every: int = 2000  # Push to HF every N steps
-    auto_load_from_hub: bool = True  # Load latest model if no local checkpoint
-
-    # Logging
-    use_wandb: bool = True
-    wandb_project: str = 'vae-lyra'
-    wandb_entity: Optional[str] = None
-    log_every: int = 50
-
-    # Device
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    mixed_precision: bool = True
-
-    # Misc
-    seed: int = 42
-    num_workers: int = 0
-
-    def __post_init__(self):
-        if self.modality_dims is None:
-            self.modality_dims = {"clip": 768, "t5": 768}
-
-
-class TextEmbeddingDataset(Dataset):
-    """Dataset that generates CLIP and T5 embeddings on-the-fly."""
-
-    def __init__(
-            self,
-            texts: List[str],
-            clip_tokenizer: CLIPTokenizer,
-            clip_model: CLIPTextModel,
-            t5_tokenizer: T5Tokenizer,
-            t5_model: T5EncoderModel,
-            device: str = 'cuda',
-            max_length: int = 77
-    ):
-        self.texts = texts
-        self.clip_tokenizer = clip_tokenizer
-        self.clip_model = clip_model
-        self.t5_tokenizer = t5_tokenizer
-        self.t5_model = t5_model
-        self.device = device
-        self.max_length = max_length
-
-        self.clip_model.to(device).eval()
-        self.t5_model.to(device).eval()
-
-    def __len__(self):
-        return len(self.texts)
-
-    @torch.no_grad()
-    def __getitem__(self, idx):
-        text = self.texts[idx]
-
-        # CLIP embedding
-        clip_tokens = self.clip_tokenizer(
-            text,
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        ).to(self.device)
-
-        clip_output = self.clip_model(**clip_tokens)
-        clip_embed = clip_output.last_hidden_state.squeeze(0)
-
-        # T5 embedding
-        t5_tokens = self.t5_tokenizer(
-            text,
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        ).to(self.device)
-
-        t5_output = self.t5_model(**t5_tokens)
-        t5_embed = t5_output.last_hidden_state.squeeze(0)
-
-        return {
-            'clip': clip_embed.cpu(),
-            't5': t5_embed.cpu(),
-            'text': text
-        }
-
-
-class VAELyraTrainer:
-    """Trainer for VAE Lyra - Multi-Modal VAE with HuggingFace Integration."""
-
-    def __init__(self, config: VAELyraTrainerConfig):
-        self.config = config
-        self.device = torch.device(config.device)
-
-        torch.manual_seed(config.seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(config.seed)
-
-        # HuggingFace API
-        self.hf_api = HfApi()
-        self._init_hf_repo()
-
-        print("🎵 Initializing VAE Lyra...")
-
-        # Try to load from HF first
-        if config.auto_load_from_hub:
-            loaded = self._try_load_from_hub()
-            if loaded:
-                print("✓ Loaded model from HuggingFace Hub")
-
-        # Build model if not loaded
-        if not hasattr(self, 'model'):
-            self.model = self._build_model()
-            self.optimizer = None
-            self.scheduler = None
-            self.global_step = 0
-            self.epoch = 0
-            self.best_loss = float('inf')
-
-        self.loss_fn = self._build_loss_fn()
-
-        # Initialize optimizer if not loaded
-        if self.optimizer is None:
-            self.optimizer = AdamW(
-                self.model.parameters(),
-                lr=config.learning_rate,
-                weight_decay=config.weight_decay
-            )
-
-        # Initialize scheduler if not loaded
-        if self.scheduler is None and config.use_scheduler:
-            self.scheduler = self._build_scheduler()
-
-        self.scaler = torch.amp.GradScaler('cuda') if config.mixed_precision else None
-
-        Path(config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
-
-        # Initialize prompt generation
-        print("Initializing prompt generation...")
-        self.prompt_gen = SynthesisSystem(seed=config.seed)
-        self.flavors = self._load_flavors()
-        self.used_prompts = []
-        self.prompt_sources = []
-
-        if config.use_wandb:
-            wandb.init(
-                project=config.wandb_project,
-                entity=config.wandb_entity,
-                config=asdict(config),
-                name=f"lyra_{config.fusion_strategy}",
-                resume="allow"
-            )
-
-    def _init_hf_repo(self):
-        """Initialize HuggingFace repository."""
-        if not self.config.push_to_hub:
-            return
-
-        try:
-            create_repo(
-                self.config.hf_repo,
-                repo_type="model",
-                exist_ok=True,
-                private=False
-            )
-            print(f"✓ HuggingFace repo: https://huggingface.co/{self.config.hf_repo}")
-        except Exception as e:
-            print(f"⚠️  Could not create HF repo: {e}")
-            print("   (Repo may already exist or you may need to login)")
-
-    def _try_load_from_hub(self) -> bool:
-        """Try to load the latest model from HuggingFace Hub."""
-        try:
-            print(f"🔍 Checking for existing model on HF: {self.config.hf_repo}")
-
-            # Try to download model checkpoint
-            try:
-                model_path = hf_hub_download(
-                    repo_id=self.config.hf_repo,
-                    filename="model.pt",
-                    repo_type="model"
-                )
-
-                checkpoint = torch.load(model_path, map_location=self.device)
-
-                # Build model and load state
-                self.model = self._build_model()
-                self.model.load_state_dict(checkpoint['model_state_dict'])
-
-                # Load optimizer
-                self.optimizer = AdamW(
-                    self.model.parameters(),
-                    lr=self.config.learning_rate,
-                    weight_decay=self.config.weight_decay
-                )
-                if 'optimizer_state_dict' in checkpoint:
-                    self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-                # Load training state
-                self.global_step = checkpoint.get('global_step', 0)
-                self.epoch = checkpoint.get('epoch', 0)
-                self.best_loss = checkpoint.get('best_loss', float('inf'))
-
-                # Load scheduler if exists
-                if 'scheduler_state_dict' in checkpoint and self.config.use_scheduler:
-                    self.scheduler = self._build_scheduler()
-                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-                print(f"✓ Resumed from step {self.global_step}, epoch {self.epoch}")
-                return True
-
-            except Exception as e:
-                print(f"   No existing model found: {e}")
-                return False
-
-        except Exception as e:
-            print(f"⚠️  Could not access HF Hub: {e}")
-            return False
-
-    def _push_to_hub(self, is_best: bool = False):
-        """Push current model to HuggingFace Hub."""
-        if not self.config.push_to_hub:
-            return
-
-        try:
-            print(f"\n📤 Pushing to HuggingFace Hub...", end=" ", flush=True)
-
-            # Save checkpoint locally first
-            temp_path = Path(self.config.checkpoint_dir) / "temp_upload.pt"
-
-            checkpoint = {
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'global_step': self.global_step,
-                'epoch': self.epoch,
-                'best_loss': self.best_loss,
-                'config': asdict(self.config)
-            }
-
-            if self.scheduler is not None:
-                checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
-
-            torch.save(checkpoint, temp_path)
-
-            # Upload to HF
-            self.hf_api.upload_file(
-                path_or_fileobj=str(temp_path),
-                path_in_repo="model.pt",
-                repo_id=self.config.hf_repo,
-                repo_type="model",
-                commit_message=f"Step {self.global_step}: loss={self.best_loss:.4f}" if is_best else f"Training step {self.global_step}"
-            )
-
-            # Save config as well
-            config_path = Path(self.config.checkpoint_dir) / "config.json"
-            with open(config_path, 'w') as f:
-                json.dump(asdict(self.config), f, indent=2)
-
-            self.hf_api.upload_file(
-                path_or_fileobj=str(config_path),
-                path_in_repo="config.json",
-                repo_id=self.config.hf_repo,
-                repo_type="model",
-                commit_message=f"Config update at step {self.global_step}"
-            )
-
-            # Create model card if this is the best model
-            if is_best:
-                self._create_model_card()
-
-            # Cleanup
-            temp_path.unlink()
-
-            print(f"✓ Pushed to https://huggingface.co/{self.config.hf_repo}")
-
-        except Exception as e:
-            print(f"✗ Failed: {e}")
-
-    def _create_model_card(self):
-        """Create/update model card on HuggingFace."""
-        model_card = f"""---
-tags:
-- vae
-- multimodal
-- text-embeddings
-- clip
-- t5
-license: mit
----
-
-# VAE Lyra 🎵
-
-Multi-modal Variational Autoencoder for text embedding transformation using geometric fusion.
-
-## Model Details
-
-- **Fusion Strategy**: {self.config.fusion_strategy}
-- **Latent Dimension**: {self.config.latent_dim}
-- **Training Steps**: {self.global_step:,}
-- **Best Loss**: {self.best_loss:.4f}
-
-## Architecture
-
-- **Modalities**: CLIP-L (768d) + T5-base (768d)
-- **Encoder Layers**: {self.config.encoder_layers}
-- **Decoder Layers**: {self.config.decoder_layers}
-- **Hidden Dimension**: {self.config.hidden_dim}
-
-## Usage
-```python
+from diffusers import StableDiffusionPipeline, DDIMScheduler
+from transformers import T5EncoderModel, T5Tokenizer
 from geovocab2.train.model.vae.vae_lyra import MultiModalVAE, MultiModalVAEConfig
-from huggingface_hub import hf_hub_download
-import torch
+import matplotlib.pyplot as plt
+from tqdm.auto import tqdm
+from PIL import Image
+import numpy as np
+from pathlib import Path
+import json
 
-# Download model
-model_path = hf_hub_download(
-    repo_id="AbstractPhil/vae-lyra",
-    filename="model.pt"
+# ----- CONFIGURATION -----
+HF_REPO = "AbstractPhil/vae-lyra"
+LOCAL_CHECKPOINT = "./checkpoints_lyra/best_model.pt"  # Local checkpoint path
+DEVICE = 'cuda'
+DTYPE = torch.float16
+
+# Use local model if it exists, otherwise try HuggingFace
+USE_LOCAL = True  # Set to False to force HuggingFace loading
+
+# ----- LOAD PIPELINE COMPONENTS -----
+print("🎨 Loading SD1.5 components...")
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=DTYPE,
+    safety_checker=None
+).to(DEVICE)
+
+# Extract components
+vae = pipe.vae
+unet = pipe.unet
+scheduler = DDIMScheduler.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    subfolder="scheduler"
 )
-
-# Load checkpoint
-checkpoint = torch.load(model_path)
-
-# Create model
-config = MultiModalVAEConfig(
-    modality_dims={{"clip": 768, "t5": 768}},
-    latent_dim=768,
-    fusion_strategy="{self.config.fusion_strategy}"
-)
-
-model = MultiModalVAE(config)
-model.load_state_dict(checkpoint['model_state_dict'])
-model.eval()
-
-# Use model
-inputs = {{
-    "clip": clip_embeddings,  # [batch, 77, 768]
-    "t5": t5_embeddings        # [batch, 77, 768]
-}}
-
-reconstructions, mu, logvar = model(inputs)
-```
-
-## Training Details
-
-- Trained on {len(self.used_prompts):,} diverse prompts
-- Mix of LAION flavors ({100 * (1 - self.config.synthetic_ratio):.0f}%) and synthetic prompts ({100 * self.config.synthetic_ratio:.0f}%)
-- KL Annealing: {self.config.use_kl_annealing}
-- Learning Rate: {self.config.learning_rate}
-
-## Citation
-```bibtex
-@software{{vae_lyra_2025,
-  author = {{AbstractPhil}},
-  title = {{VAE Lyra: Multi-Modal Variational Autoencoder}},
-  year = {{2025}},
-  url = {{https://huggingface.co/AbstractPhil/vae-lyra}}
-}}
-```
-"""
-
-        try:
-            card_path = Path(self.config.checkpoint_dir) / "README.md"
-            with open(card_path, 'w') as f:
-                f.write(model_card)
-
-            self.hf_api.upload_file(
-                path_or_fileobj=str(card_path),
-                path_in_repo="README.md",
-                repo_id=self.config.hf_repo,
-                repo_type="model",
-                commit_message=f"Update model card (step {self.global_step})"
-            )
-        except Exception as e:
-            print(f"⚠️  Could not update model card: {e}")
-
-    def _build_model(self) -> nn.Module:
-        """Build VAE Lyra model."""
-        vae_config = MultiModalVAEConfig(
-            modality_dims=self.config.modality_dims,
-            latent_dim=self.config.latent_dim,
-            seq_len=self.config.seq_len,
-            encoder_layers=self.config.encoder_layers,
-            decoder_layers=self.config.decoder_layers,
-            hidden_dim=self.config.hidden_dim,
-            dropout=self.config.dropout,
-            fusion_strategy=self.config.fusion_strategy,
-            fusion_heads=self.config.fusion_heads,
-            fusion_dropout=self.config.fusion_dropout
-        )
-
-        model = MultiModalVAE(vae_config)
-        model.to(self.device)
-
-        total_params = sum(p.numel() for p in model.parameters())
-        print(f"✓ VAE Lyra parameters: {total_params:,}")
-        print(f"✓ Fusion strategy: {self.config.fusion_strategy}")
-
-        return model
-
-    def _build_loss_fn(self):
-        """Build VAE loss function."""
-        return MultiModalVAELoss(
-            beta_kl=self.config.beta_kl,
-            beta_reconstruction=self.config.beta_reconstruction,
-            beta_cross_modal=self.config.beta_cross_modal,
-            recon_type=self.config.recon_type
-        )
-
-    def _build_scheduler(self):
-        """Build learning rate scheduler."""
-        if self.config.scheduler_type == 'cosine':
-            return CosineAnnealingLR(
-                self.optimizer,
-                T_max=self.config.num_epochs,
-                eta_min=self.config.learning_rate * 0.1
-            )
-        elif self.config.scheduler_type == 'onecycle':
-            return None  # Initialized after knowing steps per epoch
-        else:
-            raise ValueError(f"Unknown scheduler type: {self.config.scheduler_type}")
-
-    def _load_flavors(self):
-        """Load LAION flavors from clip-interrogator."""
-        print("Loading LAION flavors...")
-        try:
-            r = requests.get(
-                "https://raw.githubusercontent.com/pharmapsychotic/clip-interrogator/main/clip_interrogator/data/flavors.txt",
-                timeout=30
-            )
-            flavors = [line.strip() for line in r.text.split('\n') if line.strip()]
-            print(f"✓ Loaded {len(flavors):,} LAION flavors")
-            return flavors
-        except Exception as e:
-            print(f"⚠️  Failed to load flavors: {e}")
-            print("Using fallback prompts...")
-            return [
-                "a beautiful landscape",
-                "abstract art",
-                "a detailed portrait",
-                "futuristic architecture",
-                "natural scenery"
-            ]
-
-    def _generate_prompt(self):
-        """Generate a prompt (synthetic or LAION)."""
-        if random.random() < self.config.synthetic_ratio:
-            complexity = random.choice([2, 3, 4, 5])
-            prompt = self.prompt_gen.synthesize(complexity=complexity)['text']
-            source = "synthetic"
-        else:
-            prompt = random.choice(self.flavors)
-            source = "laion"
-
-        return prompt, source
-
-    def _get_current_kl_beta(self) -> float:
-        """Get current KL beta with annealing."""
-        if not self.config.use_kl_annealing:
-            return self.config.beta_kl
-
-        if self.epoch >= self.config.kl_anneal_epochs:
-            return self.config.beta_kl
-
-        # Linear annealing
-        progress = self.epoch / self.config.kl_anneal_epochs
-        current_beta = self.config.kl_start_beta + \
-                       (self.config.beta_kl - self.config.kl_start_beta) * progress
-
-        return current_beta
-
-    def prepare_data(self, num_samples: Optional[int] = None) -> DataLoader:
-        """
-        Prepare dataset with dynamic prompt generation.
-
-        Args:
-            num_samples: Number of training samples (default: from config)
-        """
-        num_samples = num_samples or self.config.num_samples
-
-        print(f"\n🎼 Generating {num_samples:,} training prompts...")
-
-        # Generate prompts
-        texts = []
-        sources = []
-        for _ in tqdm(range(num_samples), desc="Generating prompts"):
-            prompt, source = self._generate_prompt()
-            texts.append(prompt)
-            sources.append(source)
-
-        # Store for logging
-        self.used_prompts = texts
-        self.prompt_sources = sources
-
-        # Count sources
-        source_counts = Counter(sources)
-        print(f"\nPrompt distribution:")
-        for source, count in source_counts.items():
-            print(f"  {source}: {count:,} ({count / num_samples * 100:.1f}%)")
-
-        # Show samples
-        print(f"\nSample prompts:")
-        for i in range(min(5, len(texts))):
-            print(f"  [{sources[i]}] {texts[i]}")
-
-        # Load text encoders
-        print("\nLoading CLIP-L and T5-base...")
-        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        clip_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
-
-        t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
-        t5_model = T5EncoderModel.from_pretrained("t5-base")
-
-        print(f"Dataset size: {len(texts)} samples")
-
-        # Create dataset
-        dataset = TextEmbeddingDataset(
-            texts=texts,
-            clip_tokenizer=clip_tokenizer,
-            clip_model=clip_model,
-            t5_tokenizer=t5_tokenizer,
-            t5_model=t5_model,
-            device=self.device,
-            max_length=self.config.seq_len
-        )
-
-        dataloader = DataLoader(
-            dataset,
-            batch_size=self.config.batch_size,
-            shuffle=True,
-            num_workers=self.config.num_workers,
-            pin_memory=True
-        )
-
-        # Initialize OneCycle scheduler if needed
-        if self.config.scheduler_type == 'onecycle' and self.scheduler is None:
-            steps_per_epoch = len(dataloader)
-            total_steps = steps_per_epoch * self.config.num_epochs
-            self.scheduler = OneCycleLR(
-                self.optimizer,
-                max_lr=self.config.learning_rate,
-                total_steps=total_steps,
-                pct_start=0.3
-            )
-
-        return dataloader
-
-    def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """Single training step."""
-        modality_inputs = {
-            'clip': batch['clip'].to(self.device),
-            't5': batch['t5'].to(self.device)
-        }
-
-        # Update KL beta with annealing
-        current_kl_beta = self._get_current_kl_beta()
-        self.loss_fn.beta_kl = current_kl_beta
-
-        if self.scaler is not None:
-            with torch.amp.autocast('cuda'):
-                reconstructions, mu, logvar = self.model(modality_inputs)
-                loss, components = self.loss_fn(
-                    inputs=modality_inputs,
-                    reconstructions=reconstructions,
-                    mu=mu,
-                    logvar=logvar,
-                    return_components=True
-                )
-
-            self.optimizer.zero_grad()
-            self.scaler.scale(loss).backward()
-
-            if self.config.gradient_clip > 0:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.gradient_clip
-                )
-
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            reconstructions, mu, logvar = self.model(modality_inputs)
-            loss, components = self.loss_fn(
-                inputs=modality_inputs,
-                reconstructions=reconstructions,
-                mu=mu,
-                logvar=logvar,
-                return_components=True
-            )
-
-            self.optimizer.zero_grad()
-            loss.backward()
-
-            if self.config.gradient_clip > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.gradient_clip
-                )
-
-            self.optimizer.step()
-
-        # Update scheduler (for OneCycle)
-        if self.scheduler is not None and self.config.scheduler_type == 'onecycle':
-            self.scheduler.step()
-
-        metrics = {k: v.item() for k, v in components.items()}
-        metrics['kl_beta'] = current_kl_beta
-
-        return metrics
-
-    def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
-        """Train for one epoch."""
-        self.model.train()
-        epoch_metrics = {}
-
-        pbar = tqdm(dataloader, desc=f"🎵 Epoch {self.epoch}")
-        for batch in pbar:
-            metrics = self.train_step(batch)
-            self.global_step += 1
-
-            for k, v in metrics.items():
-                if k not in epoch_metrics:
-                    epoch_metrics[k] = []
-                epoch_metrics[k].append(v)
-
-            pbar.set_postfix({
-                'loss': f"{metrics['total']:.4f}",
-                'recon': f"{metrics.get('recon_clip', 0):.4f}",
-                'kl': f"{metrics['kl']:.4f}",
-                'β': f"{metrics['kl_beta']:.3f}"
-            })
-
-            if self.config.use_wandb and self.global_step % self.config.log_every == 0:
-                wandb.log({
-                    **{f'train/{k}': v for k, v in metrics.items()},
-                    'train/lr': self.optimizer.param_groups[0]['lr'],
-                    'train/epoch': self.epoch,
-                    'train/step': self.global_step
-                })
-
-            # Push to Hub at intervals
-            if self.global_step % self.config.push_every == 0:
-                self._push_to_hub()
-
-            # Save checkpoint at intervals
-            if self.global_step % self.config.save_every == 0:
-                self.save_checkpoint()
-
-        avg_metrics = {k: sum(v) / len(v) for k, v in epoch_metrics.items()}
-        return avg_metrics
-
-    def train(self, dataloader: DataLoader):
-        """Full training loop."""
-        print(f"\n{'=' * 70}")
-        print(f"🎵 Starting VAE Lyra training for {self.config.num_epochs} epochs...")
-        print(f"{'=' * 70}")
-        print(f"Device: {self.device}")
-        print(f"Batch size: {self.config.batch_size}")
-        print(f"Total steps per epoch: {len(dataloader)}")
-        print(f"Total training samples: {len(self.used_prompts):,}")
-        print(f"Fusion strategy: {self.config.fusion_strategy}")
-        print(f"KL annealing: {self.config.use_kl_annealing}")
-        print(f"Push to HF every: {self.config.push_every} steps")
-
-        for epoch in range(self.epoch, self.config.num_epochs):
-            self.epoch = epoch
-            metrics = self.train_epoch(dataloader)
-
-            # Update scheduler (for Cosine)
-            if self.scheduler is not None and self.config.scheduler_type == 'cosine':
-                self.scheduler.step()
-
-            print(f"\n{'=' * 70}")
-            print(f"Epoch {epoch} Summary:")
-            print(f"  Total Loss: {metrics['total']:.4f}")
-            print(f"  Reconstruction (CLIP): {metrics.get('recon_clip', 0):.4f}")
-            print(f"  Reconstruction (T5): {metrics.get('recon_t5', 0):.4f}")
-            print(f"  KL Divergence: {metrics['kl']:.4f}")
-            print(f"  Cross-Modal: {metrics.get('cross_modal', 0):.4f}")
-            print(f"  KL Beta: {metrics['kl_beta']:.3f}")
-            print(f"{'=' * 70}")
-
-            if metrics['total'] < self.best_loss:
-                self.best_loss = metrics['total']
-                self.save_checkpoint(best=True)
-                self._push_to_hub(is_best=True)
-                print(f"  ✨ New best model saved and pushed! Loss: {self.best_loss:.4f}")
-
-        print("\n✨ Training complete!")
-        print(f"📤 Final model at: https://huggingface.co/{self.config.hf_repo}")
-
-        if self.config.use_wandb:
-            wandb.finish()
-
-    def save_checkpoint(self, best: bool = False):
-        """Save model checkpoint with prompt history."""
-        checkpoint = {
-            'epoch': self.epoch,
-            'global_step': self.global_step,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'config': asdict(self.config),
-            'best_loss': self.best_loss,
-            'used_prompts': self.used_prompts,
-            'prompt_sources': self.prompt_sources
-        }
-
-        if self.scheduler is not None:
-            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
-
-        if best:
-            path = Path(self.config.checkpoint_dir) / 'best_model.pt'
-        else:
-            path = Path(self.config.checkpoint_dir) / f'checkpoint_step_{self.global_step}.pt'
-
-        torch.save(checkpoint, path)
-
-        # Save prompts as text file
-        if best:
-            prompts_path = Path(self.config.checkpoint_dir) / 'training_prompts.txt'
-            with open(prompts_path, 'w') as f:
-                for prompt, source in zip(self.used_prompts, self.prompt_sources):
-                    f.write(f"[{source}] {prompt}\n")
-
-        if not best:
-            self._cleanup_checkpoints()
-
-    def _cleanup_checkpoints(self):
-        """Keep only last N checkpoints."""
-        checkpoint_dir = Path(self.config.checkpoint_dir)
-        checkpoints = sorted(
-            [f for f in checkpoint_dir.glob('checkpoint_step_*.pt')],
-            key=lambda x: int(x.stem.split('_')[-1])
-        )
-
-        if len(checkpoints) > self.config.keep_last_n:
-            for ckpt in checkpoints[:-self.config.keep_last_n]:
-                ckpt.unlink()
-
-    def load_checkpoint(self, path: str):
-        """Load model from checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
-
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-        if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-        self.epoch = checkpoint['epoch']
-        self.global_step = checkpoint['global_step']
-        self.best_loss = checkpoint['best_loss']
-
-        if 'used_prompts' in checkpoint:
-            self.used_prompts = checkpoint['used_prompts']
-            self.prompt_sources = checkpoint.get('prompt_sources', [])
-
-        print(f"✓ Loaded checkpoint from step {self.global_step}")
-        print(f"✓ Best loss: {self.best_loss:.4f}")
-        if self.used_prompts:
-            print(f"✓ Training prompts: {len(self.used_prompts):,}")
-
-
-# ============================================================================
-# CONVENIENCE FUNCTIONS
-# ============================================================================
-
-def create_lyra_trainer(
-        fusion_strategy: str = "cantor",
-        num_samples: int = 10000,
-        batch_size: int = 32,
-        num_epochs: int = 100,
-        learning_rate: float = 1e-4,
-        beta_kl: float = 0.1,
-        use_kl_annealing: bool = True,
-        push_to_hub: bool = True,
-        push_every: int = 2000,
-        **kwargs
-) -> VAELyraTrainer:
-    """
-    Convenience function to create VAE Lyra trainer.
-
-    Example:
-        >>> trainer = create_lyra_trainer(
-        ...     fusion_strategy="cantor",
-        ...     num_samples=10000,
-        ...     batch_size=16,
-        ...     push_to_hub=True
-        ... )
-    """
-    config = VAELyraTrainerConfig(
-        fusion_strategy=fusion_strategy,
-        num_samples=num_samples,
-        batch_size=batch_size,
-        num_epochs=num_epochs,
-        learning_rate=learning_rate,
-        beta_kl=beta_kl,
-        use_kl_annealing=use_kl_annealing,
-        push_to_hub=push_to_hub,
-        push_every=push_every,
-        **kwargs
+text_encoder = pipe.text_encoder
+tokenizer = pipe.tokenizer
+
+print("✓ SD1.5 loaded")
+
+
+# ----- LOCAL MODEL LOADING -----
+def load_lyra_from_local(checkpoint_path, device='cuda'):
+    """Load VAE Lyra from local checkpoint."""
+
+    print(f"\n🎵 Loading VAE Lyra from local checkpoint...")
+    print(f"   Path: {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # Extract config
+    if 'config' in checkpoint:
+        config_dict = checkpoint['config']
+    else:
+        raise ValueError("Checkpoint missing config - cannot reconstruct model")
+
+    # Create VAE config
+    vae_config = MultiModalVAEConfig(
+        modality_dims=config_dict.get('modality_dims', {"clip": 768, "t5": 768}),
+        latent_dim=config_dict.get('latent_dim', 768),
+        seq_len=config_dict.get('seq_len', 77),
+        encoder_layers=config_dict.get('encoder_layers', 3),
+        decoder_layers=config_dict.get('decoder_layers', 3),
+        hidden_dim=config_dict.get('hidden_dim', 1024),
+        dropout=config_dict.get('dropout', 0.1),
+        fusion_strategy=config_dict.get('fusion_strategy', 'cantor'),
+        fusion_heads=config_dict.get('fusion_heads', 8),
+        fusion_dropout=config_dict.get('fusion_dropout', 0.1)
     )
-    return VAELyraTrainer(config)
+
+    # Create model
+    model = MultiModalVAE(vae_config)
+
+    # Load weights
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        # Maybe it's just the state dict directly
+        model.load_state_dict(checkpoint)
+
+    model.to(device)
+
+    # Print info
+    print(f"✓ Model loaded successfully")
+    if 'global_step' in checkpoint:
+        print(f"   Training step: {checkpoint['global_step']:,}")
+    if 'best_loss' in checkpoint:
+        print(f"   Best loss: {checkpoint['best_loss']:.4f}")
+    if 'epoch' in checkpoint:
+        print(f"   Epoch: {checkpoint['epoch']}")
+
+    print(f"   Fusion: {vae_config.fusion_strategy}")
+    print(f"   Latent dim: {vae_config.latent_dim}")
+
+    return model
 
 
-def load_lyra_from_hub(
-        repo_id: str = "AbstractPhil/vae-lyra",
-        device: str = "cuda"
-) -> MultiModalVAE:
-    """
-    Load VAE Lyra directly from HuggingFace Hub.
-
-    #Example:
-    #    >>> model = load_lyra_from_hub()
-    #    >>> model.eval()
-    #"""
+def load_lyra_from_hub(repo_id, device='cuda'):
+    """Load VAE Lyra from HuggingFace Hub."""
     from huggingface_hub import hf_hub_download
+
+    print(f"\n🎵 Loading VAE Lyra from HuggingFace Hub...")
+    print(f"   Repo: {repo_id}")
 
     # Download model
     model_path = hf_hub_download(
@@ -947,8 +144,408 @@ def load_lyra_from_hub(
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
 
-    print(f"✓ Loaded VAE Lyra from {repo_id}")
-    print(f"✓ Training step: {checkpoint.get('global_step', 'unknown')}")
-    print(f"✓ Best loss: {checkpoint.get('best_loss', 'unknown'):.4f}")
+    print(f"✓ Loaded from Hub")
+    print(f"   Training step: {checkpoint.get('global_step', 'unknown')}")
+    print(f"   Best loss: {checkpoint.get('best_loss', 'unknown')}")
 
     return model
+
+
+# ----- LOAD VAE LYRA -----
+try:
+    if USE_LOCAL and Path(LOCAL_CHECKPOINT).exists():
+        lyra_model = load_lyra_from_local(LOCAL_CHECKPOINT, device=DEVICE)
+    else:
+        if USE_LOCAL:
+            print(f"⚠️  Local checkpoint not found at: {LOCAL_CHECKPOINT}")
+            print(f"   Falling back to HuggingFace...")
+        lyra_model = load_lyra_from_hub(repo_id=HF_REPO, device=DEVICE)
+
+    lyra_model.eval().half()
+
+except Exception as e:
+    print(f"\n❌ Error loading VAE Lyra: {e}")
+    print("\nPlease ensure either:")
+    print(f"  1. Local checkpoint exists at: {LOCAL_CHECKPOINT}")
+    print(f"  2. HuggingFace model exists at: {HF_REPO}")
+    raise
+
+# ----- LOAD T5 -----
+print("\n📝 Loading T5-base...")
+t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
+t5_model = T5EncoderModel.from_pretrained("t5-base").to(DEVICE).eval().half()
+
+print("✓ T5 loaded")
+print("\n✨ Setup complete!\n")
+
+
+# ----- ENCODING FUNCTIONS -----
+@torch.no_grad()
+def get_text_embeddings_standard(prompt):
+    """Get standard CLIP embeddings."""
+    # Positive prompt
+    text_input = tokenizer(
+        [prompt],
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    text_embeddings = text_encoder(text_input.input_ids.to(DEVICE))[0]
+
+    # Negative prompt (empty)
+    uncond_input = tokenizer(
+        [""],
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    uncond_embeddings = text_encoder(uncond_input.input_ids.to(DEVICE))[0]
+
+    # Concatenate for classifier-free guidance
+    text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+
+    return text_embeddings
+
+
+@torch.no_grad()
+def get_text_embeddings_lyra(prompt):
+    """Get VAE Lyra transformed embeddings."""
+    # Get CLIP embeddings
+    text_input = tokenizer(
+        [prompt],
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    clip_embed = text_encoder(text_input.input_ids.to(DEVICE))[0]
+
+    # Get T5 embeddings
+    t5_tokens = t5_tokenizer(
+        [prompt],
+        max_length=77,
+        padding='max_length',
+        truncation=True,
+        return_tensors='pt'
+    ).to(DEVICE)
+    t5_embed = t5_model(**t5_tokens).last_hidden_state
+
+    # Process through VAE Lyra
+    modality_inputs = {
+        'clip': clip_embed,
+        't5': t5_embed
+    }
+
+    # Encode to latent space and decode back to CLIP
+    reconstructions, mu, logvar = lyra_model(modality_inputs, target_modalities=['clip'])
+    lyra_embed = reconstructions['clip']
+
+    # Compute statistics
+    diff = (lyra_embed - clip_embed).abs()
+    cos_sim = torch.nn.functional.cosine_similarity(
+        lyra_embed.flatten(1),
+        clip_embed.flatten(1),
+        dim=-1
+    ).mean()
+
+    print(f"  Lyra transform: max_Δ={diff.max().item():.4f}, "
+          f"mean_Δ={diff.mean().item():.4f}, cos_sim={cos_sim.item():.4f}")
+
+    # Process empty prompt (unconditional)
+    uncond_input = tokenizer(
+        [""],
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    clip_embed_uncond = text_encoder(uncond_input.input_ids.to(DEVICE))[0]
+
+    t5_tokens_uncond = t5_tokenizer(
+        [""],
+        max_length=77,
+        padding='max_length',
+        truncation=True,
+        return_tensors='pt'
+    ).to(DEVICE)
+    t5_embed_uncond = t5_model(**t5_tokens_uncond).last_hidden_state
+
+    modality_inputs_uncond = {
+        'clip': clip_embed_uncond,
+        't5': t5_embed_uncond
+    }
+
+    reconstructions_uncond, _, _ = lyra_model(
+        modality_inputs_uncond,
+        target_modalities=['clip']
+    )
+    lyra_embed_uncond = reconstructions_uncond['clip']
+
+    # Concatenate for CFG
+    text_embeddings = torch.cat([lyra_embed_uncond, lyra_embed])
+
+    return text_embeddings
+
+
+@torch.no_grad()
+def get_text_embeddings_lyra_latent(prompt):
+    """
+    Get VAE Lyra latent space directly (for exploration).
+    Returns mu (mean of latent distribution).
+    """
+    text_input = tokenizer(
+        [prompt],
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    )
+    clip_embed = text_encoder(text_input.input_ids.to(DEVICE))[0]
+
+    t5_tokens = t5_tokenizer(
+        [prompt],
+        max_length=77,
+        padding='max_length',
+        truncation=True,
+        return_tensors='pt'
+    ).to(DEVICE)
+    t5_embed = t5_model(**t5_tokens).last_hidden_state
+
+    modality_inputs = {
+        'clip': clip_embed,
+        't5': t5_embed
+    }
+
+    mu, logvar = lyra_model.encode(modality_inputs)
+
+    return mu, logvar
+
+
+# ----- MANUAL DIFFUSION LOOP -----
+@torch.no_grad()
+def generate_image(
+        prompt,
+        text_embeddings,
+        height=512,
+        width=512,
+        num_steps=30,
+        guidance_scale=7.5,
+        seed=42
+):
+    """Manual diffusion loop with direct UNet control."""
+
+    generator = torch.Generator(device=DEVICE).manual_seed(seed)
+
+    # Prepare scheduler
+    scheduler.set_timesteps(num_steps)
+
+    # Create initial latents
+    latents = torch.randn(
+        (1, unet.config.in_channels, height // 8, width // 8),
+        generator=generator,
+        device=DEVICE,
+        dtype=DTYPE
+    )
+
+    # Scale initial noise
+    latents = latents * scheduler.init_noise_sigma
+
+    # Denoising loop
+    for t in tqdm(scheduler.timesteps, desc="Generating", leave=False):
+        # Expand latents for classifier-free guidance
+        latent_model_input = torch.cat([latents] * 2)
+        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+        # Predict noise - INJECT OUR TRANSFORMED EMBEDDINGS
+        noise_pred = unet(
+            latent_model_input,
+            t,
+            encoder_hidden_states=text_embeddings
+        ).sample
+
+        # Perform classifier-free guidance
+        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        noise_pred = noise_pred_uncond + guidance_scale * (
+                noise_pred_text - noise_pred_uncond
+        )
+
+        # Compute previous noisy sample
+        latents = scheduler.step(noise_pred, t, latents).prev_sample
+
+    # Decode latents to image
+    latents = 1 / 0.18215 * latents
+    image = vae.decode(latents).sample
+
+    # Convert to PIL
+    image = (image / 2 + 0.5).clamp(0, 1)
+    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+    image = (image * 255).round().astype("uint8")
+
+    image = Image.fromarray(image[0])
+
+    return image
+
+
+# ----- COMPARISON FUNCTION -----
+def generate_comparison(prompt, seed=42, num_steps=30, guidance_scale=7.5):
+    """Generate with both standard CLIP and VAE Lyra."""
+
+    print(f"\n{'=' * 70}")
+    print(f"PROMPT: {prompt}")
+    print(f"{'=' * 70}")
+
+    # Standard CLIP
+    print("\n[1/2] Standard CLIP")
+    standard_embeds = get_text_embeddings_standard(prompt)
+    image_standard = generate_image(
+        prompt, standard_embeds,
+        num_steps=num_steps,
+        guidance_scale=guidance_scale,
+        seed=seed
+    )
+
+    # VAE Lyra
+    print("\n[2/2] VAE Lyra (Geometric Fusion)")
+    lyra_embeds = get_text_embeddings_lyra(prompt)
+    image_lyra = generate_image(
+        prompt, lyra_embeds,
+        num_steps=num_steps,
+        guidance_scale=guidance_scale,
+        seed=seed
+    )
+
+    # Display side-by-side
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+    axes[0].imshow(image_standard)
+    axes[0].set_title("Standard CLIP", fontsize=16, fontweight='bold')
+    axes[0].axis('off')
+
+    axes[1].imshow(image_lyra)
+    axes[1].set_title("VAE Lyra 🎵", fontsize=16, fontweight='bold')
+    axes[1].axis('off')
+
+    plt.suptitle(prompt, fontsize=13, y=0.98)
+    plt.tight_layout()
+    plt.show()
+
+    return image_standard, image_lyra
+
+
+# ----- BATCH GENERATION -----
+def generate_batch_comparison(
+        prompts,
+        seed=42,
+        num_steps=30,
+        guidance_scale=7.5,
+        save_path=None
+):
+    """Generate comparisons for multiple prompts."""
+
+    results = []
+
+    for i, prompt in enumerate(prompts):
+        print(f"\n{'=' * 70}")
+        print(f"[{i + 1}/{len(prompts)}] {prompt}")
+        print(f"{'=' * 70}")
+
+        img_standard, img_lyra = generate_comparison(
+            prompt,
+            seed=seed,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale
+        )
+
+        results.append({
+            'prompt': prompt,
+            'standard': img_standard,
+            'lyra': img_lyra
+        })
+
+        if save_path:
+            save_dir = Path(save_path)
+            save_dir.mkdir(exist_ok=True)
+
+            img_standard.save(save_dir / f"{i:03d}_standard.png")
+            img_lyra.save(save_dir / f"{i:03d}_lyra.png")
+
+    return results
+
+
+# ----- LATENT SPACE EXPLORATION -----
+def explore_latent_space(prompts):
+    """Explore VAE Lyra's latent space for multiple prompts."""
+
+    print("\n🔍 Exploring VAE Lyra latent space...")
+
+    latents = []
+
+    for prompt in prompts:
+        mu, logvar = get_text_embeddings_lyra_latent(prompt)
+        latents.append(mu.cpu())
+
+        # Show statistics
+        print(f"\n  '{prompt[:50]}...'")
+        print(f"    mu: [{mu.min().item():.3f}, {mu.max().item():.3f}], "
+              f"mean={mu.mean().item():.3f}, std={mu.std().item():.3f}")
+        print(f"    logvar: [{logvar.min().item():.3f}, {logvar.max().item():.3f}], "
+              f"mean={logvar.mean().item():.3f}")
+
+    # Compute pairwise similarities
+    print("\n📊 Latent space similarity matrix:")
+    similarities = torch.zeros(len(prompts), len(prompts))
+
+    for i in range(len(prompts)):
+        for j in range(len(prompts)):
+            sim = torch.nn.functional.cosine_similarity(
+                latents[i].flatten(),
+                latents[j].flatten(),
+                dim=0
+            )
+            similarities[i, j] = sim
+
+    print(similarities.numpy())
+
+    return latents, similarities
+
+
+# ============================================================================
+# EXAMPLE USAGE
+# ============================================================================
+
+if __name__ == "__main__":
+    # ----- TEST PROMPTS -----
+    test_prompts = [
+        "a beautiful sunset over mountains",
+        "abstract geometric patterns in vibrant colors",
+        "a futuristic cityscape at night",
+        "flowing water in a crystal clear stream",
+        "A lone cybernetic deer with glimmering silver antlers stands beneath a fractured aurora sky, surrounded by glowing fungal trees, floating quartz shards, and bio-luminescent fog. In the distance, ruined monoliths pulse faint glyphs of a forgotten language, while translucent jellyfish swim through the air above a reflective obsidian lake. The atmosphere is electric with tension, color-shifting through prismatic hues. Distant thunderclouds churn violently."
+    ]
+
+    # ----- SINGLE COMPARISON -----
+    print("\n🎨 SINGLE COMPARISON TEST")
+    generate_comparison(
+        test_prompts[0],
+        seed=42,
+        num_steps=30,
+        guidance_scale=7.5
+    )
+
+    # ----- BATCH COMPARISON -----
+    print("\n\n🎨 BATCH COMPARISON TEST")
+    results = generate_batch_comparison(
+        test_prompts,
+        seed=42,
+        num_steps=30,
+        guidance_scale=7.5,
+        save_path="./lyra_results"
+    )
+
+    # ----- LATENT SPACE EXPLORATION -----
+    print("\n\n🔍 LATENT SPACE EXPLORATION")
+    latents, similarities = explore_latent_space(test_prompts[:3])
+
+    print("\n✨ Complete!")
