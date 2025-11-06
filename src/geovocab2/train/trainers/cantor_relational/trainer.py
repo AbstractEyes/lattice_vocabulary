@@ -1,15 +1,15 @@
-# geovocab2/train/trainers/cantor_relational_trainer.py
+# geovocab2/train/trainers/cantor_relational/trainer.py
 
 """
 Trainer for Cantor Relational Model - Colab Optimized
 
-Features:
-- Automatic CLIP/T5 embedding generation
-- VAE-style loss tracking
-- Checkpoint saving/loading
-- Weights & Biases integration
-- Progress visualization
-- Memory efficient batching
+Install via:
+    !pip install git+https://github.com/YourUsername/geovocab2.git
+
+Usage:
+    from geovocab2.train.trainers.cantor_relational_trainer import (
+        CantorRelationalTrainer, TrainerConfig
+    )
 """
 
 import torch
@@ -23,12 +23,18 @@ import wandb
 import os
 import json
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, asdict
-import matplotlib.pyplot as plt
+import requests
+import random
+from collections import Counter
 
-from geovocab2.train.model.relational.cantor_relational import create_cantor_relational, CantorRelationalConfig
-from geovocab2.train.losses.cantor import create_vae_loss
+from geovocab2.train.model.relational.cantor_relational import (
+    create_cantor_relational,
+    CantorRelationalConfig
+)
+from geovocab2.train.losses.cantor import CantorRelationalVAELoss
+from geovocab2.data.prompt.symbolic_tree import SynthesisSystem
 
 
 @dataclass
@@ -37,16 +43,16 @@ class TrainerConfig:
     # Model
     model_dim: int = 768
     num_heads: int = 8
-    num_blocks: int = 6
+    num_blocks: int = 2
     seq_len: int = 77
     cantor_depth: int = 8
-    local_window: int = 64
+    local_window: int = 32
 
     # Loss
     beta_kl: float = 0.1
     beta_cross: float = 0.05
     beta_sparse: float = 0.001
-    recon_type: str = 'mse'  # 'mse' or 'cosine'
+    recon_type: str = 'mse'
 
     # Training
     batch_size: int = 32
@@ -58,16 +64,16 @@ class TrainerConfig:
 
     # Scheduler
     use_scheduler: bool = True
-    scheduler_type: str = 'cosine'  # 'cosine' or 'linear'
+    scheduler_type: str = 'cosine'
 
     # Data
-    dataset_path: Optional[str] = None  # Path to text file or dataset
-    max_samples: Optional[int] = None  # Limit dataset size
+    max_samples: Optional[int] = None
+    synthetic_ratio: float = 0.15  # 15% synthetic, 85% LAION
 
     # Checkpointing
-    checkpoint_dir: str = '/content/checkpoints'
-    save_every: int = 1000  # Save every N steps
-    keep_last_n: int = 3  # Keep only last N checkpoints
+    checkpoint_dir: str = './checkpoints'
+    save_every: int = 1000
+    keep_last_n: int = 3
 
     # Logging
     use_wandb: bool = True
@@ -77,17 +83,15 @@ class TrainerConfig:
 
     # Device
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    mixed_precision: bool = True  # Use AMP for faster training
+    mixed_precision: bool = True
 
     # Misc
     seed: int = 42
-    num_workers: int = 2
+    num_workers: int = 0
 
 
 class TextEmbeddingDataset(Dataset):
-    """
-    Dataset that generates CLIP and T5 embeddings on-the-fly.
-    """
+    """Dataset that generates CLIP and T5 embeddings on-the-fly."""
 
     def __init__(
             self,
@@ -107,7 +111,6 @@ class TextEmbeddingDataset(Dataset):
         self.device = device
         self.max_length = max_length
 
-        # Move models to device and eval mode
         self.clip_model.to(device).eval()
         self.t5_model.to(device).eval()
 
@@ -128,7 +131,7 @@ class TextEmbeddingDataset(Dataset):
         ).to(self.device)
 
         clip_output = self.clip_model(**clip_tokens)
-        clip_embed = clip_output.last_hidden_state.squeeze(0)  # (77, 768)
+        clip_embed = clip_output.last_hidden_state.squeeze(0)
 
         # T5 embedding
         t5_tokens = self.t5_tokenizer(
@@ -140,58 +143,55 @@ class TextEmbeddingDataset(Dataset):
         ).to(self.device)
 
         t5_output = self.t5_model(**t5_tokens)
-        t5_embed = t5_output.last_hidden_state.squeeze(0)  # (77, 768)
+        t5_embed = t5_output.last_hidden_state.squeeze(0)
 
         return {
-            'clip': clip_embed.cpu(),  # Move to CPU for batching
+            'clip': clip_embed.cpu(),
             't5': t5_embed.cpu(),
             'text': text
         }
 
 
 class CantorRelationalTrainer:
-    """
-    Trainer for Cantor Relational Model.
-    """
+    """Trainer for Cantor Relational Model."""
 
     def __init__(self, config: TrainerConfig):
         self.config = config
         self.device = torch.device(config.device)
 
-        # Set seed
         torch.manual_seed(config.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(config.seed)
 
-        # Initialize models
         print("Initializing models...")
         self.model = self._build_model()
         self.loss_fn = self._build_loss_fn()
 
-        # Initialize optimizer
         self.optimizer = AdamW(
             self.model.parameters(),
             lr=config.learning_rate,
             weight_decay=config.weight_decay
         )
 
-        # Initialize scheduler
         self.scheduler = None
         if config.use_scheduler:
             self.scheduler = self._build_scheduler()
 
-        # Mixed precision
-        self.scaler = torch.cuda.amp.GradScaler() if config.mixed_precision else None
+        self.scaler = torch.amp.GradScaler('cuda') if config.mixed_precision else None
 
-        # Tracking
         self.global_step = 0
         self.epoch = 0
         self.best_loss = float('inf')
 
-        # Create checkpoint directory
         Path(config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
-        # Initialize wandb
+        # Initialize prompt generation
+        print("Initializing prompt generation...")
+        self.prompt_gen = SynthesisSystem(seed=config.seed)
+        self.flavors = self._load_flavors()
+        self.used_prompts = []
+        self.prompt_sources = []
+
         if config.use_wandb:
             wandb.init(
                 project=config.wandb_project,
@@ -213,7 +213,6 @@ class CantorRelationalTrainer:
 
         model.to(self.device)
 
-        # Count parameters
         total_params = sum(p.numel() for p in model.parameters())
         print(f"Model parameters: {total_params:,}")
 
@@ -221,7 +220,7 @@ class CantorRelationalTrainer:
 
     def _build_loss_fn(self):
         """Build VAE loss function."""
-        return create_vae_loss(
+        return CantorRelationalVAELoss(
             beta_kl=self.config.beta_kl,
             beta_cross=self.config.beta_cross,
             beta_sparse=self.config.beta_sparse,
@@ -239,29 +238,81 @@ class CantorRelationalTrainer:
         else:
             raise ValueError(f"Unknown scheduler type: {self.config.scheduler_type}")
 
-    def prepare_data(self, texts: List[str]) -> DataLoader:
+    def _load_flavors(self):
+        """Load LAION flavors from clip-interrogator."""
+        print("Loading LAION flavors...")
+        try:
+            r = requests.get(
+                "https://raw.githubusercontent.com/pharmapsychotic/clip-interrogator/main/clip_interrogator/data/flavors.txt",
+                timeout=30
+            )
+            flavors = [line.strip() for line in r.text.split('\n') if line.strip()]
+            print(f"✓ Loaded {len(flavors):,} LAION flavors")
+            return flavors
+        except Exception as e:
+            print(f"⚠️  Failed to load flavors: {e}")
+            print("Using fallback prompts...")
+            return [
+                "a beautiful landscape",
+                "abstract art",
+                "a detailed portrait",
+                "futuristic architecture",
+                "natural scenery"
+            ]
+
+    def _generate_prompt(self):
+        """Generate a prompt (synthetic or LAION)."""
+        if random.random() < self.config.synthetic_ratio:
+            # Synthetic prompt
+            complexity = random.choice([2, 3, 4, 5])
+            prompt = self.prompt_gen.synthesize(complexity=complexity)['text']
+            source = "synthetic"
+        else:
+            # LAION flavor
+            prompt = random.choice(self.flavors)
+            source = "laion"
+
+        return prompt, source
+
+    def prepare_data(self, num_samples: int = 10000) -> DataLoader:
         """
-        Prepare dataset and dataloader.
+        Prepare dataset with dynamic prompt generation.
 
         Args:
-            texts: List of text strings
-
-        Returns:
-            DataLoader
+            num_samples: Number of training samples to generate
         """
-        print("Loading CLIP and T5 models...")
+        print(f"\nGenerating {num_samples:,} training prompts...")
 
-        # Load CLIP
+        # Generate prompts
+        texts = []
+        sources = []
+        for _ in tqdm(range(num_samples), desc="Generating prompts"):
+            prompt, source = self._generate_prompt()
+            texts.append(prompt)
+            sources.append(source)
+
+        # Store for logging
+        self.used_prompts = texts
+        self.prompt_sources = sources
+
+        # Count sources
+        source_counts = Counter(sources)
+        print(f"\nPrompt distribution:")
+        for source, count in source_counts.items():
+            print(f"  {source}: {count:,} ({count / num_samples * 100:.1f}%)")
+
+        # Show samples
+        print(f"\nSample prompts:")
+        for i in range(min(5, len(texts))):
+            print(f"  [{sources[i]}] {texts[i]}")
+
+        # Load text encoders
+        print("\nLoading CLIP-L and T5-base...")
         clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
         clip_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
 
-        # Load T5
         t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
         t5_model = T5EncoderModel.from_pretrained("t5-base")
-
-        # Limit dataset if specified
-        if self.config.max_samples:
-            texts = texts[:self.config.max_samples]
 
         print(f"Dataset size: {len(texts)} samples")
 
@@ -276,7 +327,6 @@ class CantorRelationalTrainer:
             max_length=self.config.seq_len
         )
 
-        # Create dataloader
         dataloader = DataLoader(
             dataset,
             batch_size=self.config.batch_size,
@@ -288,25 +338,14 @@ class CantorRelationalTrainer:
         return dataloader
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """
-        Single training step.
+        """Single training step."""
+        clip_embed = batch['clip'].to(self.device)
+        t5_embed = batch['t5'].to(self.device)
 
-        Args:
-            batch: Batch dict with 'clip' and 't5' embeddings
-
-        Returns:
-            Dict of metrics
-        """
-        clip_embed = batch['clip'].to(self.device)  # (batch, 77, 768)
-        t5_embed = batch['t5'].to(self.device)  # (batch, 77, 768)
-
-        # Mixed precision training
         if self.scaler is not None:
-            with torch.cuda.amp.autocast():
-                # Forward pass
+            with torch.amp.autocast('cuda'):
                 clip_out, t5_out = self.model(clip_embed, t5_embed, return_both=True)
 
-                # Compute loss
                 loss, components = self.loss_fn(
                     clip_in=clip_embed,
                     clip_out=clip_out,
@@ -315,11 +354,9 @@ class CantorRelationalTrainer:
                     return_components=True
                 )
 
-            # Backward pass
             self.optimizer.zero_grad()
             self.scaler.scale(loss).backward()
 
-            # Gradient clipping
             if self.config.gradient_clip > 0:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
@@ -330,7 +367,6 @@ class CantorRelationalTrainer:
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
-            # Standard training
             clip_out, t5_out = self.model(clip_embed, t5_embed, return_both=True)
 
             loss, components = self.loss_fn(
@@ -352,45 +388,30 @@ class CantorRelationalTrainer:
 
             self.optimizer.step()
 
-        # Convert to float for logging
         metrics = {k: v.item() for k, v in components.items()}
-
         return metrics
 
     def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
-        """
-        Train for one epoch.
-
-        Args:
-            dataloader: Training dataloader
-
-        Returns:
-            Dict of average metrics
-        """
+        """Train for one epoch."""
         self.model.train()
         epoch_metrics = {}
 
         pbar = tqdm(dataloader, desc=f"Epoch {self.epoch}")
         for batch in pbar:
             metrics = self.train_step(batch)
-
-            # Update global step
             self.global_step += 1
 
-            # Accumulate metrics
             for k, v in metrics.items():
                 if k not in epoch_metrics:
                     epoch_metrics[k] = []
                 epoch_metrics[k].append(v)
 
-            # Update progress bar
             pbar.set_postfix({
                 'loss': f"{metrics['total']:.4f}",
                 'recon': f"{metrics['reconstruction']:.4f}",
                 'kl': f"{metrics['kl_divergence']:.4f}"
             })
 
-            # Log to wandb
             if self.config.use_wandb and self.global_step % self.config.log_every == 0:
                 wandb.log({
                     **{f'train/{k}': v for k, v in metrics.items()},
@@ -399,45 +420,33 @@ class CantorRelationalTrainer:
                     'train/step': self.global_step
                 })
 
-            # Save checkpoint
             if self.global_step % self.config.save_every == 0:
                 self.save_checkpoint()
 
-        # Average metrics
         avg_metrics = {k: sum(v) / len(v) for k, v in epoch_metrics.items()}
-
         return avg_metrics
 
     def train(self, dataloader: DataLoader):
-        """
-        Full training loop.
-
-        Args:
-            dataloader: Training dataloader
-        """
+        """Full training loop."""
         print(f"\nStarting training for {self.config.num_epochs} epochs...")
         print(f"Device: {self.device}")
         print(f"Batch size: {self.config.batch_size}")
         print(f"Total steps per epoch: {len(dataloader)}")
+        print(f"Total training samples: {len(self.used_prompts):,}")
 
         for epoch in range(self.config.num_epochs):
             self.epoch = epoch
-
-            # Train epoch
             metrics = self.train_epoch(dataloader)
 
-            # Update scheduler
             if self.scheduler is not None:
                 self.scheduler.step()
 
-            # Print epoch summary
             print(f"\nEpoch {epoch} Summary:")
             print(f"  Loss: {metrics['total']:.4f}")
             print(f"  Reconstruction: {metrics['reconstruction']:.4f}")
             print(f"  KL Divergence: {metrics['kl_divergence']:.4f}")
             print(f"  Cross-Modal: {metrics['cross_modal']:.4f}")
 
-            # Save best model
             if metrics['total'] < self.best_loss:
                 self.best_loss = metrics['total']
                 self.save_checkpoint(best=True)
@@ -449,20 +458,21 @@ class CantorRelationalTrainer:
             wandb.finish()
 
     def save_checkpoint(self, best: bool = False):
-        """Save model checkpoint."""
+        """Save model checkpoint with prompt history."""
         checkpoint = {
             'epoch': self.epoch,
             'global_step': self.global_step,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'config': asdict(self.config),
-            'best_loss': self.best_loss
+            'best_loss': self.best_loss,
+            'used_prompts': self.used_prompts,
+            'prompt_sources': self.prompt_sources
         }
 
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
 
-        # Save checkpoint
         if best:
             path = Path(self.config.checkpoint_dir) / 'best_model.pt'
         else:
@@ -470,7 +480,14 @@ class CantorRelationalTrainer:
 
         torch.save(checkpoint, path)
 
-        # Clean old checkpoints
+        # Save prompts as text file
+        if best:
+            prompts_path = Path(self.config.checkpoint_dir) / 'training_prompts.txt'
+            with open(prompts_path, 'w') as f:
+                for prompt, source in zip(self.used_prompts, self.prompt_sources):
+                    f.write(f"[{source}] {prompt}\n")
+            print(f"  ✓ Prompts saved to {prompts_path}")
+
         if not best:
             self._cleanup_checkpoints()
 
@@ -482,7 +499,6 @@ class CantorRelationalTrainer:
             key=lambda x: int(x.stem.split('_')[-1])
         )
 
-        # Remove old checkpoints
         if len(checkpoints) > self.config.keep_last_n:
             for ckpt in checkpoints[:-self.config.keep_last_n]:
                 ckpt.unlink()
@@ -501,41 +517,11 @@ class CantorRelationalTrainer:
         self.global_step = checkpoint['global_step']
         self.best_loss = checkpoint['best_loss']
 
+        if 'used_prompts' in checkpoint:
+            self.used_prompts = checkpoint['used_prompts']
+            self.prompt_sources = checkpoint.get('prompt_sources', [])
+
         print(f"Loaded checkpoint from step {self.global_step}")
-
-
-def load_text_dataset(path: str) -> List[str]:
-    """
-    Load text dataset from file.
-
-    Supports:
-    - .txt files (one prompt per line)
-    - .json files (list of strings or dict with 'text' key)
-
-    Args:
-        path: Path to dataset file
-
-    Returns:
-        List of text strings
-    """
-    path = Path(path)
-
-    if path.suffix == '.txt':
-        with open(path) as f:
-            texts = [line.strip() for line in f if line.strip()]
-
-    elif path.suffix == '.json':
-        with open(path) as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                texts = data
-            elif isinstance(data, dict) and 'text' in data:
-                texts = data['text']
-            else:
-                raise ValueError("JSON must be list of strings or dict with 'text' key")
-
-    else:
-        raise ValueError(f"Unsupported file type: {path.suffix}")
-
-    print(f"Loaded {len(texts)} texts from {path}")
-    return texts
+        print(f"Best loss: {self.best_loss:.4f}")
+        if self.used_prompts:
+            print(f"Training prompts: {len(self.used_prompts):,}")
