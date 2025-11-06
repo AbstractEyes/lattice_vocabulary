@@ -1,4 +1,4 @@
-# geovocab2/train/model/vae/multimodal_vae.py
+# geovocab2/train/model/vae/vae_.py
 
 """
 Multi-Modal VAE with Advanced Fusion
@@ -172,7 +172,7 @@ class SingleModalityVAE(nn.Module):
 
 
 # ============================================================================
-# FUSION MODULES (from David)
+# FUSION MODULES (Re-dubbed Lyra from David)
 # ============================================================================
 
 class CantorModalityFusion(nn.Module):
