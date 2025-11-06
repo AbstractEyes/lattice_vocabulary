@@ -1,4 +1,4 @@
-# geovocab2/train/model/vae/vae_.py
+# geovocab2/train/model/vae/vae_lyra.py
 
 """
 Multi-Modal VAE with Advanced Fusion
