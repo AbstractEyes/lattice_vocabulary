@@ -1,10 +1,13 @@
 # geovocab2/train/trainers/vae_lyra/trainer.py
 
 """
-Trainer for VAE Lyra - Multi-Modal Variational Autoencoder
+Trainer for VAE Lyra - Multi-Modal Variational Autoencoder with HF Integration
+
+Install via:
+    !pip install git+https://github.com/AbstractPhil/geovocab2.git
 
 Usage:
-    from geovocab2.train.trainers.vae.lyra import (
+    from geovocab2.train.trainers.vae_lyra_trainer import (
         VAELyraTrainer, VAELyraTrainerConfig
     )
 """
@@ -15,6 +18,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
 from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5Tokenizer
+from huggingface_hub import HfApi, hf_hub_download, create_repo, upload_file
 from tqdm.auto import tqdm
 import wandb
 import os
@@ -25,6 +29,7 @@ from dataclasses import dataclass, asdict
 import requests
 import random
 from collections import Counter
+import shutil
 
 from geovocab2.train.model.vae.vae_lyra import (
     MultiModalVAE,
@@ -84,6 +89,12 @@ class VAELyraTrainerConfig:
     checkpoint_dir: str = './checkpoints_lyra'
     save_every: int = 1000
     keep_last_n: int = 3
+
+    # HuggingFace Hub
+    hf_repo: str = "AbstractPhil/vae-lyra"
+    push_to_hub: bool = True
+    push_every: int = 2000  # Push to HF every N steps
+    auto_load_from_hub: bool = True  # Load latest model if no local checkpoint
 
     # Logging
     use_wandb: bool = True
@@ -167,7 +178,7 @@ class TextEmbeddingDataset(Dataset):
 
 
 class VAELyraTrainer:
-    """Trainer for VAE Lyra - Multi-Modal VAE."""
+    """Trainer for VAE Lyra - Multi-Modal VAE with HuggingFace Integration."""
 
     def __init__(self, config: VAELyraTrainerConfig):
         self.config = config
@@ -177,25 +188,42 @@ class VAELyraTrainer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(config.seed)
 
+        # HuggingFace API
+        self.hf_api = HfApi()
+        self._init_hf_repo()
+
         print("🎵 Initializing VAE Lyra...")
-        self.model = self._build_model()
+
+        # Try to load from HF first
+        if config.auto_load_from_hub:
+            loaded = self._try_load_from_hub()
+            if loaded:
+                print("✓ Loaded model from HuggingFace Hub")
+
+        # Build model if not loaded
+        if not hasattr(self, 'model'):
+            self.model = self._build_model()
+            self.optimizer = None
+            self.scheduler = None
+            self.global_step = 0
+            self.epoch = 0
+            self.best_loss = float('inf')
+
         self.loss_fn = self._build_loss_fn()
 
-        self.optimizer = AdamW(
-            self.model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay
-        )
+        # Initialize optimizer if not loaded
+        if self.optimizer is None:
+            self.optimizer = AdamW(
+                self.model.parameters(),
+                lr=config.learning_rate,
+                weight_decay=config.weight_decay
+            )
 
-        self.scheduler = None
-        if config.use_scheduler:
+        # Initialize scheduler if not loaded
+        if self.scheduler is None and config.use_scheduler:
             self.scheduler = self._build_scheduler()
 
         self.scaler = torch.amp.GradScaler('cuda') if config.mixed_precision else None
-
-        self.global_step = 0
-        self.epoch = 0
-        self.best_loss = float('inf')
 
         Path(config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
@@ -211,8 +239,232 @@ class VAELyraTrainer:
                 project=config.wandb_project,
                 entity=config.wandb_entity,
                 config=asdict(config),
-                name=f"lyra_{config.fusion_strategy}"
+                name=f"lyra_{config.fusion_strategy}",
+                resume="allow"
             )
+
+    def _init_hf_repo(self):
+        """Initialize HuggingFace repository."""
+        if not self.config.push_to_hub:
+            return
+
+        try:
+            create_repo(
+                self.config.hf_repo,
+                repo_type="model",
+                exist_ok=True,
+                private=False
+            )
+            print(f"✓ HuggingFace repo: https://huggingface.co/{self.config.hf_repo}")
+        except Exception as e:
+            print(f"⚠️  Could not create HF repo: {e}")
+            print("   (Repo may already exist or you may need to login)")
+
+    def _try_load_from_hub(self) -> bool:
+        """Try to load the latest model from HuggingFace Hub."""
+        try:
+            print(f"🔍 Checking for existing model on HF: {self.config.hf_repo}")
+
+            # Try to download model checkpoint
+            try:
+                model_path = hf_hub_download(
+                    repo_id=self.config.hf_repo,
+                    filename="model.pt",
+                    repo_type="model"
+                )
+
+                checkpoint = torch.load(model_path, map_location=self.device)
+
+                # Build model and load state
+                self.model = self._build_model()
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+
+                # Load optimizer
+                self.optimizer = AdamW(
+                    self.model.parameters(),
+                    lr=self.config.learning_rate,
+                    weight_decay=self.config.weight_decay
+                )
+                if 'optimizer_state_dict' in checkpoint:
+                    self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+                # Load training state
+                self.global_step = checkpoint.get('global_step', 0)
+                self.epoch = checkpoint.get('epoch', 0)
+                self.best_loss = checkpoint.get('best_loss', float('inf'))
+
+                # Load scheduler if exists
+                if 'scheduler_state_dict' in checkpoint and self.config.use_scheduler:
+                    self.scheduler = self._build_scheduler()
+                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+                print(f"✓ Resumed from step {self.global_step}, epoch {self.epoch}")
+                return True
+
+            except Exception as e:
+                print(f"   No existing model found: {e}")
+                return False
+
+        except Exception as e:
+            print(f"⚠️  Could not access HF Hub: {e}")
+            return False
+
+    def _push_to_hub(self, is_best: bool = False):
+        """Push current model to HuggingFace Hub."""
+        if not self.config.push_to_hub:
+            return
+
+        try:
+            print(f"\n📤 Pushing to HuggingFace Hub...", end=" ", flush=True)
+
+            # Save checkpoint locally first
+            temp_path = Path(self.config.checkpoint_dir) / "temp_upload.pt"
+
+            checkpoint = {
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'global_step': self.global_step,
+                'epoch': self.epoch,
+                'best_loss': self.best_loss,
+                'config': asdict(self.config)
+            }
+
+            if self.scheduler is not None:
+                checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+
+            torch.save(checkpoint, temp_path)
+
+            # Upload to HF
+            self.hf_api.upload_file(
+                path_or_fileobj=str(temp_path),
+                path_in_repo="model.pt",
+                repo_id=self.config.hf_repo,
+                repo_type="model",
+                commit_message=f"Step {self.global_step}: loss={self.best_loss:.4f}" if is_best else f"Training step {self.global_step}"
+            )
+
+            # Save config as well
+            config_path = Path(self.config.checkpoint_dir) / "config.json"
+            with open(config_path, 'w') as f:
+                json.dump(asdict(self.config), f, indent=2)
+
+            self.hf_api.upload_file(
+                path_or_fileobj=str(config_path),
+                path_in_repo="config.json",
+                repo_id=self.config.hf_repo,
+                repo_type="model",
+                commit_message=f"Config update at step {self.global_step}"
+            )
+
+            # Create model card if this is the best model
+            if is_best:
+                self._create_model_card()
+
+            # Cleanup
+            temp_path.unlink()
+
+            print(f"✓ Pushed to https://huggingface.co/{self.config.hf_repo}")
+
+        except Exception as e:
+            print(f"✗ Failed: {e}")
+
+    def _create_model_card(self):
+        """Create/update model card on HuggingFace."""
+        model_card = f"""---
+tags:
+- vae
+- multimodal
+- text-embeddings
+- clip
+- t5
+license: mit
+---
+
+# VAE Lyra 🎵
+
+Multi-modal Variational Autoencoder for text embedding transformation using geometric fusion.
+
+## Model Details
+
+- **Fusion Strategy**: {self.config.fusion_strategy}
+- **Latent Dimension**: {self.config.latent_dim}
+- **Training Steps**: {self.global_step:,}
+- **Best Loss**: {self.best_loss:.4f}
+
+## Architecture
+
+- **Modalities**: CLIP-L (768d) + T5-base (768d)
+- **Encoder Layers**: {self.config.encoder_layers}
+- **Decoder Layers**: {self.config.decoder_layers}
+- **Hidden Dimension**: {self.config.hidden_dim}
+
+## Usage
+```python
+from geovocab2.train.model.vae.vae_lyra import MultiModalVAE, MultiModalVAEConfig
+from huggingface_hub import hf_hub_download
+import torch
+
+# Download model
+model_path = hf_hub_download(
+    repo_id="AbstractPhil/vae-lyra",
+    filename="model.pt"
+)
+
+# Load checkpoint
+checkpoint = torch.load(model_path)
+
+# Create model
+config = MultiModalVAEConfig(
+    modality_dims={{"clip": 768, "t5": 768}},
+    latent_dim=768,
+    fusion_strategy="{self.config.fusion_strategy}"
+)
+
+model = MultiModalVAE(config)
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+
+# Use model
+inputs = {{
+    "clip": clip_embeddings,  # [batch, 77, 768]
+    "t5": t5_embeddings        # [batch, 77, 768]
+}}
+
+reconstructions, mu, logvar = model(inputs)
+```
+
+## Training Details
+
+- Trained on {len(self.used_prompts):,} diverse prompts
+- Mix of LAION flavors ({100 * (1 - self.config.synthetic_ratio):.0f}%) and synthetic prompts ({100 * self.config.synthetic_ratio:.0f}%)
+- KL Annealing: {self.config.use_kl_annealing}
+- Learning Rate: {self.config.learning_rate}
+
+## Citation
+```bibtex
+@software{{vae_lyra_2025,
+  author = {{AbstractPhil}},
+  title = {{VAE Lyra: Multi-Modal Variational Autoencoder}},
+  year = {{2025}},
+  url = {{https://huggingface.co/AbstractPhil/vae-lyra}}
+}}
+```
+"""
+
+        try:
+            card_path = Path(self.config.checkpoint_dir) / "README.md"
+            with open(card_path, 'w') as f:
+                f.write(model_card)
+
+            self.hf_api.upload_file(
+                path_or_fileobj=str(card_path),
+                path_in_repo="README.md",
+                repo_id=self.config.hf_repo,
+                repo_type="model",
+                commit_message=f"Update model card (step {self.global_step})"
+            )
+        except Exception as e:
+            print(f"⚠️  Could not update model card: {e}")
 
     def _build_model(self) -> nn.Module:
         """Build VAE Lyra model."""
@@ -256,8 +508,7 @@ class VAELyraTrainer:
                 eta_min=self.config.learning_rate * 0.1
             )
         elif self.config.scheduler_type == 'onecycle':
-            # Will be initialized after knowing steps per epoch
-            return None
+            return None  # Initialized after knowing steps per epoch
         else:
             raise ValueError(f"Unknown scheduler type: {self.config.scheduler_type}")
 
@@ -399,10 +650,7 @@ class VAELyraTrainer:
 
         if self.scaler is not None:
             with torch.amp.autocast('cuda'):
-                # Forward pass
                 reconstructions, mu, logvar = self.model(modality_inputs)
-
-                # Compute loss
                 loss, components = self.loss_fn(
                     inputs=modality_inputs,
                     reconstructions=reconstructions,
@@ -425,7 +673,6 @@ class VAELyraTrainer:
             self.scaler.update()
         else:
             reconstructions, mu, logvar = self.model(modality_inputs)
-
             loss, components = self.loss_fn(
                 inputs=modality_inputs,
                 reconstructions=reconstructions,
@@ -484,6 +731,11 @@ class VAELyraTrainer:
                     'train/step': self.global_step
                 })
 
+            # Push to Hub at intervals
+            if self.global_step % self.config.push_every == 0:
+                self._push_to_hub()
+
+            # Save checkpoint at intervals
             if self.global_step % self.config.save_every == 0:
                 self.save_checkpoint()
 
@@ -501,8 +753,9 @@ class VAELyraTrainer:
         print(f"Total training samples: {len(self.used_prompts):,}")
         print(f"Fusion strategy: {self.config.fusion_strategy}")
         print(f"KL annealing: {self.config.use_kl_annealing}")
+        print(f"Push to HF every: {self.config.push_every} steps")
 
-        for epoch in range(self.config.num_epochs):
+        for epoch in range(self.epoch, self.config.num_epochs):
             self.epoch = epoch
             metrics = self.train_epoch(dataloader)
 
@@ -523,9 +776,11 @@ class VAELyraTrainer:
             if metrics['total'] < self.best_loss:
                 self.best_loss = metrics['total']
                 self.save_checkpoint(best=True)
-                print(f"  ✨ New best model saved! Loss: {self.best_loss:.4f}")
+                self._push_to_hub(is_best=True)
+                print(f"  ✨ New best model saved and pushed! Loss: {self.best_loss:.4f}")
 
         print("\n✨ Training complete!")
+        print(f"📤 Final model at: https://huggingface.co/{self.config.hf_repo}")
 
         if self.config.use_wandb:
             wandb.finish()
@@ -611,18 +866,21 @@ def create_lyra_trainer(
         learning_rate: float = 1e-4,
         beta_kl: float = 0.1,
         use_kl_annealing: bool = True,
+        push_to_hub: bool = True,
+        push_every: int = 2000,
         **kwargs
 ) -> VAELyraTrainer:
     """
     Convenience function to create VAE Lyra trainer.
 
-    #Example:
-    #    >>> trainer = create_lyra_trainer(
-    #    ...     fusion_strategy="cantor",
-    #    ...     num_samples=10000,
-    #    ...     batch_size=16
-    #    ... )
-    #"""
+    Example:
+        >>> trainer = create_lyra_trainer(
+        ...     fusion_strategy="cantor",
+        ...     num_samples=10000,
+        ...     batch_size=16,
+        ...     push_to_hub=True
+        ... )
+    """
     config = VAELyraTrainerConfig(
         fusion_strategy=fusion_strategy,
         num_samples=num_samples,
@@ -631,6 +889,66 @@ def create_lyra_trainer(
         learning_rate=learning_rate,
         beta_kl=beta_kl,
         use_kl_annealing=use_kl_annealing,
+        push_to_hub=push_to_hub,
+        push_every=push_every,
         **kwargs
     )
     return VAELyraTrainer(config)
+
+
+def load_lyra_from_hub(
+        repo_id: str = "AbstractPhil/vae-lyra",
+        device: str = "cuda"
+) -> MultiModalVAE:
+    """
+    Load VAE Lyra directly from HuggingFace Hub.
+
+    #Example:
+    #    >>> model = load_lyra_from_hub()
+    #    >>> model.eval()
+    #"""
+    from huggingface_hub import hf_hub_download
+
+    # Download model
+    model_path = hf_hub_download(
+        repo_id=repo_id,
+        filename="model.pt",
+        repo_type="model"
+    )
+
+    # Download config
+    config_path = hf_hub_download(
+        repo_id=repo_id,
+        filename="config.json",
+        repo_type="model"
+    )
+
+    # Load config
+    with open(config_path) as f:
+        config_dict = json.load(f)
+
+    # Create VAE config
+    vae_config = MultiModalVAEConfig(
+        modality_dims=config_dict.get('modality_dims', {"clip": 768, "t5": 768}),
+        latent_dim=config_dict.get('latent_dim', 768),
+        seq_len=config_dict.get('seq_len', 77),
+        encoder_layers=config_dict.get('encoder_layers', 3),
+        decoder_layers=config_dict.get('decoder_layers', 3),
+        hidden_dim=config_dict.get('hidden_dim', 1024),
+        dropout=config_dict.get('dropout', 0.1),
+        fusion_strategy=config_dict.get('fusion_strategy', 'cantor'),
+        fusion_heads=config_dict.get('fusion_heads', 8),
+        fusion_dropout=config_dict.get('fusion_dropout', 0.1)
+    )
+
+    # Load model
+    checkpoint = torch.load(model_path, map_location=device)
+    model = MultiModalVAE(vae_config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+
+    print(f"✓ Loaded VAE Lyra from {repo_id}")
+    print(f"✓ Training step: {checkpoint.get('global_step', 'unknown')}")
+    print(f"✓ Best loss: {checkpoint.get('best_loss', 'unknown'):.4f}")
+
+    return model
