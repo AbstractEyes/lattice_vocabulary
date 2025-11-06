@@ -204,6 +204,7 @@ class CantorRelationalVAELoss(nn.Module):
 def create_vae_loss(
         beta_kl: float = 0.1,
         beta_cross: float = 0.05,
+        beta_sparse: float = 0.001,  # ADD THIS
         recon_type: str = 'mse'
 ) -> CantorRelationalVAELoss:
     """
@@ -215,10 +216,11 @@ def create_vae_loss(
     #    ...     clip_in, clip_out, t5_in, t5_out,
     #    ...     return_components=True
     #    ... )
-    """
+    #"""
     return CantorRelationalVAELoss(
         beta_kl=beta_kl,
         beta_cross=beta_cross,
+        beta_sparse=beta_sparse,  # ADD THIS
         recon_type=recon_type
     )
 
