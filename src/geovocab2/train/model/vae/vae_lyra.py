@@ -49,7 +49,7 @@ class MultiModalVAEConfig:
     dropout: float = 0.1
 
     # Fusion
-    fusion_strategy: str = "attention"
+    fusion_strategy: str = "cantor"
     fusion_heads: int = 8
     fusion_dropout: float = 0.1
 
