@@ -256,8 +256,8 @@ class CantorRelationalTrainer:
         clip_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
 
         # Load T5
-        t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
-        t5_model = T5EncoderModel.from_pretrained("t5-base")
+        t5_tokenizer = T5Tokenizer.from_pretrained("t5-small")
+        t5_model = T5EncoderModel.from_pretrained("t5-small")
 
         # Limit dataset if specified
         if self.config.max_samples:
