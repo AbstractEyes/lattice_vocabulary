@@ -1,10 +1,25 @@
-# geovocab2/train/model/vae/vae_lyra.py
-
 """
-Multi-Modal VAE with Advanced Fusion
-====================================
+Multi-Modal VAE with Advanced Fusion and Seed Control
+======================================================
 
-Single-input and multi-input VAE architectures with geometric fusion mechanisms.
+Single-input and multi-input VAE architectures with geometric fusion mechanisms
+and deterministic seed control for reproducibility.
+
+SEED CONTROL:
+- Set seed in config for reproducible initialization
+- Pass generator to forward() for deterministic latent sampling
+- Use model.eval() for fully deterministic inference (disables dropout)
+
+USAGE:
+    # Reproducible training
+    config = MultiModalVAEConfig(seed=42)
+    vae = MultiModalVAE(config)
+
+    # Deterministic evaluation
+    vae.eval()
+    generator = torch.Generator(device='cuda').manual_seed(42)
+    for batch in data:
+        recon, mu, logvar = vae(batch, generator=generator)
 
 Author: AbstractPhil
 """
@@ -61,6 +76,9 @@ class MultiModalVAEConfig:
     # Training
     use_amp: bool = True
 
+    # Reproducibility
+    seed: Optional[int] = None
+
     def __post_init__(self):
         if self.modality_dims is None:
             self.modality_dims = {"clip": 768, "t5": 768}
@@ -72,7 +90,7 @@ class MultiModalVAEConfig:
 
 class SingleModalityVAE(nn.Module):
     """
-    Simple single-modality VAE.
+    Simple single-modality VAE with seed control.
 
     For baseline: just CLIP or just T5.
     """
@@ -84,12 +102,20 @@ class SingleModalityVAE(nn.Module):
             seq_len: int = 77,
             hidden_dim: int = 1024,
             num_layers: int = 3,
-            dropout: float = 0.1
+            dropout: float = 0.1,
+            seed: Optional[int] = None
     ):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.seq_len = seq_len
+        self.seed = seed
+
+        # Set seed for reproducible initialization
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
         # Encoder
         encoder_layers = []
@@ -140,10 +166,35 @@ class SingleModalityVAE(nn.Module):
         logvar = self.fc_logvar(h)
         return mu, logvar
 
-    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """Reparameterization trick."""
+    def reparameterize(
+            self,
+            mu: torch.Tensor,
+            logvar: torch.Tensor,
+            generator: Optional[torch.Generator] = None
+    ) -> torch.Tensor:
+        """
+        Reparameterization trick with optional generator for seed control.
+
+        Args:
+            mu: Mean [batch, seq, latent_dim]
+            logvar: Log variance [batch, seq, latent_dim]
+            generator: Optional torch.Generator for reproducible sampling
+
+        Returns:
+            z: Sampled latent [batch, seq, latent_dim]
+        """
         std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
+
+        # Create generator if seed is set but no generator provided
+        if generator is None and self.seed is not None:
+            generator = torch.Generator(device=mu.device).manual_seed(self.seed)
+
+        # Sample epsilon
+        if generator is not None:
+            eps = torch.randn(mu.shape, generator=generator, device=mu.device, dtype=mu.dtype)
+        else:
+            eps = torch.randn_like(std)
+
         return mu + eps * std
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -158,15 +209,23 @@ class SingleModalityVAE(nn.Module):
         """
         return self.decoder(z)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+            self,
+            x: torch.Tensor,
+            generator: Optional[torch.Generator] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Full forward pass.
+
+        Args:
+            x: Input [batch, seq, input_dim]
+            generator: Optional generator for reproducible sampling
 
         Returns:
             recon, mu, logvar
         """
         mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
+        z = self.reparameterize(mu, logvar, generator)
         recon = self.decode(z)
         return recon, mu, logvar
 
@@ -188,9 +247,17 @@ class CantorModalityFusion(nn.Module):
             num_heads: int = 8,
             cantor_depth: int = 8,
             local_window: int = 3,
-            dropout: float = 0.1
+            dropout: float = 0.1,
+            seed: Optional[int] = None
     ):
         super().__init__()
+
+        # Set seed for reproducible initialization
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+
         self.modality_names = list(modality_dims.keys())
         self.num_modalities = len(self.modality_names)
         self.output_dim = output_dim
@@ -364,9 +431,17 @@ class GeometricModalityFusion(nn.Module):
             use_cayley: bool = True,
             use_angular: bool = True,
             temperature: float = 0.07,
-            dropout: float = 0.1
+            dropout: float = 0.1,
+            seed: Optional[int] = None
     ):
         super().__init__()
+
+        # Set seed for reproducible initialization
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+
         self.modality_names = list(modality_dims.keys())
         self.num_modalities = len(self.modality_names)
         self.output_dim = output_dim
@@ -478,8 +553,12 @@ class GeometricModalityFusion(nn.Module):
 
         out = torch.einsum('bhqms,bhmsd->bhqsd', attn, V)
 
-        # Average over modalities
-        return out.squeeze(2).mean(dim=1)  # [B, seq, output_dim]
+        # Reshape: [B, H, 1, seq, D] -> [B, seq, H*D] = [B, seq, output_dim]
+        B = out.shape[0]
+        out = out.squeeze(2)  # [B, H, seq, D]
+        out = out.permute(0, 2, 1, 3)  # [B, seq, H, D]
+        out = out.reshape(B, -1, self.output_dim)  # [B, seq, H*D]
+        return out
 
     def forward(
             self,
@@ -525,19 +604,28 @@ class GeometricModalityFusion(nn.Module):
 
         # 2. Angular attention
         if self.use_angular:
-            angular_weights = self._compute_angular_attention(features)
-            angular_out = sum(w * f for w, f in zip(angular_weights.T, features))
+            angular_weights = self._compute_angular_attention(features)  # [B, num_modalities]
+            # Weight each modality's features
+            angular_out = torch.zeros_like(features[0])
+            for i in range(self.num_modalities):
+                w = angular_weights[:, i]  # [B]
+                angular_out = angular_out + w.unsqueeze(-1).unsqueeze(-1) * features[i]
             attention_outputs.append(angular_out)
 
         # 3. Cayley attention
         if self.use_cayley:
-            cayley_weights = self._compute_cayley_attention(features)
-            cayley_out = sum(w.unsqueeze(-1).unsqueeze(-1) * f for w, f in zip(cayley_weights.T, features))
+            cayley_weights = self._compute_cayley_attention(features)  # [B, num_modalities]
+            cayley_out = torch.zeros_like(features[0])
+            for i in range(self.num_modalities):
+                w = cayley_weights[:, i]  # [B]
+                cayley_out = cayley_out + w.unsqueeze(-1).unsqueeze(-1) * features[i]
             attention_outputs.append(cayley_out)
 
         # Combine with learnable weights
         attn_weights = F.softmax(self.attention_weights[:len(attention_outputs)], dim=0)
-        fused = sum(w * out for w, out in zip(attn_weights, attention_outputs))
+        fused = torch.zeros_like(attention_outputs[0])
+        for i, out in enumerate(attention_outputs):
+            fused = fused + attn_weights[i] * out
 
         # Output projection
         output = self.out_proj(fused)
@@ -552,7 +640,7 @@ class GeometricModalityFusion(nn.Module):
 
 class MultiModalVAE(nn.Module):
     """
-    Multi-modal VAE with advanced fusion.
+    Multi-modal VAE with advanced fusion and seed control.
 
     Handles multiple text encoders (CLIP, T5, etc.) and fuses them
     into a unified latent space.
@@ -563,6 +651,13 @@ class MultiModalVAE(nn.Module):
         self.config = config
         self.modality_names = list(config.modality_dims.keys())
         self.num_modalities = len(self.modality_names)
+        self.seed = config.seed
+
+        # Set seed for reproducible initialization
+        if self.seed is not None:
+            torch.manual_seed(self.seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self.seed)
 
         # Fusion module
         fusion_strategy = FusionStrategy(config.fusion_strategy)
@@ -572,14 +667,16 @@ class MultiModalVAE(nn.Module):
                 modality_dims=config.modality_dims,
                 output_dim=config.hidden_dim,
                 num_heads=config.fusion_heads,
-                dropout=config.fusion_dropout
+                dropout=config.fusion_dropout,
+                seed=config.seed
             )
         elif fusion_strategy == FusionStrategy.GEOMETRIC:
             self.fusion = GeometricModalityFusion(
                 modality_dims=config.modality_dims,
                 output_dim=config.hidden_dim,
                 num_heads=config.fusion_heads,
-                dropout=config.fusion_dropout
+                dropout=config.fusion_dropout,
+                seed=config.seed
             )
         elif fusion_strategy == FusionStrategy.CONCATENATE:
             total_dim = sum(config.modality_dims.values())
@@ -664,10 +761,35 @@ class MultiModalVAE(nn.Module):
         logvar = self.fc_logvar(h)
         return mu, logvar
 
-    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """Reparameterization trick."""
+    def reparameterize(
+            self,
+            mu: torch.Tensor,
+            logvar: torch.Tensor,
+            generator: Optional[torch.Generator] = None
+    ) -> torch.Tensor:
+        """
+        Reparameterization trick with optional generator for seed control.
+
+        Args:
+            mu: Mean [batch, seq, latent_dim]
+            logvar: Log variance [batch, seq, latent_dim]
+            generator: Optional torch.Generator for reproducible sampling
+
+        Returns:
+            z: Sampled latent [batch, seq, latent_dim]
+        """
         std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
+
+        # Create generator if seed is set but no generator provided
+        if generator is None and self.seed is not None:
+            generator = torch.Generator(device=mu.device).manual_seed(self.seed)
+
+        # Sample epsilon
+        if generator is not None:
+            eps = torch.randn(mu.shape, generator=generator, device=mu.device, dtype=mu.dtype)
+        else:
+            eps = torch.randn_like(std)
+
         return mu + eps * std
 
     def decode(
@@ -697,16 +819,22 @@ class MultiModalVAE(nn.Module):
     def forward(
             self,
             modality_inputs: Dict[str, torch.Tensor],
-            target_modalities: Optional[List[str]] = None
+            target_modalities: Optional[List[str]] = None,
+            generator: Optional[torch.Generator] = None
     ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
         """
         Full forward pass.
+
+        Args:
+            modality_inputs: Dict of input tensors
+            target_modalities: Optional list of modalities to decode
+            generator: Optional generator for reproducible sampling
 
         Returns:
             reconstructions, mu, logvar
         """
         mu, logvar = self.encode(modality_inputs)
-        z = self.reparameterize(mu, logvar)
+        z = self.reparameterize(mu, logvar, generator)
         reconstructions = self.decode(z, target_modalities)
         return reconstructions, mu, logvar
 
@@ -805,60 +933,125 @@ class MultiModalVAELoss(nn.Module):
 
 
 # ============================================================================
-# USAGE EXAMPLE
+# USAGE EXAMPLES
 # ============================================================================
 
 if __name__ == "__main__":
     print("=" * 80)
-    print("Multi-Modal VAE Examples")
+    print("Multi-Modal VAE with Seed Control - Examples")
     print("=" * 80)
 
-    # Example 1: Single-modality VAE (baseline)
-    print("\n[1] Single-Modality VAE:")
+    # Set seed for reproducibility
+    SEED = 42
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+
+    # Example 1: Single-modality VAE with seed
+    print("\n[1] Single-Modality VAE with Seed Control:")
     single_vae = SingleModalityVAE(
         input_dim=768,
         latent_dim=768,
-        seq_len=77
+        seq_len=77,
+        seed=SEED
     )
+    single_vae.eval()  # Disable dropout for reproducibility
 
     x = torch.randn(4, 77, 768)
-    recon, mu, logvar = single_vae(x)
-    print(f"  Input: {x.shape}")
-    print(f"  Recon: {recon.shape}")
-    print(f"  Latent: {mu.shape}")
 
-    # Example 2: Multi-modal VAE with Cantor fusion
-    print("\n[2] Multi-Modal VAE (Cantor Fusion):")
+    # Deterministic forward pass with generator
+    with torch.no_grad():
+        generator = torch.Generator().manual_seed(SEED)
+        recon1, mu1, logvar1 = single_vae(x, generator=generator)
+
+        # Repeat with same seed - should get identical results
+        generator = torch.Generator().manual_seed(SEED)
+        recon2, mu2, logvar2 = single_vae(x, generator=generator)
+
+    print(f"  Input: {x.shape}")
+    print(f"  Recon: {recon1.shape}")
+    print(f"  Latent: {mu1.shape}")
+    print(f"  Reconstruction identical: {torch.allclose(recon1, recon2)}")
+    print(f"  Latent identical: {torch.allclose(mu1, mu2)}")
+
+    # Example 2: Multi-modal VAE with seed
+    print("\n[2] Multi-Modal VAE with Seed Control (Cantor Fusion):")
     config = MultiModalVAEConfig(
         modality_dims={"clip": 768, "t5": 768},
         latent_dim=768,
-        fusion_strategy="cantor"
+        fusion_strategy="cantor",
+        seed=SEED
     )
 
     multi_vae = MultiModalVAE(config)
+    multi_vae.eval()  # Disable dropout for reproducibility
 
     inputs = {
         "clip": torch.randn(4, 77, 768),
         "t5": torch.randn(4, 77, 768)
     }
 
-    recons, mu, logvar = multi_vae(inputs)
-    print(f"  CLIP recon: {recons['clip'].shape}")
-    print(f"  T5 recon: {recons['t5'].shape}")
-    print(f"  Latent: {mu.shape}")
+    # Deterministic forward pass
+    with torch.no_grad():
+        generator = torch.Generator().manual_seed(SEED)
+        recons1, mu1, logvar1 = multi_vae(inputs, generator=generator)
 
-    # Example 3: Loss computation
-    print("\n[3] Loss Computation:")
+        # Repeat with same seed
+        generator = torch.Generator().manual_seed(SEED)
+        recons2, mu2, logvar2 = multi_vae(inputs, generator=generator)
+
+    print(f"  CLIP recon: {recons1['clip'].shape}")
+    print(f"  T5 recon: {recons1['t5'].shape}")
+    print(f"  Latent: {mu1.shape}")
+    print(f"  CLIP reconstruction identical: {torch.allclose(recons1['clip'], recons2['clip'])}")
+    print(f"  T5 reconstruction identical: {torch.allclose(recons1['t5'], recons2['t5'])}")
+    print(f"  Latent identical: {torch.allclose(mu1, mu2)}")
+
+    # Example 3: Loss computation with seeded VAE
+    print("\n[3] Loss Computation with Seeded VAE:")
     loss_fn = MultiModalVAELoss(
         beta_kl=0.1,
         beta_reconstruction=1.0,
         beta_cross_modal=0.05
     )
 
+    generator = torch.Generator().manual_seed(SEED)
+    recons, mu, logvar = multi_vae(inputs, generator=generator)
     loss, components = loss_fn(inputs, recons, mu, logvar, return_components=True)
+
     print(f"  Total loss: {loss.item():.4f}")
     for name, value in components.items():
         if name != 'total':
             print(f"    {name}: {value.item():.4f}")
 
+    # Example 4: Geometric fusion with seed
+    print("\n[4] Multi-Modal VAE with Geometric Fusion and Seed:")
+    config_geo = MultiModalVAEConfig(
+        modality_dims={"clip": 768, "t5": 768},
+        latent_dim=768,
+        fusion_strategy="geometric",
+        seed=SEED
+    )
+
+    multi_vae_geo = MultiModalVAE(config_geo)
+    multi_vae_geo.eval()  # Disable dropout for reproducibility
+
+    with torch.no_grad():
+        generator = torch.Generator().manual_seed(SEED)
+        recons_geo, mu_geo, logvar_geo = multi_vae_geo(inputs, generator=generator)
+
+    print(f"  CLIP recon: {recons_geo['clip'].shape}")
+    print(f"  T5 recon: {recons_geo['t5'].shape}")
+    print(f"  Latent: {mu_geo.shape}")
+
     print("\n" + "=" * 80)
+    print("SEED CONTROL BENEFITS:")
+    print("  ✓ Reproducible initialization across runs")
+    print("  ✓ Deterministic sampling during forward passes")
+    print("  ✓ Consistent results for debugging and validation")
+    print("  ✓ Optional generator override for custom sampling strategies")
+    print("\nBEST PRACTICES:")
+    print("  • Use model.eval() for fully deterministic inference")
+    print("  • Use torch.no_grad() during evaluation to disable gradients")
+    print("  • Dropout layers use global random state (disabled in eval mode)")
+    print("=" * 80)
