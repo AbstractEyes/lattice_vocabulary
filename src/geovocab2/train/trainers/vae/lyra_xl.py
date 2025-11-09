@@ -659,9 +659,9 @@ recons, mu, logvar = model(inputs, target_modalities=["clip_l", "clip_g"])
             "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
         )
 
-        print("  [3/3] T5-XXL (google/t5-v1_1-xxl)...")
-        t5_tokenizer = T5Tokenizer.from_pretrained("google/t5-v1_1-xxl")
-        t5_model = T5EncoderModel.from_pretrained("google/t5-v1_1-xxl")
+        print("  [3/3] FLAN-T5-XL (flan-t5-xl)...")
+        t5_tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-xl")
+        t5_model = T5EncoderModel.from_pretrained("google/flan-t5-xl")
 
         print(f"✓ All encoders loaded")
         print(f"Dataset size: {len(texts)} samples")
@@ -942,12 +942,12 @@ def create_lyra_trainer(
     Convenience function to create VAE Lyra SDXL trainer.
 
     Example:
-        >>> trainer = create_lyra_trainer(
-        ...     fusion_strategy="cantor",
-        ...     num_samples=10000,
-        ...     batch_size=16,
-        ...     push_to_hub=True
-        ... )
+    #    >>> trainer = create_lyra_trainer(
+    #    ...     fusion_strategy="cantor",
+    #    ...     num_samples=10000,
+    #    ...     batch_size=16,
+    #    ...     push_to_hub=True
+    #    ... )
     """
     config = VAELyraTrainerConfig(
         fusion_strategy=fusion_strategy,
@@ -973,9 +973,9 @@ def load_lyra_from_hub(
     Load VAE Lyra SDXL directly from HuggingFace Hub.
 
     Example:
-        >>> model = load_lyra_from_hub()
-        >>> model.eval()
-    """
+    #    >>> model = load_lyra_from_hub()
+    #    >>> model.eval()
+    #"""
     from huggingface_hub import hf_hub_download
 
     # Download model
