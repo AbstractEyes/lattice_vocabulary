@@ -62,7 +62,7 @@ class VAELyraTrainerConfig:
     dropout: float = 0.1
 
     # Fusion
-    fusion_strategy: str = "cantor"  # cantor, geometric, concatenate
+    fusion_strategy: str = "cantor"
     fusion_heads: int = 8
     fusion_dropout: float = 0.1
 
@@ -70,12 +70,11 @@ class VAELyraTrainerConfig:
     beta_kl: float = 0.1
     beta_reconstruction: float = 1.0
     beta_cross_modal: float = 0.05
-    recon_type: str = 'mse'  # 'mse' or 'cosine'
+    recon_type: str = 'mse'
 
-    # KL annealing
-    use_kl_annealing: bool = True
-    kl_anneal_epochs: int = 10
-    kl_start_beta: float = 0.0
+    # NEW: Per-modality reconstruction weights
+    modality_recon_weights: Dict[str, float] = None  # <-- ADD THIS
+    cross_modal_projection_dim: int = 768  # <-- ADD THIS TOO
 
     # Training hyperparameters
     batch_size: int = 16  # Reduced for larger models
@@ -119,11 +118,18 @@ class VAELyraTrainerConfig:
 
     def __post_init__(self):
         if self.modality_dims is None:
-            # SDXL: CLIP-L (768), CLIP-G (1280), T5-XXL (2048)
             self.modality_dims = {
                 "clip_l": 768,
                 "clip_g": 1280,
                 "t5_xl": 2048
+            }
+
+        # Default weights: prioritize CLIP outputs for SDXL
+        if self.modality_recon_weights is None:
+            self.modality_recon_weights = {
+                "clip_l": 1.0,  # Full weight - SDXL primary
+                "clip_g": 1.0,  # Full weight - SDXL primary
+                "t5_xl": 0.3  # Lower weight - auxiliary signal
             }
 
 
@@ -546,7 +552,10 @@ recons, mu, logvar = model(inputs, target_modalities=["clip_l", "clip_g"])
             beta_kl=self.config.beta_kl,
             beta_reconstruction=self.config.beta_reconstruction,
             beta_cross_modal=self.config.beta_cross_modal,
-            recon_type=self.config.recon_type
+            recon_type=self.config.recon_type,
+            modality_weights=self.config.modality_recon_weights,
+            modality_dims=self.config.modality_dims,  # <-- NEW
+            cross_modal_projection_dim=768  # <-- Common space dimension
         )
 
     def _build_scheduler(self):
