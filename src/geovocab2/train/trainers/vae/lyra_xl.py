@@ -1,7 +1,8 @@
 # geovocab2/train/trainers/vae_lyra/trainer.py
 
 """
-Trainer for VAE Lyra - Multi-Modal Variational Autoencoder with HF Integration
+Trainer for VAE Lyra - Multi-Modal Variational Autoencoder
+CLIP-L + CLIP-G + T5-XXL for SDXL Compatibility
 
 Install via:
     !pip install git+https://github.com/AbstractPhil/geovocab2.git
@@ -17,7 +18,13 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
-from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5Tokenizer
+from transformers import (
+    CLIPTextModel,
+    CLIPTokenizer,
+    CLIPTextModelWithProjection,
+    T5EncoderModel,
+    T5Tokenizer
+)
 from huggingface_hub import HfApi, hf_hub_download, create_repo, upload_file
 from tqdm.auto import tqdm
 import wandb
@@ -43,10 +50,10 @@ from geovocab2.data.prompt.symbolic_tree import SynthesisSystem
 
 @dataclass
 class VAELyraTrainerConfig:
-    """Training configuration for VAE Lyra."""
+    """Training configuration for VAE Lyra with SDXL support."""
 
-    # Model architecture
-    modality_dims: Dict[str, int] = None  # {"clip": 768, "t5": 768}
+    # Model architecture - SDXL three-modality setup
+    modality_dims: Dict[str, int] = None  # {"clip_l": 768, "clip_g": 1280, "t5_xl": 2048}
     latent_dim: int = 768
     seq_len: int = 77
     encoder_layers: int = 3
@@ -55,7 +62,7 @@ class VAELyraTrainerConfig:
     dropout: float = 0.1
 
     # Fusion
-    fusion_strategy: str = "cantor"  # cantor, geometric, concatenate, attention, gated
+    fusion_strategy: str = "cantor"  # cantor, geometric, concatenate
     fusion_heads: int = 8
     fusion_dropout: float = 0.1
 
@@ -71,7 +78,7 @@ class VAELyraTrainerConfig:
     kl_start_beta: float = 0.0
 
     # Training hyperparameters
-    batch_size: int = 32
+    batch_size: int = 16  # Reduced for larger models
     num_epochs: int = 100
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
@@ -86,19 +93,19 @@ class VAELyraTrainerConfig:
     synthetic_ratio: float = 0.15
 
     # Checkpointing
-    checkpoint_dir: str = './checkpoints_lyra'
+    checkpoint_dir: str = './checkpoints_lyra_sdxl'
     save_every: int = 1000
     keep_last_n: int = 3
 
     # HuggingFace Hub
-    hf_repo: str = "AbstractPhil/vae-lyra"
+    hf_repo: str = "AbstractPhil/vae-lyra-sdxl"
     push_to_hub: bool = True
-    push_every: int = 2000  # Push to HF every N steps
-    auto_load_from_hub: bool = True  # Load latest model if no local checkpoint
+    push_every: int = 2000
+    auto_load_from_hub: bool = True
 
     # Logging
     use_wandb: bool = True
-    wandb_project: str = 'vae-lyra'
+    wandb_project: str = 'vae-lyra-sdxl'
     wandb_entity: Optional[str] = None
     log_every: int = 50
 
@@ -112,31 +119,42 @@ class VAELyraTrainerConfig:
 
     def __post_init__(self):
         if self.modality_dims is None:
-            self.modality_dims = {"clip": 768, "t5": 768}
+            # SDXL: CLIP-L (768), CLIP-G (1280), T5-XXL (2048)
+            self.modality_dims = {
+                "clip_l": 768,
+                "clip_g": 1280,
+                "t5_xl": 2048
+            }
 
 
 class TextEmbeddingDataset(Dataset):
-    """Dataset that generates CLIP and T5 embeddings on-the-fly."""
+    """Dataset that generates CLIP-L, CLIP-G, and T5-XXL embeddings on-the-fly."""
 
     def __init__(
             self,
             texts: List[str],
-            clip_tokenizer: CLIPTokenizer,
-            clip_model: CLIPTextModel,
+            clip_l_tokenizer: CLIPTokenizer,
+            clip_l_model: CLIPTextModel,
+            clip_g_tokenizer: CLIPTokenizer,
+            clip_g_model: CLIPTextModelWithProjection,
             t5_tokenizer: T5Tokenizer,
             t5_model: T5EncoderModel,
             device: str = 'cuda',
             max_length: int = 77
     ):
         self.texts = texts
-        self.clip_tokenizer = clip_tokenizer
-        self.clip_model = clip_model
+        self.clip_l_tokenizer = clip_l_tokenizer
+        self.clip_l_model = clip_l_model
+        self.clip_g_tokenizer = clip_g_tokenizer
+        self.clip_g_model = clip_g_model
         self.t5_tokenizer = t5_tokenizer
         self.t5_model = t5_model
         self.device = device
         self.max_length = max_length
 
-        self.clip_model.to(device).eval()
+        # Move models to device and set to eval
+        self.clip_l_model.to(device).eval()
+        self.clip_g_model.to(device).eval()
         self.t5_model.to(device).eval()
 
     def __len__(self):
@@ -146,8 +164,8 @@ class TextEmbeddingDataset(Dataset):
     def __getitem__(self, idx):
         text = self.texts[idx]
 
-        # CLIP embedding
-        clip_tokens = self.clip_tokenizer(
+        # CLIP-L embedding (SD1.5 / SDXL text_encoder)
+        clip_l_tokens = self.clip_l_tokenizer(
             text,
             max_length=self.max_length,
             padding='max_length',
@@ -155,10 +173,22 @@ class TextEmbeddingDataset(Dataset):
             return_tensors='pt'
         ).to(self.device)
 
-        clip_output = self.clip_model(**clip_tokens)
-        clip_embed = clip_output.last_hidden_state.squeeze(0)
+        clip_l_output = self.clip_l_model(**clip_l_tokens)
+        clip_l_embed = clip_l_output.last_hidden_state.squeeze(0)
 
-        # T5 embedding
+        # CLIP-G embedding (SDXL text_encoder_2)
+        clip_g_tokens = self.clip_g_tokenizer(
+            text,
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
+        ).to(self.device)
+
+        clip_g_output = self.clip_g_model(**clip_g_tokens)
+        clip_g_embed = clip_g_output.last_hidden_state.squeeze(0)
+
+        # T5-XXL embedding
         t5_tokens = self.t5_tokenizer(
             text,
             max_length=self.max_length,
@@ -171,14 +201,15 @@ class TextEmbeddingDataset(Dataset):
         t5_embed = t5_output.last_hidden_state.squeeze(0)
 
         return {
-            'clip': clip_embed.cpu(),
-            't5': t5_embed.cpu(),
+            'clip_l': clip_l_embed.cpu(),
+            'clip_g': clip_g_embed.cpu(),
+            't5_xl': t5_embed.cpu(),
             'text': text
         }
 
 
 class VAELyraTrainer:
-    """Trainer for VAE Lyra - Multi-Modal VAE with HuggingFace Integration."""
+    """Trainer for VAE Lyra - SDXL-compatible Multi-Modal VAE."""
 
     def __init__(self, config: VAELyraTrainerConfig):
         self.config = config
@@ -192,7 +223,8 @@ class VAELyraTrainer:
         self.hf_api = HfApi()
         self._init_hf_repo()
 
-        print("🎵 Initializing VAE Lyra...")
+        print("🎵 Initializing VAE Lyra (SDXL Edition)...")
+        print(f"   Modalities: CLIP-L (768), CLIP-G (1280), T5-XXL (2048)")
 
         # Try to load from HF first
         if config.auto_load_from_hub:
@@ -239,7 +271,7 @@ class VAELyraTrainer:
                 project=config.wandb_project,
                 entity=config.wandb_entity,
                 config=asdict(config),
-                name=f"lyra_{config.fusion_strategy}",
+                name=f"lyra_sdxl_{config.fusion_strategy}",
                 resume="allow"
             )
 
@@ -377,12 +409,15 @@ tags:
 - text-embeddings
 - clip
 - t5
+- sdxl
+- stable-diffusion
 license: mit
 ---
 
-# VAE Lyra 🎵
+# VAE Lyra 🎵 - SDXL Edition
 
-Multi-modal Variational Autoencoder for text embedding transformation using geometric fusion.
+Multi-modal Variational Autoencoder for SDXL text embedding transformation using geometric fusion.
+Fuses CLIP-L, CLIP-G, and T5-XXL into a unified latent space.
 
 ## Model Details
 
@@ -393,10 +428,21 @@ Multi-modal Variational Autoencoder for text embedding transformation using geom
 
 ## Architecture
 
-- **Modalities**: CLIP-L (768d) + T5-base (768d)
+- **Modalities**: 
+  - CLIP-L (768d) - SDXL text_encoder
+  - CLIP-G (1280d) - SDXL text_encoder_2  
+  - T5-XXL (2048d) - Additional conditioning
 - **Encoder Layers**: {self.config.encoder_layers}
 - **Decoder Layers**: {self.config.decoder_layers}
 - **Hidden Dimension**: {self.config.hidden_dim}
+
+## SDXL Compatibility
+
+This model outputs both CLIP embeddings needed for SDXL:
+- `clip_l`: [batch, 77, 768] → text_encoder output
+- `clip_g`: [batch, 77, 1280] → text_encoder_2 output
+
+T5-XXL information is encoded into the latent space but not directly output.
 
 ## Usage
 ```python
@@ -406,7 +452,7 @@ import torch
 
 # Download model
 model_path = hf_hub_download(
-    repo_id="AbstractPhil/vae-lyra",
+    repo_id="{self.config.hf_repo}",
     filename="model.pt"
 )
 
@@ -415,8 +461,8 @@ checkpoint = torch.load(model_path)
 
 # Create model
 config = MultiModalVAEConfig(
-    modality_dims={{"clip": 768, "t5": 768}},
-    latent_dim=768,
+    modality_dims={{"clip_l": 768, "clip_g": 1280, "t5_xl": 2048}},
+    latent_dim={self.config.latent_dim},
     fusion_strategy="{self.config.fusion_strategy}"
 )
 
@@ -424,13 +470,17 @@ model = MultiModalVAE(config)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
-# Use model
+# Use model - train on all three
 inputs = {{
-    "clip": clip_embeddings,  # [batch, 77, 768]
-    "t5": t5_embeddings        # [batch, 77, 768]
+    "clip_l": clip_l_embeddings,   # [batch, 77, 768]
+    "clip_g": clip_g_embeddings,   # [batch, 77, 1280]
+    "t5_xl": t5_xl_embeddings      # [batch, 77, 2048]
 }}
 
-reconstructions, mu, logvar = model(inputs)
+# For SDXL inference - only decode CLIP outputs
+recons, mu, logvar = model(inputs, target_modalities=["clip_l", "clip_g"])
+
+# Use recons["clip_l"] and recons["clip_g"] with SDXL
 ```
 
 ## Training Details
@@ -442,11 +492,11 @@ reconstructions, mu, logvar = model(inputs)
 
 ## Citation
 ```bibtex
-@software{{vae_lyra_2025,
+@software{{vae_lyra_sdxl_2025,
   author = {{AbstractPhil}},
-  title = {{VAE Lyra: Multi-Modal Variational Autoencoder}},
+  title = {{VAE Lyra SDXL: Multi-Modal Variational Autoencoder}},
   year = {{2025}},
-  url = {{https://huggingface.co/AbstractPhil/vae-lyra}}
+  url = {{https://huggingface.co/{self.config.hf_repo}}}
 }}
 ```
 """
@@ -563,7 +613,7 @@ reconstructions, mu, logvar = model(inputs)
 
     def prepare_data(self, num_samples: Optional[int] = None) -> DataLoader:
         """
-        Prepare dataset with dynamic prompt generation.
+        Prepare dataset with CLIP-L, CLIP-G, and T5-XXL encoders.
 
         Args:
             num_samples: Number of training samples (default: from config)
@@ -596,20 +646,33 @@ reconstructions, mu, logvar = model(inputs)
             print(f"  [{sources[i]}] {texts[i]}")
 
         # Load text encoders
-        print("\nLoading CLIP-L and T5-base...")
-        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        clip_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
+        print("\nLoading CLIP-L, CLIP-G, and T5-XXL...")
+        print("  [1/3] CLIP-L (openai/clip-vit-large-patch14)...")
+        clip_l_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        clip_l_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
 
-        t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
-        t5_model = T5EncoderModel.from_pretrained("t5-base")
+        print("  [2/3] CLIP-G (laion/CLIP-ViT-bigG-14-laion2B-39B-b160k)...")
+        clip_g_tokenizer = CLIPTokenizer.from_pretrained(
+            "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
+        )
+        clip_g_model = CLIPTextModelWithProjection.from_pretrained(
+            "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
+        )
 
+        print("  [3/3] T5-XXL (google/t5-v1_1-xxl)...")
+        t5_tokenizer = T5Tokenizer.from_pretrained("google/t5-v1_1-xxl")
+        t5_model = T5EncoderModel.from_pretrained("google/t5-v1_1-xxl")
+
+        print(f"✓ All encoders loaded")
         print(f"Dataset size: {len(texts)} samples")
 
         # Create dataset
         dataset = TextEmbeddingDataset(
             texts=texts,
-            clip_tokenizer=clip_tokenizer,
-            clip_model=clip_model,
+            clip_l_tokenizer=clip_l_tokenizer,
+            clip_l_model=clip_l_model,
+            clip_g_tokenizer=clip_g_tokenizer,
+            clip_g_model=clip_g_model,
             t5_tokenizer=t5_tokenizer,
             t5_model=t5_model,
             device=self.device,
@@ -638,10 +701,11 @@ reconstructions, mu, logvar = model(inputs)
         return dataloader
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """Single training step."""
+        """Single training step with three modalities."""
         modality_inputs = {
-            'clip': batch['clip'].to(self.device),
-            't5': batch['t5'].to(self.device)
+            'clip_l': batch['clip_l'].to(self.device),
+            'clip_g': batch['clip_g'].to(self.device),
+            't5_xl': batch['t5_xl'].to(self.device)
         }
 
         # Update KL beta with annealing
@@ -650,6 +714,7 @@ reconstructions, mu, logvar = model(inputs)
 
         if self.scaler is not None:
             with torch.amp.autocast('cuda'):
+                # Train on all three modalities
                 reconstructions, mu, logvar = self.model(modality_inputs)
                 loss, components = self.loss_fn(
                     inputs=modality_inputs,
@@ -718,7 +783,8 @@ reconstructions, mu, logvar = model(inputs)
 
             pbar.set_postfix({
                 'loss': f"{metrics['total']:.4f}",
-                'recon': f"{metrics.get('recon_clip', 0):.4f}",
+                'r_l': f"{metrics.get('recon_clip_l', 0):.4f}",
+                'r_g': f"{metrics.get('recon_clip_g', 0):.4f}",
                 'kl': f"{metrics['kl']:.4f}",
                 'β': f"{metrics['kl_beta']:.3f}"
             })
@@ -745,7 +811,7 @@ reconstructions, mu, logvar = model(inputs)
     def train(self, dataloader: DataLoader):
         """Full training loop."""
         print(f"\n{'=' * 70}")
-        print(f"🎵 Starting VAE Lyra training for {self.config.num_epochs} epochs...")
+        print(f"🎵 Starting VAE Lyra SDXL training for {self.config.num_epochs} epochs...")
         print(f"{'=' * 70}")
         print(f"Device: {self.device}")
         print(f"Batch size: {self.config.batch_size}")
@@ -766,8 +832,9 @@ reconstructions, mu, logvar = model(inputs)
             print(f"\n{'=' * 70}")
             print(f"Epoch {epoch} Summary:")
             print(f"  Total Loss: {metrics['total']:.4f}")
-            print(f"  Reconstruction (CLIP): {metrics.get('recon_clip', 0):.4f}")
-            print(f"  Reconstruction (T5): {metrics.get('recon_t5', 0):.4f}")
+            print(f"  Reconstruction (CLIP-L): {metrics.get('recon_clip_l', 0):.4f}")
+            print(f"  Reconstruction (CLIP-G): {metrics.get('recon_clip_g', 0):.4f}")
+            print(f"  Reconstruction (T5-XXL): {metrics.get('recon_t5_xl', 0):.4f}")
             print(f"  KL Divergence: {metrics['kl']:.4f}")
             print(f"  Cross-Modal: {metrics.get('cross_modal', 0):.4f}")
             print(f"  KL Beta: {metrics['kl_beta']:.3f}")
@@ -861,26 +928,27 @@ reconstructions, mu, logvar = model(inputs)
 def create_lyra_trainer(
         fusion_strategy: str = "cantor",
         num_samples: int = 10000,
-        batch_size: int = 32,
+        batch_size: int = 16,
         num_epochs: int = 100,
         learning_rate: float = 1e-4,
         beta_kl: float = 0.1,
         use_kl_annealing: bool = True,
         push_to_hub: bool = True,
         push_every: int = 2000,
+        hf_repo: str = "AbstractPhil/vae-lyra-sdxl",
         **kwargs
 ) -> VAELyraTrainer:
     """
-    Convenience function to create VAE Lyra trainer.
+    Convenience function to create VAE Lyra SDXL trainer.
 
     Example:
-    #    >>> trainer = create_lyra_trainer(
-    #    ...     fusion_strategy="cantor",
-    #    ...     num_samples=10000,
-    #    ...     batch_size=16,
-    #    ...     push_to_hub=True
-    #    ... )
-    #"""
+        >>> trainer = create_lyra_trainer(
+        ...     fusion_strategy="cantor",
+        ...     num_samples=10000,
+        ...     batch_size=16,
+        ...     push_to_hub=True
+        ... )
+    """
     config = VAELyraTrainerConfig(
         fusion_strategy=fusion_strategy,
         num_samples=num_samples,
@@ -891,22 +959,23 @@ def create_lyra_trainer(
         use_kl_annealing=use_kl_annealing,
         push_to_hub=push_to_hub,
         push_every=push_every,
+        hf_repo=hf_repo,
         **kwargs
     )
     return VAELyraTrainer(config)
 
 
 def load_lyra_from_hub(
-        repo_id: str = "AbstractPhil/vae-lyra",
+        repo_id: str = "AbstractPhil/vae-lyra-sdxl",
         device: str = "cuda"
 ) -> MultiModalVAE:
     """
-    Load VAE Lyra directly from HuggingFace Hub.
+    Load VAE Lyra SDXL directly from HuggingFace Hub.
 
-    #Example:
-    #    >>> model = load_lyra_from_hub()
-    #    >>> model.eval()
-    #"""
+    Example:
+        >>> model = load_lyra_from_hub()
+        >>> model.eval()
+    """
     from huggingface_hub import hf_hub_download
 
     # Download model
@@ -929,7 +998,7 @@ def load_lyra_from_hub(
 
     # Create VAE config
     vae_config = MultiModalVAEConfig(
-        modality_dims=config_dict.get('modality_dims', {"clip": 768, "t5": 768}),
+        modality_dims=config_dict.get('modality_dims', {"clip_l": 768, "clip_g": 1280, "t5_xl": 2048}),
         latent_dim=config_dict.get('latent_dim', 768),
         seq_len=config_dict.get('seq_len', 77),
         encoder_layers=config_dict.get('encoder_layers', 3),
@@ -947,8 +1016,30 @@ def load_lyra_from_hub(
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
 
-    print(f"✓ Loaded VAE Lyra from {repo_id}")
+    print(f"✓ Loaded VAE Lyra SDXL from {repo_id}")
     print(f"✓ Training step: {checkpoint.get('global_step', 'unknown')}")
     print(f"✓ Best loss: {checkpoint.get('best_loss', 'unknown'):.4f}")
 
     return model
+
+
+# ============================================================================
+# EXAMPLE USAGE
+# ============================================================================
+
+if __name__ == "__main__":
+    # Create trainer for SDXL
+    trainer = create_lyra_trainer(
+        fusion_strategy="cantor",  # or "geometric"
+        num_samples=10000,
+        batch_size=16,
+        num_epochs=100,
+        push_to_hub=True,
+        hf_repo="AbstractPhil/vae-lyra-sdxl"
+    )
+
+    # Prepare data
+    dataloader = trainer.prepare_data()
+
+    # Train
+    trainer.train(dataloader)
