@@ -638,6 +638,8 @@ class GeometricModalityFusion(nn.Module):
 # MULTI-MODAL VAE
 # ============================================================================
 
+# In vae_lyra.py - Update MultiModalVAE
+
 class MultiModalVAE(nn.Module):
     """
     Multi-modal VAE with advanced fusion and seed control.
@@ -726,6 +728,13 @@ class MultiModalVAE(nn.Module):
                 in_dim = out_dim
 
             self.decoders[name] = nn.Sequential(*decoder_layers)
+
+        # Cross-modal projection layers (for comparing different dimensions)
+        # These project all modalities to a common space for alignment
+        self.cross_modal_projections = nn.ModuleDict({
+            name: nn.Linear(dim, config.latent_dim)  # Project to latent_dim
+            for name, dim in config.modality_dims.items()
+        })
 
     def fuse_modalities(
             self,
@@ -816,6 +825,27 @@ class MultiModalVAE(nn.Module):
 
         return reconstructions
 
+    def project_for_cross_modal(
+            self,
+            reconstructions: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Project reconstructions to common space for cross-modal comparison.
+
+        Args:
+            reconstructions: Dict of {name: [batch, seq, dim_i]}
+
+        Returns:
+            Dict of {name: [batch, seq, latent_dim]} - all same dimension
+        """
+        projected = {}
+        for name, recon in reconstructions.items():
+            proj = self.cross_modal_projections[name](recon)
+            proj = F.normalize(proj, dim=-1)  # Normalize for stability
+            projected[name] = proj
+
+        return projected
+
     def forward(
             self,
             modality_inputs: Dict[str, torch.Tensor],
@@ -844,7 +874,7 @@ class MultiModalVAE(nn.Module):
 # ============================================================================
 
 class MultiModalVAELoss(nn.Module):
-    """Loss for multi-modal VAE."""
+    """Loss for multi-modal VAE - now stateless."""
 
     def __init__(
             self,
@@ -852,9 +882,7 @@ class MultiModalVAELoss(nn.Module):
             beta_reconstruction: float = 1.0,
             beta_cross_modal: float = 0.05,
             recon_type: str = 'mse',
-            modality_weights: Optional[Dict[str, float]] = None,
-            modality_dims: Optional[Dict[str, int]] = None,  # <-- NEW
-            cross_modal_projection_dim: int = 768  # <-- NEW: common space
+            modality_weights: Optional[Dict[str, float]] = None
     ):
         super().__init__()
         self.beta_kl = beta_kl
@@ -863,27 +891,31 @@ class MultiModalVAELoss(nn.Module):
         self.recon_type = recon_type
         self.modality_weights = modality_weights or {}
 
-        # Project all modalities to common space for cross-modal comparison
-        if modality_dims is not None and beta_cross_modal > 0:
-            self.cross_modal_projections = nn.ModuleDict({
-                name: nn.Linear(dim, cross_modal_projection_dim)
-                for name, dim in modality_dims.items()
-            })
-        else:
-            self.cross_modal_projections = None
-
     def forward(
             self,
             inputs: Dict[str, torch.Tensor],
             reconstructions: Dict[str, torch.Tensor],
             mu: torch.Tensor,
             logvar: torch.Tensor,
+            projected_recons: Optional[Dict[str, torch.Tensor]] = None,  # <-- NEW
             return_components: bool = False
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
-        """Compute total loss with proper cross-modal handling."""
+        """
+        Compute total loss.
+
+        Args:
+            inputs: Original inputs {name: [batch, seq, dim]}
+            reconstructions: Reconstructed outputs {name: [batch, seq, dim]}
+            mu, logvar: Latent parameters
+            projected_recons: Optional pre-projected reconstructions for cross-modal loss
+            return_components: Return loss breakdown
+
+        Returns:
+            total_loss, optional components dict
+        """
         losses = {}
 
-        # 1. Reconstruction losses (with per-modality weights)
+        # 1. Reconstruction loss for each modality (with per-modality weights)
         recon_losses = []
         total_weight = 0.0
 
@@ -912,21 +944,15 @@ class MultiModalVAELoss(nn.Module):
         kl_loss = kl_loss / (mu.shape[0] * mu.shape[1] * mu.shape[2])
         losses['kl'] = kl_loss
 
-        # 3. Cross-modal consistency - PROJECT TO COMMON SPACE FIRST!
-        if len(reconstructions) > 1 and self.cross_modal_projections is not None:
-            # Project all reconstructions to common dimension
-            projected_recons = []
-            for name in reconstructions.keys():
-                proj = self.cross_modal_projections[name](reconstructions[name])
-                proj = F.normalize(proj, dim=-1)  # Normalize for stability
-                projected_recons.append(proj)
-
-            # Now compare in common space
+        # 3. Cross-modal consistency in common space
+        if len(reconstructions) > 1 and projected_recons is not None:
+            # Compare pre-projected reconstructions (all same dimension now)
+            projected_list = list(projected_recons.values())
             cross_modal_losses = []
-            for i in range(len(projected_recons)):
-                for j in range(i + 1, len(projected_recons)):
-                    # Compare in common space - now same dimension!
-                    cm_loss = F.mse_loss(projected_recons[i], projected_recons[j])
+
+            for i in range(len(projected_list)):
+                for j in range(i + 1, len(projected_list)):
+                    cm_loss = F.mse_loss(projected_list[i], projected_list[j])
                     cross_modal_losses.append(cm_loss)
 
             cross_modal = sum(cross_modal_losses) / len(cross_modal_losses)
@@ -946,7 +972,6 @@ class MultiModalVAELoss(nn.Module):
         if return_components:
             return total_loss, losses
         return total_loss, None
-
 
 # ============================================================================
 # USAGE EXAMPLES

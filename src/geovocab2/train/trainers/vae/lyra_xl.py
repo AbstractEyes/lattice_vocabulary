@@ -552,15 +552,14 @@ recons, mu, logvar = model(inputs, target_modalities=["clip_l", "clip_g"])
         return model
 
     def _build_loss_fn(self):
-        """Build VAE loss function."""
+        """Build VAE loss function - now stateless."""
         return MultiModalVAELoss(
             beta_kl=self.config.beta_kl,
             beta_reconstruction=self.config.beta_reconstruction,
             beta_cross_modal=self.config.beta_cross_modal,
             recon_type=self.config.recon_type,
-            modality_weights=self.config.modality_recon_weights,
-            modality_dims=self.config.modality_dims,  # <-- NEW
-            cross_modal_projection_dim=768  # <-- Common space dimension
+            modality_weights=self.config.modality_recon_weights
+            # No modality_dims or projection_dim needed anymore!
         )
 
     def _build_scheduler(self):
@@ -730,11 +729,16 @@ recons, mu, logvar = model(inputs, target_modalities=["clip_l", "clip_g"])
             with torch.amp.autocast('cuda'):
                 # Train on all three modalities
                 reconstructions, mu, logvar = self.model(modality_inputs)
+
+                # Project to common space for cross-modal loss
+                projected_recons = self.model.project_for_cross_modal(reconstructions)
+
                 loss, components = self.loss_fn(
                     inputs=modality_inputs,
                     reconstructions=reconstructions,
                     mu=mu,
                     logvar=logvar,
+                    projected_recons=projected_recons,  # <-- Pass projections
                     return_components=True
                 )
 
@@ -752,11 +756,14 @@ recons, mu, logvar = model(inputs, target_modalities=["clip_l", "clip_g"])
             self.scaler.update()
         else:
             reconstructions, mu, logvar = self.model(modality_inputs)
+            projected_recons = self.model.project_for_cross_modal(reconstructions)
+
             loss, components = self.loss_fn(
                 inputs=modality_inputs,
                 reconstructions=reconstructions,
                 mu=mu,
                 logvar=logvar,
+                projected_recons=projected_recons,
                 return_components=True
             )
 
@@ -771,7 +778,6 @@ recons, mu, logvar = model(inputs, target_modalities=["clip_l", "clip_g"])
 
             self.optimizer.step()
 
-        # Update scheduler (for OneCycle)
         if self.scheduler is not None and self.config.scheduler_type == 'onecycle':
             self.scheduler.step()
 
