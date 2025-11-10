@@ -76,6 +76,11 @@ class VAELyraTrainerConfig:
     modality_recon_weights: Dict[str, float] = None  # <-- ADD THIS
     cross_modal_projection_dim: int = 768  # <-- ADD THIS TOO
 
+    # KL annealing
+    use_kl_annealing: bool = True
+    kl_anneal_epochs: int = 10
+    kl_start_beta: float = 0.0
+
     # Training hyperparameters
     batch_size: int = 16  # Reduced for larger models
     num_epochs: int = 100
