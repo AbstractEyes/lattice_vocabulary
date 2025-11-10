@@ -14157,25 +14157,23 @@ class BulkCaptions:
     ]
     
     COLORS = [
-        "red", "blue", "green", "yellow", "black", "white", "gray", "purple",
-        "pink", "orange", "brown", "gold", "silver", "bronze", "teal", "cyan",
+        "red", "blue", "green", "yellow", "black", "white", "gray", "grey", "purple",
+        "pink", "orange", "brown", "gold", "silver", "teal", "cyan",
         "magenta", "lime", "navy", "maroon", "olive", "turquoise", "indigo",
         "violet", "beige", "peach", "coral", "mint", "lavender", "charcoal",
-        "crimson", "emerald", "sapphire", "ruby", "amber", "pearl", "onyx",
-        "jade", "topaz", "aquamarine", "amethyst", "opal", "garnet", "peridot",
+        "crimson", "scarlet", "vermillion",
+
+        # Gemstone colors (these work as color descriptors)
+        "emerald", "sapphire", "ruby", "amber", "pearl", "jade", "topaz",
+        "aquamarine", "amethyst", "opal", "garnet", "peridot",
+
+        # Earth tones
         "tangerine", "mustard", "plum", "burgundy", "slate", "ash", "ivory",
-        "cream", "sepia", "taupe", "copper", "brass", "steel", "aluminum",
-        "chrome", "pewter", "zinc", "nickel", "lead", "tin", "iron", "bronze",
-        "brass", "cobalt", "platinum", "rhodium", "iridium", "titanium",
-        "zirconium", "beryllium", "lithium", "magnesium", "calcium", "sodium",
-        "potassium", "barium", "strontium", "thorium", "uranium", "plutonium",
-        "neon", "krypton", "xenon", "radon", "helium", "hydrogen", "oxygen",
-        "nitrogen", "carbon", "sulfur", "phosphorus", "chlorine", "fluorine",
-        "bromine", "iodine", "selenium", "arsenic", "antimony", "tellurium",
-        "bismuth", "cadmium", "mercury", "thallium", "lead", "tin", "gallium",
-        "indium", "thulium", "ytterbium", "holmium", "erbium", "dysprosium",
-        "neodymium", "praseodymium", "samarium", "lanthanum", "cerium",
-        "lanthanide", "actinide", "transition metal", "alkali metal", "alkaline earth metal",
+        "cream", "sepia", "taupe",
+
+        # Metallic colors (ONLY the ones that describe appearance)
+        "copper", "brass", "bronze", "steel", "chrome", "pewter",
+        "platinum", "cobalt",
     ]
     
     VERBS = [
