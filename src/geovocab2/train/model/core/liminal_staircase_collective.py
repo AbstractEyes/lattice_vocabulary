@@ -244,21 +244,45 @@ class CantorAttention(nn.Module):
 class GeometricPositionalFingerprinter(nn.Module):
     """Computes deterministic Cantor positions from pentachoron geometry."""
 
-    def __init__(self, cantor_depth: int = 8):
+    def __init__(
+        self,
+        cantor_depth: int = 8,
+        volume_scale: float = 10.0,
+        volume_weight: float = 0.4,
+        edge_weight: float = 0.3,
+        spread_weight: float = 0.3,
+        epsilon: float = 1e-6
+    ):
         super().__init__()
         self.cantor_depth = cantor_depth
+        self.volume_scale = volume_scale
+        self.volume_weight = volume_weight
+        self.edge_weight = edge_weight
+        self.spread_weight = spread_weight
+        self.epsilon = epsilon
+
+        # Validate weights
+        total_weight = volume_weight + edge_weight + spread_weight
+        assert abs(total_weight - 1.0) < 1e-5, f"Weights must sum to 1.0, got {total_weight}"
 
     def compute_cayley_menger_volume(self, vertices: torch.Tensor) -> torch.Tensor:
-        """Compute pentachoron volume."""
+        """
+        Compute pentachoron (4-simplex) volume via Cayley-Menger determinant.
+
+        For n-dimensional simplex: V² = (-1)^(n+1) / (2^n × (n!)²) × det(M)
+        For 4-simplex (pentachoron): 1 / (2^4 × 4!²) = 1 / (16 × 576) = 1 / 9216
+        """
         diff = vertices.unsqueeze(0) - vertices.unsqueeze(1)
         dist_sq = (diff ** 2).sum(dim=-1)
 
+        # Cayley-Menger matrix: bordered matrix of squared distances
         M = torch.zeros(6, 6, device=vertices.device, dtype=vertices.dtype)
         M[0, 1:] = 1.0
         M[1:, 0] = 1.0
         M[1:, 1:] = dist_sq
 
         det = torch.linalg.det(M)
+        # 9216 = 2^4 × (4!)² for 4-simplex volume formula
         volume_sq = (-det / 9216.0).clamp(min=0.0)
         return volume_sq.sqrt()
 
@@ -279,52 +303,96 @@ class GeometricPositionalFingerprinter(nn.Module):
         return distances.std()
 
     def geometry_to_cantor_position(self, vertices: torch.Tensor) -> torch.Tensor:
-        """Convert pentachoron geometry to Cantor position [0,1]."""
+        """
+        Convert pentachoron geometry to Cantor position [0,1].
+
+        Uses PURE ternary Cantor set iteration (no perturbations) for:
+        - Deterministic mapping from geometry to position
+        - O(n) global attentiveness via fractal self-similarity
+        - Multi-scale semantic clustering in containment zones
+
+        Returns:
+            Cantor coordinate in [0, 1] representing position in fractal structure
+        """
+        # Extract geometric features
         volume = self.compute_cayley_menger_volume(vertices)
         mean_edge, std_edge = self.compute_edge_statistics(vertices)
         spread = self.compute_vertex_spread(vertices)
 
-        volume_norm = torch.sigmoid(volume * 10.0)
-        edge_ratio = torch.sigmoid(std_edge / (mean_edge + 1e-6))
+        # Normalize features to [0, 1] via sigmoid
+        volume_norm = torch.sigmoid(volume * self.volume_scale)
+        edge_ratio = torch.sigmoid(std_edge / (mean_edge + self.epsilon))
         spread_norm = torch.sigmoid(spread)
 
+        # Weighted combination as seed for Cantor iteration
         seed = (
-            volume_norm * 0.4 +
-            edge_ratio * 0.3 +
-            spread_norm * 0.3
-        ).clamp(1e-6, 1.0 - 1e-6)
+            volume_norm * self.volume_weight +
+            edge_ratio * self.edge_weight +
+            spread_norm * self.spread_weight
+        ).clamp(self.epsilon, 1.0 - self.epsilon)
 
+        # PURE ternary Cantor set iteration (NO perturbations)
+        # Each iteration: divide [0,1] into thirds, keep left/right, remove middle
+        # This creates fractal structure with 2^depth containment zones
         x = seed
         cantor_val = 0.0
         factor = 0.5
 
         for _ in range(self.cantor_depth):
+            # Ternary expansion: x ∈ [0,1] → digit ∈ {0,1,2}
             x_scaled = x * 3.0
             digit = x_scaled.long()
             x_frac = x_scaled - digit.float()
 
+            # Cantor set: keep segments where digit ∈ {0, 2}, remove middle (digit=1)
+            # Encode position: 0 → left branch, 2 → right branch
             middle_bit = (digit == 2).float()
             cantor_val = cantor_val + middle_bit * factor
 
-            x = x_frac + (volume_norm + edge_ratio + spread_norm) * 0.01
-            x = x.clamp(1e-6, 1.0 - 1e-6)
+            # Pure iteration: only use fractional part (no perturbations!)
+            x = x_frac
             factor *= 0.5
 
         return cantor_val.clamp(0.0, 1.0)
 
     def compute_vocabulary_positions(
         self,
-        pentachora: torch.Tensor
+        pentachora: torch.Tensor,
+        batch_size: int = 256
     ) -> torch.Tensor:
-        """Compute positional fingerprints for all pentachora."""
+        """
+        Compute positional fingerprints for all pentachora (VECTORIZED).
+
+        Args:
+            pentachora: [vocab_size, 5, dim] pentachoron vertices
+            batch_size: Process in batches to avoid OOM (default: 256)
+
+        Returns:
+            positions: [vocab_size] Cantor coordinates
+        """
         vocab_size = pentachora.shape[0]
         positions = torch.zeros(vocab_size, device=pentachora.device)
 
-        print(f"Computing {vocab_size} positional fingerprints...")
-        for i in range(vocab_size):
-            positions[i] = self.geometry_to_cantor_position(pentachora[i])
-            if (i + 1) % 25 == 0:
-                print(f"  {i + 1}/{vocab_size}")
+        print(f"Computing {vocab_size} positional fingerprints (batched)...")
+
+        # Process in batches to avoid OOM for large vocabularies
+        num_batches = (vocab_size + batch_size - 1) // batch_size
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, vocab_size)
+
+            # Process batch
+            batch_positions = torch.stack([
+                self.geometry_to_cantor_position(pentachora[i])
+                for i in range(start_idx, end_idx)
+            ])
+
+            positions[start_idx:end_idx] = batch_positions
+
+            # Progress reporting
+            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == num_batches:
+                print(f"  Batch {batch_idx + 1}/{num_batches} ({end_idx}/{vocab_size})")
 
         return positions
 
@@ -610,9 +678,20 @@ class LiminalStaircaseConfig:
     num_heads: int = 8
     dropout: float = 0.1
 
+    # Geometric fingerprinting parameters
+    geometry_volume_scale: float = 10.0
+    geometry_volume_weight: float = 0.4
+    geometry_edge_weight: float = 0.3
+    geometry_spread_weight: float = 0.3
+    geometry_epsilon: float = 1e-6  # Numerical stability for division
+
     def __post_init__(self):
         if self.scales is None:
             self.scales = [128, 256, 512]
+
+        # Validate geometry weights sum to 1.0
+        total_weight = self.geometry_volume_weight + self.geometry_edge_weight + self.geometry_spread_weight
+        assert abs(total_weight - 1.0) < 1e-5, f"Geometry weights must sum to 1.0, got {total_weight}"
 
 
 class LiminalStaircase(nn.Module):
@@ -645,7 +724,14 @@ class LiminalStaircase(nn.Module):
 
         # Compute positional fingerprints (for semantic reference)
         print("\nComputing positional fingerprints...")
-        self.fingerprinter = GeometricPositionalFingerprinter(config.cantor_depth)
+        self.fingerprinter = GeometricPositionalFingerprinter(
+            cantor_depth=config.cantor_depth,
+            volume_scale=config.geometry_volume_scale,
+            volume_weight=config.geometry_volume_weight,
+            edge_weight=config.geometry_edge_weight,
+            spread_weight=config.geometry_spread_weight,
+            epsilon=config.geometry_epsilon
+        )
         self.anchor_positions = self.fingerprinter.compute_vocabulary_positions(
             self.opinion_anchors
         )
