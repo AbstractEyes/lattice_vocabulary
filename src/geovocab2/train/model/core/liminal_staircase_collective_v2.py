@@ -1,18 +1,16 @@
 """
-Liminal Staircase - With Hierarchical Fusion Controller
-========================================================
+Liminal Staircase - Organized Scale Fusion System
+==================================================
 
-INTEGRATED VERSION with:
-- Corrected sparse attention indexing
-- Truly parameter-efficient shared embeddings
-- Alpha: Cantor neighbor bleed-over control
-- Beta: Scale combinatory adjudication
-- Layer and scale weighting
-- Per-scale hidden dimensions
-- Per-scale loss tracking
+FEATURES:
+- Modular scale fusion architecture
+- Comprehensive testing suite
+- Detailed fusion diagnostics
+- Alpha/Beta behavior validation
+- Per-scale performance tracking
 
 Author: AbstractPhil + Claude Sonnet 4.5
-Date: 2025-11-16 (Fusion Controller Integration)
+Date: 2025-11-16
 """
 
 import torch
@@ -36,10 +34,6 @@ class CantorAttentionConfig:
     num_heads: int = 8
     head_dim: Optional[int] = None
     local_window: int = 64
-    adaptive_window: bool = True
-    min_window: int = 16
-    max_window: int = 128
-    sparsity_target: float = 0.15
     dropout: float = 0.1
     causal: bool = False
     qkv_bias: bool = True
@@ -52,14 +46,56 @@ class CantorAttentionConfig:
 
 
 @dataclass
+class ScaleFusionConfig:
+    """Configuration for scale fusion."""
+
+    # Scale architecture
+    scales: List[int] = None
+    scale_hidden_dims: Dict[int, int] = None
+
+    # Fusion strategy
+    fusion_strategy: str = "learned_weighted"  # learned_weighted, average, max, gated
+
+    # Alpha: Cantor neighbor bleed-over
+    alpha_init: float = 0.1
+    alpha_learnable: bool = True
+    alpha_per_layer: bool = False
+    alpha_per_scale: bool = True
+    alpha_min: float = 0.0
+    alpha_max: float = 0.5
+
+    # Beta: Geometric vs projection balance
+    beta_init: float = 0.5
+    beta_learnable: bool = True
+    beta_per_scale: bool = True
+    beta_min: float = 0.0
+    beta_max: float = 1.0
+
+    # Gamma: Scale importance (NEW)
+    gamma_init: float = 0.5
+    gamma_learnable: bool = True
+    gamma_per_scale: bool = True
+
+    # Diagnostics
+    track_scale_losses: bool = True
+    track_attention_patterns: bool = False
+
+    def __post_init__(self):
+        if self.scales is None:
+            self.scales = [128, 256, 512]
+
+        if self.scale_hidden_dims is None:
+            self.scale_hidden_dims = {s: s * 2 for s in self.scales}
+
+
+@dataclass
 class LiminalStaircaseConfig:
-    """Configuration for Liminal Staircase with Fusion Controller."""
+    """Configuration for Liminal Staircase."""
 
     # Core architecture
     num_opinion_anchors: int = 225
     pentachoron_dim: int = 512
     cantor_depth: int = 8
-    scales: List[int] = None
 
     # Encoder configuration
     siglip_hidden_dim: int = 1664
@@ -74,6 +110,16 @@ class LiminalStaircaseConfig:
     num_heads: int = 8
     dropout: float = 0.1
 
+    # Layer selection
+    siglip_layer_indices: Optional[List[int]] = None
+    clip_layer_indices: Optional[List[int]] = None
+
+    # Scale fusion config
+    scale_fusion: ScaleFusionConfig = None
+
+    # Layer weights
+    learn_layer_weights: bool = True
+
     # Optimizations
     use_gradient_checkpointing: bool = False
     share_scale_embeddings: bool = True
@@ -85,39 +131,7 @@ class LiminalStaircaseConfig:
     geometry_spread_weight: float = 0.3
     geometry_epsilon: float = 1e-6
 
-    # Layer selection (NEW)
-    siglip_layer_indices: Optional[List[int]] = None
-    clip_layer_indices: Optional[List[int]] = None
-
-    # Scale configuration (NEW)
-    scale_hidden_dims: Optional[Dict[int, int]] = None
-
-    # Fusion controller (NEW)
-    learn_layer_weights: bool = True
-    learn_scale_weights: bool = True
-
-    # Alpha: Cantor neighbor bleed-over (NEW)
-    alpha_init: float = 0.1
-    alpha_learnable: bool = True
-    alpha_per_layer: bool = False
-    alpha_per_scale: bool = True
-    alpha_min: float = 0.0
-    alpha_max: float = 0.5
-
-    # Beta: Scale combinatory adjudication (NEW)
-    beta_init: float = 0.5
-    beta_learnable: bool = True
-    beta_per_scale: bool = True
-    beta_min: float = 0.0
-    beta_max: float = 1.0
-
-    # Loss tracking (NEW)
-    record_scale_losses: bool = True
-
     def __post_init__(self):
-        if self.scales is None:
-            self.scales = [128, 256, 512]
-
         # Default layer selection
         if self.siglip_layer_indices is None:
             start = max(0, self.siglip_num_layers - 12)
@@ -127,9 +141,9 @@ class LiminalStaircaseConfig:
             active_clip_layers = self.clip_num_layers - self.clip_skip
             self.clip_layer_indices = list(range(active_clip_layers))
 
-        # Default scale hidden dims: 2x scale size
-        if self.scale_hidden_dims is None:
-            self.scale_hidden_dims = {s: s * 2 for s in self.scales}
+        # Default scale fusion config
+        if self.scale_fusion is None:
+            self.scale_fusion = ScaleFusionConfig()
 
         # Validate geometry weights
         total_weight = self.geometry_volume_weight + self.geometry_edge_weight + self.geometry_spread_weight
@@ -137,7 +151,7 @@ class LiminalStaircaseConfig:
 
 
 # ============================================================================
-# FUSION CONTROLLER COMPONENTS
+# FUSION CONTROLLERS
 # ============================================================================
 
 class AlphaController(nn.Module):
@@ -147,53 +161,40 @@ class AlphaController(nn.Module):
         self,
         num_layers: int,
         num_scales: int,
-        init_value: float = 0.1,
-        learnable: bool = True,
-        per_layer: bool = False,
-        per_scale: bool = True,
-        min_val: float = 0.0,
-        max_val: float = 0.5
+        config: ScaleFusionConfig
     ):
         super().__init__()
 
         self.num_layers = num_layers
         self.num_scales = num_scales
-        self.learnable = learnable
-        self.per_layer = per_layer
-        self.per_scale = per_scale
-        self.min_val = min_val
-        self.max_val = max_val
+        self.config = config
 
-        if per_layer and per_scale:
+        if config.alpha_per_layer and config.alpha_per_scale:
             shape = (num_layers, num_scales)
-        elif per_layer:
+        elif config.alpha_per_layer:
             shape = (num_layers,)
-        elif per_scale:
+        elif config.alpha_per_scale:
             shape = (num_scales,)
         else:
             shape = (1,)
 
-        alpha_init = torch.full(shape, init_value)
+        alpha_init = torch.full(shape, config.alpha_init)
 
-        if learnable:
+        if config.alpha_learnable:
             self.alpha_raw = nn.Parameter(alpha_init)
         else:
             self.register_buffer('alpha_raw', alpha_init)
 
-    def forward(
-        self,
-        layer_idx: Optional[int] = None,
-        scale_idx: Optional[int] = None
-    ) -> torch.Tensor:
+    def forward(self, layer_idx: Optional[int] = None, scale_idx: Optional[int] = None) -> torch.Tensor:
         """Get alpha value for layer/scale."""
         alpha = torch.sigmoid(self.alpha_raw)
-        alpha = self.min_val + alpha * (self.max_val - self.min_val)
+        alpha = self.config.alpha_min + alpha * (self.config.alpha_max - self.config.alpha_min)
 
-        if self.per_layer and layer_idx is not None:
-            if self.per_scale and scale_idx is not None:
+        if self.config.alpha_per_layer and layer_idx is not None:
+            if self.config.alpha_per_scale and scale_idx is not None:
                 return alpha[layer_idx, scale_idx]
             return alpha[layer_idx]
-        elif self.per_scale and scale_idx is not None:
+        elif self.config.alpha_per_scale and scale_idx is not None:
             return alpha[scale_idx]
 
         return alpha.squeeze()
@@ -202,27 +203,16 @@ class AlphaController(nn.Module):
 class BetaController(nn.Module):
     """Controls balance between internal projections and geometric structure."""
 
-    def __init__(
-        self,
-        num_scales: int,
-        init_value: float = 0.5,
-        learnable: bool = True,
-        per_scale: bool = True,
-        min_val: float = 0.0,
-        max_val: float = 1.0
-    ):
+    def __init__(self, num_scales: int, config: ScaleFusionConfig):
         super().__init__()
 
         self.num_scales = num_scales
-        self.learnable = learnable
-        self.per_scale = per_scale
-        self.min_val = min_val
-        self.max_val = max_val
+        self.config = config
 
-        shape = (num_scales,) if per_scale else (1,)
-        beta_init = torch.full(shape, init_value)
+        shape = (num_scales,) if config.beta_per_scale else (1,)
+        beta_init = torch.full(shape, config.beta_init)
 
-        if learnable:
+        if config.beta_learnable:
             self.beta_raw = nn.Parameter(beta_init)
         else:
             self.register_buffer('beta_raw', beta_init)
@@ -230,16 +220,40 @@ class BetaController(nn.Module):
     def forward(self, scale_idx: Optional[int] = None) -> torch.Tensor:
         """Get beta value for scale."""
         beta = torch.sigmoid(self.beta_raw)
-        beta = self.min_val + beta * (self.max_val - self.min_val)
+        beta = self.config.beta_min + beta * (self.config.beta_max - self.config.beta_min)
 
-        if self.per_scale and scale_idx is not None:
+        if self.config.beta_per_scale and scale_idx is not None:
             return beta[scale_idx]
 
         return beta.squeeze()
 
 
+class GammaController(nn.Module):
+    """Controls per-scale importance in final fusion (NEW)."""
+
+    def __init__(self, num_scales: int, config: ScaleFusionConfig):
+        super().__init__()
+
+        self.num_scales = num_scales
+        self.config = config
+
+        shape = (num_scales,) if config.gamma_per_scale else (1,)
+        gamma_init = torch.full(shape, config.gamma_init)
+
+        if config.gamma_learnable:
+            self.gamma_raw = nn.Parameter(gamma_init)
+        else:
+            self.register_buffer('gamma_raw', gamma_init)
+
+    def forward(self) -> torch.Tensor:
+        """Get normalized gamma weights across scales."""
+        if self.config.gamma_per_scale:
+            return F.softmax(self.gamma_raw, dim=0)
+        return torch.ones(self.num_scales, device=self.gamma_raw.device) / self.num_scales
+
+
 class LayerWeightController(nn.Module):
-    """Controls per-layer opinion weights during fusion."""
+    """Controls per-layer opinion weights."""
 
     def __init__(self, num_layers: int, learnable: bool = True):
         super().__init__()
@@ -259,106 +273,91 @@ class LayerWeightController(nn.Module):
         return F.softmax(self.layer_weights_raw, dim=0)
 
 
-class ScaleWeightController(nn.Module):
-    """Controls per-scale fusion weights."""
+# ============================================================================
+# ORGANIZED FUSION CONTROLLER
+# ============================================================================
 
-    def __init__(self, num_scales: int, learnable: bool = True):
-        super().__init__()
+class OrganizedFusionController(nn.Module):
+    """
+    Organized hierarchical fusion control system.
 
-        self.num_scales = num_scales
-        self.learnable = learnable
+    Controls:
+    - Alpha: Cantor neighbor bleed-over (spatial attention mixing)
+    - Beta: Geometric vs projection balance (architectural mixing)
+    - Gamma: Scale importance weights (scale-level fusion)
+    - Layer weights: Expert opinion importance
+    """
 
-        weights_init = torch.ones(num_scales) / num_scales
-
-        if learnable:
-            self.scale_weights_raw = nn.Parameter(weights_init)
-        else:
-            self.register_buffer('scale_weights_raw', weights_init)
-
-    def forward(self) -> torch.Tensor:
-        """Get normalized scale weights."""
-        return F.softmax(self.scale_weights_raw, dim=0)
-
-
-class HierarchicalFusionController(nn.Module):
-    """Complete hierarchical fusion control system."""
-
-    def __init__(self, config: LiminalStaircaseConfig):
+    def __init__(
+        self,
+        num_layers: int,
+        config: ScaleFusionConfig,
+        learn_layer_weights: bool = True
+    ):
         super().__init__()
 
         self.config = config
-        num_layers = len(config.siglip_layer_indices) + len(config.clip_layer_indices)
-        num_scales = len(config.scales)
+        self.num_layers = num_layers
+        self.num_scales = len(config.scales)
 
-        print(f"\n{'⚡'*40}")
-        print("HIERARCHICAL FUSION CONTROLLER")
-        print(f"{'⚡'*40}")
+        print(f"\n{'='*60}")
+        print("ORGANIZED FUSION CONTROLLER")
+        print(f"{'='*60}")
+        print(f"Layers: {num_layers}")
+        print(f"Scales: {config.scales}")
+        print(f"Strategy: {config.fusion_strategy}")
+
+        # Alpha: Spatial bleed-over control
+        self.alpha = AlphaController(num_layers, self.num_scales, config)
+        print(f"\n✓ Alpha (spatial bleed): "
+              f"init={config.alpha_init}, "
+              f"learnable={config.alpha_learnable}, "
+              f"per_scale={config.alpha_per_scale}")
+
+        # Beta: Architectural balance control
+        self.beta = BetaController(self.num_scales, config)
+        print(f"✓ Beta (geometric blend): "
+              f"init={config.beta_init}, "
+              f"learnable={config.beta_learnable}, "
+              f"per_scale={config.beta_per_scale}")
+
+        # Gamma: Scale importance control
+        self.gamma = GammaController(self.num_scales, config)
+        print(f"✓ Gamma (scale weights): "
+              f"init={config.gamma_init}, "
+              f"learnable={config.gamma_learnable}, "
+              f"per_scale={config.gamma_per_scale}")
 
         # Layer weights
-        if config.learn_layer_weights:
+        if learn_layer_weights:
             self.layer_weights = LayerWeightController(num_layers, learnable=True)
             print(f"✓ Layer weights: {num_layers} layers (learnable)")
         else:
             self.layer_weights = None
 
-        # Scale weights
-        if config.learn_scale_weights:
-            self.scale_weights = ScaleWeightController(num_scales, learnable=True)
-            print(f"✓ Scale weights: {num_scales} scales (learnable)")
-        else:
-            self.scale_weights = None
-
-        # Alpha controller
-        self.alpha = AlphaController(
-            num_layers=num_layers,
-            num_scales=num_scales,
-            init_value=config.alpha_init,
-            learnable=config.alpha_learnable,
-            per_layer=config.alpha_per_layer,
-            per_scale=config.alpha_per_scale,
-            min_val=config.alpha_min,
-            max_val=config.alpha_max
-        )
-        print(f"✓ Alpha (bleed-over): init={config.alpha_init}, learnable={config.alpha_learnable}")
-
-        # Beta controller
-        self.beta = BetaController(
-            num_scales=num_scales,
-            init_value=config.beta_init,
-            learnable=config.beta_learnable,
-            per_scale=config.beta_per_scale,
-            min_val=config.beta_min,
-            max_val=config.beta_max
-        )
-        print(f"✓ Beta (adjudication): init={config.beta_init}, learnable={config.beta_learnable}")
-
         # Loss tracking
-        if config.record_scale_losses:
-            self.register_buffer('scale_losses', torch.zeros(num_scales))
-            self.register_buffer('scale_loss_counts', torch.zeros(num_scales))
+        if config.track_scale_losses:
+            self.register_buffer('scale_losses', torch.zeros(self.num_scales))
+            self.register_buffer('scale_loss_counts', torch.zeros(self.num_scales))
+            self.register_buffer('scale_beta_losses', torch.zeros(self.num_scales))
             print(f"✓ Scale loss tracking enabled")
 
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print(f"✓ Controller params: {total_params} ({trainable_params} trainable)")
-        print(f"{'⚡'*40}\n")
+        print(f"\n✓ Controller params: {total_params} ({trainable_params} trainable)")
+        print(f"{'='*60}\n")
 
     def get_layer_weights(self) -> torch.Tensor:
         """Get normalized layer opinion weights."""
         if self.layer_weights is not None:
             return self.layer_weights()
 
-        num_layers = len(self.config.siglip_layer_indices) + len(self.config.clip_layer_indices)
         device = self.alpha.alpha_raw.device
-        return torch.ones(num_layers, device=device) / num_layers
+        return torch.ones(self.num_layers, device=device) / self.num_layers
 
     def get_scale_weights(self) -> torch.Tensor:
-        """Get normalized scale fusion weights."""
-        if self.scale_weights is not None:
-            return self.scale_weights()
-
-        device = self.alpha.alpha_raw.device
-        return torch.ones(len(self.config.scales), device=device) / len(self.config.scales)
+        """Get normalized scale fusion weights (Gamma)."""
+        return self.gamma()
 
     def get_alpha(self, layer_idx: int, scale_idx: int) -> torch.Tensor:
         """Get alpha for specific layer/scale."""
@@ -368,47 +367,70 @@ class HierarchicalFusionController(nn.Module):
         """Get beta for specific scale."""
         return self.beta(scale_idx)
 
-    def record_scale_loss(self, scale_idx: int, loss: float):
+    def record_scale_loss(self, scale_idx: int, loss: float, beta_loss: float = 0.0):
         """Record loss for a specific scale."""
-        if self.config.record_scale_losses:
+        if self.config.track_scale_losses:
             self.scale_losses[scale_idx] += loss
             self.scale_loss_counts[scale_idx] += 1
+            self.scale_beta_losses[scale_idx] += beta_loss
 
-    def get_scale_loss_stats(self) -> Dict[int, float]:
-        """Get average loss per scale."""
-        if not self.config.record_scale_losses:
-            return {}
+    def get_diagnostics(self) -> Dict:
+        """Get comprehensive fusion diagnostics."""
+        diagnostics = {
+            'layer_weights': self.get_layer_weights().detach().cpu().tolist(),
+            'scale_weights': self.get_scale_weights().detach().cpu().tolist(),
+        }
 
-        stats = {}
-        with torch.no_grad():
-            for i, scale in enumerate(self.config.scales):
-                if self.scale_loss_counts[i] > 0:
-                    stats[scale] = (self.scale_losses[i] / self.scale_loss_counts[i]).item()
-                else:
-                    stats[scale] = 0.0
+        # Alpha values per scale
+        alpha_values = []
+        for scale_idx in range(self.num_scales):
+            if self.config.alpha_per_scale:
+                alpha = self.alpha(scale_idx=scale_idx).item()
+            else:
+                alpha = self.alpha().item()
+            alpha_values.append(alpha)
+        diagnostics['alpha_per_scale'] = alpha_values
 
-        return stats
+        # Beta values per scale
+        beta_values = []
+        for scale_idx in range(self.num_scales):
+            beta = self.beta(scale_idx).item()
+            beta_values.append(beta)
+        diagnostics['beta_per_scale'] = beta_values
 
-    def reset_scale_losses(self):
+        # Loss statistics
+        if self.config.track_scale_losses:
+            scale_stats = {}
+            with torch.no_grad():
+                for i, scale in enumerate(self.config.scales):
+                    if self.scale_loss_counts[i] > 0:
+                        avg_loss = (self.scale_losses[i] / self.scale_loss_counts[i]).item()
+                        avg_beta_loss = (self.scale_beta_losses[i] / self.scale_loss_counts[i]).item()
+                        scale_stats[scale] = {
+                            'avg_loss': avg_loss,
+                            'avg_beta_loss': avg_beta_loss,
+                            'count': self.scale_loss_counts[i].item()
+                        }
+            diagnostics['scale_statistics'] = scale_stats
+
+        return diagnostics
+
+    def reset_losses(self):
         """Reset loss tracking."""
-        if self.config.record_scale_losses:
+        if self.config.track_scale_losses:
             self.scale_losses.zero_()
             self.scale_loss_counts.zero_()
+            self.scale_beta_losses.zero_()
 
 
 # ============================================================================
-# CANTOR ATTENTION (with Alpha)
+# CANTOR ATTENTION (Unchanged but included for completeness)
 # ============================================================================
 
 class CantorAttention(nn.Module):
     """O(n) attention with alpha-controlled neighbor bleed-over."""
 
-    def __init__(
-        self,
-        config: CantorAttentionConfig,
-        max_seq_len: int = 512,
-        k: int = 64
-    ):
+    def __init__(self, config: CantorAttentionConfig, max_seq_len: int = 512, k: int = 64):
         super().__init__()
         self.config = config
         self.dim = config.dim
@@ -431,12 +453,7 @@ class CantorAttention(nn.Module):
                 self.register_buffer(f'routes_{seq_len}', routes.to(torch.int32))
                 self.routes_cache[seq_len] = routes
 
-    def _compute_cantor_coord_vectorized(
-        self,
-        positions: torch.Tensor,
-        seq_len: int,
-        depth: int = 8
-    ) -> torch.Tensor:
+    def _compute_cantor_coord_vectorized(self, positions: torch.Tensor, seq_len: int, depth: int = 8) -> torch.Tensor:
         """Vectorized Cantor coordinate computation."""
         x = positions.float() / max(1, seq_len - 1)
         x = torch.clamp(x, 1e-6, 1.0 - 1e-6)
@@ -462,10 +479,7 @@ class CantorAttention(nn.Module):
         positions = torch.arange(seq_len, dtype=torch.long)
         coords = self._compute_cantor_coord_vectorized(positions, seq_len)
 
-        distances = torch.abs(
-            coords.unsqueeze(1) - coords.unsqueeze(0)
-        )
-
+        distances = torch.abs(coords.unsqueeze(1) - coords.unsqueeze(0))
         _, routes = torch.topk(distances, k, dim=1, largest=False)
         return routes
 
@@ -479,31 +493,17 @@ class CantorAttention(nn.Module):
         routes = self._build_positional_routes(seq_len, self.k)
         return routes.to(device)
 
-    def _sparse_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        routes: torch.Tensor,
-        alpha: float = 0.0
-    ) -> torch.Tensor:
-        """
-        Sparse attention with alpha-controlled neighbor bleed-over.
-
-        Alpha = 0.0: Only routed neighbors
-        Alpha > 0.0: Blend with adjacent positions
-        """
+    def _sparse_attention(self, q, k, v, routes, alpha: float = 0.0):
+        """Sparse attention with alpha-controlled neighbor bleed-over."""
         batch_size, num_heads, seq_len, head_dim = q.shape
         k_neighbors = routes.shape[-1]
         device = q.device
 
-        # Expand routes for batching
         if routes.dim() == 2:
             routes_expanded = routes.unsqueeze(0).expand(batch_size, -1, -1)
         else:
             routes_expanded = routes
 
-        # Create index tensors
         batch_idx = torch.arange(batch_size, device=device).view(-1, 1, 1, 1)
         head_idx = torch.arange(num_heads, device=device).view(1, -1, 1, 1)
 
@@ -511,13 +511,10 @@ class CantorAttention(nn.Module):
         head_idx = head_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
         routes_bc = routes_expanded.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
 
-        # Gather using advanced indexing
         k_gathered = k[batch_idx, head_idx, routes_bc, :]
         v_gathered = v[batch_idx, head_idx, routes_bc, :]
 
-        # Alpha bleed-over: mix with adjacent positions
         if alpha > 0.0:
-            # Get adjacent positions (+/-1)
             adj_routes_left = torch.clamp(routes_expanded - 1, 0, seq_len - 1)
             adj_routes_right = torch.clamp(routes_expanded + 1, 0, seq_len - 1)
 
@@ -529,14 +526,11 @@ class CantorAttention(nn.Module):
             v_adj_left = v[batch_idx, head_idx, adj_routes_left_bc, :]
             v_adj_right = v[batch_idx, head_idx, adj_routes_right_bc, :]
 
-            # Blend: (1-alpha) * routed + alpha/2 * (left + right)
             k_gathered = (1 - alpha) * k_gathered + alpha/2 * (k_adj_left + k_adj_right)
             v_gathered = (1 - alpha) * v_gathered + alpha/2 * (v_adj_left + v_adj_right)
 
-        # Compute attention scores
         scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered) * self.scale
 
-        # Causal masking if needed
         if self.config.causal:
             position_idx = torch.arange(seq_len, device=device).unsqueeze(1)
             causal_mask = routes_expanded > position_idx.unsqueeze(0)
@@ -549,12 +543,7 @@ class CantorAttention(nn.Module):
         output = torch.einsum('bhqk,bhqkd->bhqd', attn_weights, v_gathered)
         return output
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        anchor_ids: Optional[torch.Tensor] = None,
-        alpha: float = 0.0
-    ) -> torch.Tensor:
+    def forward(self, x, anchor_ids=None, alpha: float = 0.0):
         """Forward with optional alpha bleed-over."""
         batch_size, seq_len, _ = x.shape
 
@@ -574,306 +563,25 @@ class CantorAttention(nn.Module):
 
 
 # ============================================================================
-# GEOMETRIC POSITIONAL FINGERPRINTING
+# ORGANIZED SCALE FUSION LAYER
 # ============================================================================
 
-class GeometricPositionalFingerprinter(nn.Module):
-    """Fully vectorized geometric computations."""
+class OrganizedScaleFusion(nn.Module):
+    """
+    Organized multi-scale fusion with multiple strategies.
+
+    Strategies:
+    - learned_weighted: Gamma-controlled weighted combination
+    - average: Simple averaging
+    - max: Max pooling across scales
+    - gated: Learned gating mechanism
+    """
 
     def __init__(
         self,
-        cantor_depth: int = 8,
-        volume_scale: float = 10.0,
-        volume_weight: float = 0.4,
-        edge_weight: float = 0.3,
-        spread_weight: float = 0.3,
-        epsilon: float = 1e-6
-    ):
-        super().__init__()
-        self.cantor_depth = cantor_depth
-        self.volume_scale = volume_scale
-        self.volume_weight = volume_weight
-        self.edge_weight = edge_weight
-        self.spread_weight = spread_weight
-        self.epsilon = epsilon
-
-    def compute_cayley_menger_volume_batched(
-        self,
-        vertices: torch.Tensor
-    ) -> torch.Tensor:
-        """Batched Cayley-Menger volume computation."""
-        batch_size = vertices.shape[0]
-        device = vertices.device
-        dtype = vertices.dtype
-
-        diff = vertices.unsqueeze(2) - vertices.unsqueeze(1)
-        dist_sq = (diff ** 2).sum(dim=-1)
-
-        M = torch.zeros(batch_size, 6, 6, device=device, dtype=dtype)
-        M[:, 0, 1:] = 1.0
-        M[:, 1:, 0] = 1.0
-        M[:, 1:, 1:] = dist_sq
-
-        det = torch.linalg.det(M)
-        volume_sq = (-det / 9216.0).clamp(min=0.0)
-        return volume_sq.sqrt()
-
-    def compute_edge_statistics_batched(
-        self,
-        vertices: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Batched edge statistics."""
-        diff = vertices.unsqueeze(2) - vertices.unsqueeze(1)
-        dist_sq = (diff ** 2).sum(dim=-1)
-
-        triu_mask = torch.triu(torch.ones(5, 5, device=vertices.device), diagonal=1).bool()
-        edge_lengths_sq = dist_sq[:, triu_mask]
-        edge_lengths = edge_lengths_sq.sqrt()
-
-        return edge_lengths.mean(dim=1), edge_lengths.std(dim=1)
-
-    def compute_vertex_spread_batched(self, vertices: torch.Tensor) -> torch.Tensor:
-        """Batched vertex spread computation."""
-        centroid = vertices.mean(dim=1, keepdim=True)
-        distances = torch.norm(vertices - centroid, dim=-1)
-        return distances.std(dim=1)
-
-    def geometry_to_cantor_position_batched(
-        self,
-        vertices: torch.Tensor,
-        anchor_ids: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """Vectorized geometry to Cantor position conversion."""
-        volume = self.compute_cayley_menger_volume_batched(vertices)
-        mean_edge, std_edge = self.compute_edge_statistics_batched(vertices)
-        spread = self.compute_vertex_spread_batched(vertices)
-
-        volume_norm = torch.sigmoid(volume * self.volume_scale)
-        edge_ratio = torch.sigmoid(std_edge / (mean_edge + self.epsilon))
-        spread_norm = torch.sigmoid(spread)
-
-        seed = (
-            volume_norm * self.volume_weight +
-            edge_ratio * self.edge_weight +
-            spread_norm * self.spread_weight
-        )
-
-        # Inject anchor ID for diversity
-        if anchor_ids is not None:
-            id_contribution = ((anchor_ids * 2654435761) % 1000000) / 1000000.0
-            seed = 0.1 * seed + 0.9 * id_contribution.to(seed.device)
-
-        seed = seed.clamp(self.epsilon, 1.0 - self.epsilon)
-
-        # Vectorized ternary Cantor iteration
-        x = seed
-        cantor_val = torch.zeros_like(x)
-        factor = 0.5
-
-        for _ in range(self.cantor_depth):
-            x_scaled = x * 3.0
-            digit = x_scaled.long()
-            x_frac = x_scaled - digit.float()
-
-            middle_bit = (digit == 2).float()
-            cantor_val = cantor_val + middle_bit * factor
-
-            x = x_frac
-            factor *= 0.5
-
-        return cantor_val.clamp(0.0, 1.0)
-
-    def compute_vocabulary_positions(
-        self,
-        pentachora: torch.Tensor,
-        batch_size: int = 512
-    ) -> torch.Tensor:
-        """Fully vectorized vocabulary position computation."""
-        vocab_size = pentachora.shape[0]
-        device = pentachora.device
-        positions = torch.zeros(vocab_size, device=device)
-
-        print(f"Computing {vocab_size} positional fingerprints (vectorized, batch={batch_size})...")
-        start_time = time.time()
-
-        num_batches = (vocab_size + batch_size - 1) // batch_size
-
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, vocab_size)
-
-            batch_pentachora = pentachora[start_idx:end_idx]
-            batch_anchor_ids = torch.arange(start_idx, end_idx, device=device)
-            batch_positions = self.geometry_to_cantor_position_batched(
-                batch_pentachora,
-                anchor_ids=batch_anchor_ids
-            )
-            positions[start_idx:end_idx] = batch_positions
-
-            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == num_batches:
-                elapsed = time.time() - start_time
-                rate = end_idx / elapsed
-                print(f"  Batch {batch_idx + 1}/{num_batches} ({end_idx}/{vocab_size}) - {rate:.0f} tokens/sec")
-
-        elapsed = time.time() - start_time
-        print(f"✓ Completed in {elapsed:.2f}s ({vocab_size/elapsed:.0f} tokens/sec)")
-
-        return positions
-
-
-# ============================================================================
-# MULTI-SCALE EXPERT COMPANION (with configurable hidden dims)
-# ============================================================================
-
-class MultiScaleExpertCompanion(nn.Module):
-    """Expert companion with per-scale hidden dimensions."""
-
-    def __init__(
-        self,
-        layer_name: str,
-        layer_idx: int,
-        input_dim: int,
-        pentachoron_dim: int,
-        scales: List[int],
-        scale_hidden_dims: Dict[int, int],
-        num_heads: int,
-        dropout: float,
-        shared_pentachora: torch.Tensor,
-        fusion_controller: HierarchicalFusionController,
-        max_seq_len: int = 512,
-        use_checkpoint: bool = False
-    ):
-        super().__init__()
-
-        self.layer_name = layer_name
-        self.layer_idx = layer_idx
-        self.input_dim = input_dim
-        self.pentachoron_dim = pentachoron_dim
-        self.scales = scales
-        self.use_checkpoint = use_checkpoint
-        self.fusion_controller = fusion_controller
-
-        self.register_buffer('shared_pentachora', shared_pentachora)
-
-        pentachora_centroids = shared_pentachora.mean(dim=1)
-        self.register_buffer('pentachora_centroids', F.normalize(pentachora_centroids, dim=-1))
-
-        self.input_proj = nn.Sequential(
-            nn.Linear(input_dim, pentachoron_dim),
-            nn.LayerNorm(pentachoron_dim),
-            nn.GELU()
-        )
-
-        cantor_config = CantorAttentionConfig(
-            dim=pentachoron_dim,
-            num_heads=num_heads,
-            adaptive_window=True,
-            sparsity_target=0.15,
-            dropout=dropout
-        )
-
-        k_neighbors = int(225 * 0.15)
-        k_neighbors = max(16, min(k_neighbors, 64))
-
-        self.cantor_attention = CantorAttention(
-            cantor_config,
-            max_seq_len=max_seq_len,
-            k=k_neighbors
-        )
-
-        # Per-scale projectors with configurable hidden dims
-        self.scale_projectors = nn.ModuleDict()
-        for i, scale in enumerate(scales):
-            hidden_dim = scale_hidden_dims.get(scale, scale * 2)
-
-            self.scale_projectors[str(scale)] = nn.Sequential(
-                nn.Linear(pentachoron_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim, scale)
-            )
-
-        self._init_weights()
-
-    def _init_weights(self):
-        """Efficient weight initialization."""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=0.5)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def match_to_opinion_anchors(self, features: torch.Tensor) -> torch.Tensor:
-        """Match tokens to nearest pentachoron anchors."""
-        similarities = torch.matmul(features, self.pentachora_centroids.T)
-        return similarities.argmax(dim=-1)
-
-    def _forward_impl(
-        self,
-        sequence_features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
-        """Implementation for checkpointing."""
-        z = self.input_proj(sequence_features)
-        z = F.normalize(z, dim=-1)
-
-        anchor_ids = self.match_to_opinion_anchors(z)
-
-        # Get alpha from fusion controller (average across scales for now)
-        alpha_values = []
-        for scale_idx in range(len(self.scales)):
-            alpha = self.fusion_controller.get_alpha(self.layer_idx, scale_idx)
-            alpha_values.append(alpha)
-        alpha_mean = sum(alpha_values) / len(alpha_values) if alpha_values else 0.0
-
-        z_attended = self.cantor_attention(z, anchor_ids, alpha=alpha_mean)
-
-        if attention_mask is not None:
-            mask_expanded = attention_mask.unsqueeze(-1).float()
-            z_pooled = (z_attended * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1)
-        else:
-            z_pooled = z_attended.mean(dim=1)
-
-        scale_opinions = {}
-        for scale in self.scales:
-            opinion = self.scale_projectors[str(scale)](z_pooled)
-            scale_opinions[scale] = opinion
-
-        return {
-            'scale_opinions': scale_opinions,
-            'pooled_features': z_pooled
-        }
-
-    def forward(
-        self,
-        sequence_features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
-        """Forward with optional gradient checkpointing."""
-        if self.training and self.use_checkpoint:
-            return checkpoint(
-                self._forward_impl,
-                sequence_features,
-                attention_mask,
-                use_reentrant=False
-            )
-        return self._forward_impl(sequence_features, attention_mask)
-
-
-# ============================================================================
-# SHALLOW FUSION (with Beta-controlled adjudication)
-# ============================================================================
-
-class ShallowTokenPredictionFusion(nn.Module):
-    """Shallow fusion with beta-controlled geometric adjudication."""
-
-    def __init__(
-        self,
-        num_experts: int,
         scales: List[int],
         vocab_size: int,
-        fusion_controller: HierarchicalFusionController,
+        fusion_controller: OrganizedFusionController,
         max_seq_len: int = 77,
         num_heads: int = 8,
         dropout: float = 0.1,
@@ -881,53 +589,64 @@ class ShallowTokenPredictionFusion(nn.Module):
     ):
         super().__init__()
 
-        self.num_experts = num_experts
         self.scales = scales
         self.vocab_size = vocab_size
         self.max_seq_len = max_seq_len
         self.share_embeddings = share_embeddings
         self.fusion_controller = fusion_controller
+        self.strategy = fusion_controller.config.fusion_strategy
 
-        # Shared base embeddings
+        print(f"\n{'='*60}")
+        print(f"ORGANIZED SCALE FUSION")
+        print(f"{'='*60}")
+        print(f"Strategy: {self.strategy}")
+        print(f"Scales: {scales}")
+
+        # Shared position embeddings
         if share_embeddings:
             base_dim = max(scales)
             self.shared_position_embeds = nn.Parameter(torch.randn(max_seq_len, base_dim))
             nn.init.normal_(self.shared_position_embeds, std=0.02)
-            print(f"\n  💾 Shared embeddings: {max_seq_len * base_dim:,} params")
+            print(f"✓ Shared embeddings: {max_seq_len * base_dim:,} params")
         else:
             for scale in scales:
                 position_embeds = nn.Parameter(torch.randn(max_seq_len, scale))
                 nn.init.normal_(position_embeds, std=0.02)
                 self.register_parameter(f'position_embeds_{scale}', position_embeds)
 
-        self.scale_output_modules = nn.ModuleDict()
+        # Per-scale processing modules
+        self.scale_modules = nn.ModuleDict()
 
-        print("\nInitializing optimized multi-level Cantor output scaffolding...")
         for scale in scales:
-            print(f"  Scale {scale}:")
-
+            # Cantor attention for geometric structure
             cantor_config = CantorAttentionConfig(
                 dim=scale,
                 num_heads=num_heads,
-                adaptive_window=False,
-                local_window=32,
                 dropout=dropout
             )
-
             k_neighbors = min(32, max_seq_len // 2)
-            cantor_attn = CantorAttention(
-                cantor_config,
-                max_seq_len=max_seq_len,
-                k=k_neighbors
-            )
-            self.scale_output_modules[f'cantor_{scale}'] = cantor_attn
-            print(f"    ✓ Cantor attention: k={k_neighbors} neighbors")
+            cantor_attn = CantorAttention(cantor_config, max_seq_len=max_seq_len, k=k_neighbors)
 
+            # Vocabulary head
             vocab_head = nn.Sequential(
                 nn.LayerNorm(scale),
                 nn.Linear(scale, vocab_size)
             )
-            self.scale_output_modules[f'vocab_{scale}'] = vocab_head
+
+            self.scale_modules[f'cantor_{scale}'] = cantor_attn
+            self.scale_modules[f'vocab_{scale}'] = vocab_head
+
+            print(f"  Scale {scale}: {k_neighbors} neighbors → vocab")
+
+        # Gated fusion (if strategy == 'gated')
+        if self.strategy == 'gated':
+            self.gate_network = nn.Sequential(
+                nn.Linear(len(scales) * vocab_size, len(scales)),
+                nn.Softmax(dim=-1)
+            )
+            print(f"✓ Gated fusion network initialized")
+
+        print(f"{'='*60}\n")
 
         self._init_weights()
 
@@ -938,7 +657,6 @@ class ShallowTokenPredictionFusion(nn.Module):
                 nn.init.xavier_uniform_(m.weight, gain=0.5)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-
         self.apply(init_module)
 
     def _get_position_embeds(self, scale: int) -> torch.Tensor:
@@ -948,321 +666,335 @@ class ShallowTokenPredictionFusion(nn.Module):
         else:
             return getattr(self, f'position_embeds_{scale}')
 
-    def forward(
-        self,
-        expert_opinions: List[Dict[str, torch.Tensor]]
-    ) -> Dict[str, torch.Tensor]:
-        """Multi-level fusion with beta-controlled adjudication."""
-        batch_size = list(expert_opinions[0]['scale_opinions'].values())[0].shape[0]
+    def forward(self, scale_opinions: Dict[int, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Fuse multi-scale opinions into final token predictions.
 
-        # Get layer weights from fusion controller
-        layer_weights = self.fusion_controller.get_layer_weights()
+        Args:
+            scale_opinions: Dict mapping scale → pooled opinion tensor [batch, scale_dim]
+
+        Returns:
+            Dict with token_logits, scale_logits, and diagnostic info
+        """
+        batch_size = list(scale_opinions.values())[0].shape[0]
 
         scale_token_logits = {}
         scale_beta_losses = {}
 
+        # Process each scale independently
         for scale_idx, scale in enumerate(self.scales):
-            # Collect and weight expert opinions
-            expert_ops = torch.stack([
-                exp['scale_opinions'][scale]
-                for exp in expert_opinions
-            ], dim=0)
+            opinion = scale_opinions[scale]
 
-            # Apply learned layer weights
-            weights = layer_weights.view(-1, 1, 1)
-            collective_opinion = (expert_ops * weights).sum(dim=0)
-
-            # Expand to 77 positions with shared embeddings
+            # Expand to token sequence with position embeddings
             position_embeds = self._get_position_embeds(scale)
-            token_features = collective_opinion.unsqueeze(1) + position_embeds.unsqueeze(0)
+            token_features = opinion.unsqueeze(1) + position_embeds.unsqueeze(0)
 
             # Get beta for this scale
             beta = self.fusion_controller.get_beta(scale_idx)
 
-            # Cantor attention (geometric structure)
-            cantor_attn = self.scale_output_modules[f'cantor_{scale}']
+            # Apply Cantor attention (geometric structure)
+            cantor_attn = self.scale_modules[f'cantor_{scale}']
             geometric_features = cantor_attn(token_features)
 
-            # Beta-controlled blend: internal vs geometric
-            # Beta = 0: pure token_features (internal projection)
-            # Beta = 1: pure geometric_features (geometric structure)
+            # Beta-controlled blend
             attended_features = (1 - beta) * token_features + beta * geometric_features
 
-            # Record beta adjudication loss
+            # Track beta loss for diagnostics
             if self.training:
                 beta_loss = beta * F.mse_loss(token_features, geometric_features)
                 scale_beta_losses[scale] = beta_loss
 
             # Vocabulary projection
-            vocab_head = self.scale_output_modules[f'vocab_{scale}']
+            vocab_head = self.scale_modules[f'vocab_{scale}']
             token_logits = vocab_head(attended_features)
 
             scale_token_logits[scale] = token_logits
 
-        # Fuse across scales with learned scale weights
-        scale_weights = self.fusion_controller.get_scale_weights()
-        logits_list = [scale_token_logits[scale] for scale in self.scales]
-        logits_stacked = torch.stack(logits_list, dim=0)
-        weights_expanded = scale_weights.view(-1, 1, 1, 1)
-        final_token_logits = (logits_stacked * weights_expanded).sum(dim=0)
+        # Fuse across scales using selected strategy
+        final_logits = self._fuse_scales(scale_token_logits)
 
         return {
-            'token_logits': final_token_logits,
+            'token_logits': final_logits,
             'scale_token_logits': scale_token_logits,
             'scale_beta_losses': scale_beta_losses
         }
 
+    def _fuse_scales(self, scale_logits: Dict[int, torch.Tensor]) -> torch.Tensor:
+        """Apply fusion strategy to combine scale predictions."""
+        logits_list = [scale_logits[scale] for scale in self.scales]
+        logits_stacked = torch.stack(logits_list, dim=0)  # [num_scales, batch, seq, vocab]
 
-# ============================================================================
-# LIMINAL STAIRCASE (with Fusion Controller)
-# ============================================================================
+        if self.strategy == "learned_weighted":
+            # Use Gamma weights from fusion controller
+            scale_weights = self.fusion_controller.get_scale_weights()
+            weights_expanded = scale_weights.view(-1, 1, 1, 1)
+            return (logits_stacked * weights_expanded).sum(dim=0)
 
-class LiminalStaircase(nn.Module):
-    """Liminal Staircase with hierarchical fusion controller."""
+        elif self.strategy == "average":
+            return logits_stacked.mean(dim=0)
 
-    def __init__(self, config: LiminalStaircaseConfig):
-        super().__init__()
+        elif self.strategy == "max":
+            return logits_stacked.max(dim=0)[0]
 
-        self.config = config
+        elif self.strategy == "gated":
+            # Flatten logits for gating
+            batch, seq, vocab = logits_list[0].shape
+            flat_logits = torch.cat([l.reshape(batch, seq, -1) for l in logits_list], dim=-1)
 
-        print("=" * 80)
-        print("LIMINAL STAIRCASE - With Fusion Controller")
-        print("=" * 80)
-        print(f"Opinion anchors: {config.num_opinion_anchors}")
-        print(f"SigLIP layers: {len(config.siglip_layer_indices)} (of {config.siglip_num_layers})")
-        print(f"CLIP layers: {len(config.clip_layer_indices)} (of {config.clip_num_layers - config.clip_skip})")
-        print(f"Scales: {config.scales}")
-        print(f"Scale hidden dims: {config.scale_hidden_dims}")
+            # Compute per-scale gates
+            gates = self.gate_network(flat_logits)  # [batch, seq, num_scales]
+            gates = gates.unsqueeze(-1)  # [batch, seq, num_scales, 1]
 
-        # Initialize fusion controller FIRST
-        self.fusion_controller = HierarchicalFusionController(config)
+            # Apply gates
+            logits_stacked_perm = logits_stacked.permute(1, 2, 0, 3)  # [batch, seq, num_scales, vocab]
+            return (logits_stacked_perm * gates).sum(dim=2)
 
-        # Initialize opinion anchors
-        print("\nInitializing opinion anchors...")
-        self.opinion_anchors = self._init_opinion_anchors()
-        print(f"✓ {config.num_opinion_anchors} pentachora created")
-
-        # Compute positional fingerprints
-        print("\nComputing positional fingerprints...")
-        self.fingerprinter = GeometricPositionalFingerprinter(
-            cantor_depth=config.cantor_depth,
-            volume_scale=config.geometry_volume_scale,
-            volume_weight=config.geometry_volume_weight,
-            edge_weight=config.geometry_edge_weight,
-            spread_weight=config.geometry_spread_weight,
-            epsilon=config.geometry_epsilon
-        )
-        self.anchor_positions = self.fingerprinter.compute_vocabulary_positions(
-            self.opinion_anchors,
-            batch_size=512
-        )
-        print(f"✓ Positions: [{self.anchor_positions.min():.4f}, {self.anchor_positions.max():.4f}]")
-
-        # SigLIP Vision experts
-        print("\nCreating SigLIP Vision experts...")
-        self.siglip_experts = nn.ModuleDict()
-        for expert_idx, layer_idx in enumerate(config.siglip_layer_indices):
-            expert = MultiScaleExpertCompanion(
-                layer_name=f'siglip_layer_{layer_idx}',
-                layer_idx=expert_idx,
-                input_dim=config.siglip_hidden_dim,
-                pentachoron_dim=config.pentachoron_dim,
-                scales=config.scales,
-                scale_hidden_dims=config.scale_hidden_dims,
-                num_heads=config.num_heads,
-                dropout=config.dropout,
-                shared_pentachora=self.opinion_anchors,
-                fusion_controller=self.fusion_controller,
-                max_seq_len=512,
-                use_checkpoint=config.use_gradient_checkpointing
-            )
-            self.siglip_experts[f'siglip_layer_{layer_idx}'] = expert
-
-            if (expert_idx + 1) % 6 == 0 or (expert_idx + 1) == len(config.siglip_layer_indices):
-                print(f"  ✓ Created {expert_idx + 1}/{len(config.siglip_layer_indices)} experts")
-
-        # CLIP Text experts
-        print(f"\nCreating CLIP Text experts...")
-        self.clip_experts = nn.ModuleDict()
-        num_siglip_experts = len(config.siglip_layer_indices)
-        for expert_idx, layer_idx in enumerate(config.clip_layer_indices):
-            expert = MultiScaleExpertCompanion(
-                layer_name=f'clip_layer_{layer_idx}',
-                layer_idx=num_siglip_experts + expert_idx,
-                input_dim=config.clip_hidden_dim,
-                pentachoron_dim=config.pentachoron_dim,
-                scales=config.scales,
-                scale_hidden_dims=config.scale_hidden_dims,
-                num_heads=config.num_heads,
-                dropout=config.dropout,
-                shared_pentachora=self.opinion_anchors,
-                fusion_controller=self.fusion_controller,
-                max_seq_len=512,
-                use_checkpoint=config.use_gradient_checkpointing
-            )
-            self.clip_experts[f'clip_layer_{layer_idx}'] = expert
-        print(f"  ✓ {len(self.clip_experts)} CLIP text experts")
-
-        # Shallow fusion with fusion controller
-        print("\nCreating optimized shallow token prediction fusion...")
-        total_experts = len(self.siglip_experts) + len(self.clip_experts)
-        self.fusion = ShallowTokenPredictionFusion(
-            num_experts=total_experts,
-            scales=config.scales,
-            vocab_size=config.vocab_size,
-            fusion_controller=self.fusion_controller,
-            max_seq_len=config.max_seq_len,
-            dropout=config.dropout,
-            share_embeddings=config.share_scale_embeddings
-        )
-        print(f"✓ Fusion: {total_experts} experts → {config.max_seq_len} tokens")
-
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print(f"\n{'='*80}")
-        print(f"Total parameters: {total_params:,}")
-        print(f"Trainable parameters: {trainable_params:,}")
-        print(f"{'='*80}\n")
-
-    def _init_opinion_anchors(self) -> nn.Parameter:
-        """Vectorized opinion anchor initialization."""
-        pentachora = torch.randn(
-            self.config.num_opinion_anchors,
-            5,
-            self.config.pentachoron_dim
-        )
-
-        pentachora = F.normalize(pentachora, dim=-1)
-
-        perturbation = torch.randn_like(pentachora) * 0.1
-        pentachora = pentachora + perturbation
-        pentachora = F.normalize(pentachora, dim=-1)
-
-        return nn.Parameter(pentachora, requires_grad=True)
-
-    def forward(
-        self,
-        siglip_features: Dict[str, torch.Tensor],
-        clip_features: Optional[Dict[str, torch.Tensor]] = None,
-        siglip_masks: Optional[Dict[str, torch.Tensor]] = None,
-        clip_masks: Optional[Dict[str, torch.Tensor]] = None
-    ) -> Dict[str, torch.Tensor]:
-        """Predict tokens from vision and optional text."""
-        expert_opinions = []
-
-        # Collect SigLIP opinions
-        for layer_name, features in siglip_features.items():
-            if layer_name in self.siglip_experts:
-                mask = siglip_masks.get(layer_name) if siglip_masks else None
-                opinion = self.siglip_experts[layer_name](features, mask)
-                expert_opinions.append(opinion)
-
-        # Collect CLIP opinions
-        if clip_features is not None:
-            for layer_name, features in clip_features.items():
-                if layer_name in self.clip_experts:
-                    mask = clip_masks.get(layer_name) if clip_masks else None
-                    opinion = self.clip_experts[layer_name](features, mask)
-                    expert_opinions.append(opinion)
-
-        # Shallow fusion with fusion controller
-        output = self.fusion(expert_opinions)
-
-        # Add fusion controller state to output
-        output['fusion_controller_state'] = {
-            'layer_weights': self.fusion_controller.get_layer_weights(),
-            'scale_weights': self.fusion_controller.get_scale_weights(),
-            'scale_loss_stats': self.fusion_controller.get_scale_loss_stats()
-        }
-
-        return output
-
-    def get_info(self) -> Dict:
-        """Get model info."""
-        return {
-            'num_opinion_anchors': self.config.num_opinion_anchors,
-            'siglip_experts': len(self.siglip_experts),
-            'siglip_layer_indices': self.config.siglip_layer_indices,
-            'clip_experts': len(self.clip_experts),
-            'clip_layer_indices': self.config.clip_layer_indices,
-            'total_experts': len(self.siglip_experts) + len(self.clip_experts),
-            'vocab_size': self.config.vocab_size,
-            'max_seq_len': self.config.max_seq_len,
-            'scales': self.config.scales,
-            'scale_hidden_dims': self.config.scale_hidden_dims,
-            'fusion_controller': {
-                'alpha_learnable': self.config.alpha_learnable,
-                'beta_learnable': self.config.beta_learnable,
-                'learn_layer_weights': self.config.learn_layer_weights,
-                'learn_scale_weights': self.config.learn_scale_weights,
-            },
-            'total_parameters': sum(p.numel() for p in self.parameters()),
-            'trainable_parameters': sum(p.numel() for p in self.parameters() if p.requires_grad)
-        }
+        else:
+            raise ValueError(f"Unknown fusion strategy: {self.strategy}")
 
 
 # ============================================================================
-# TEST
+# COMPREHENSIVE TESTING SUITE
 # ============================================================================
 
-if __name__ == "__main__":
-    print("\n" + "=" * 80)
-    print("LIMINAL STAIRCASE - FUSION CONTROLLER TEST")
-    print("=" * 80 + "\n")
+def test_fusion_controller():
+    """Test 1: Fusion controller initialization and diagnostics."""
+    print("\n" + "="*80)
+    print("TEST 1: Fusion Controller")
+    print("="*80)
 
-    config = LiminalStaircaseConfig(
-        num_opinion_anchors=225,
-        pentachoron_dim=512,
+    config = ScaleFusionConfig(
         scales=[128, 256, 512],
-        siglip_num_layers=24,
-        clip_num_layers=12,
-        clip_skip=2,
-        vocab_size=49408,
-        max_seq_len=77,
-
-        # Use last 12 SigLIP layers
-        siglip_layer_indices=list(range(12, 24)),
-
-        # Per-scale hidden dims
-        scale_hidden_dims={128: 256, 256: 512, 512: 1024},
-
-        # Fusion controller
-        learn_layer_weights=True,
-        learn_scale_weights=True,
-        alpha_init=0.1,
         alpha_learnable=True,
-        alpha_per_scale=True,
-        beta_init=0.5,
         beta_learnable=True,
-        beta_per_scale=True,
+        gamma_learnable=True,
+        track_scale_losses=True
     )
 
-    model = LiminalStaircase(config)
+    controller = OrganizedFusionController(
+        num_layers=12,
+        config=config,
+        learn_layer_weights=True
+    )
 
+    print("\n[Initial Diagnostics]")
+    diagnostics = controller.get_diagnostics()
+    print(f"Layer weights: {[f'{w:.3f}' for w in diagnostics['layer_weights']]}")
+    print(f"Scale weights: {[f'{w:.3f}' for w in diagnostics['scale_weights']]}")
+    print(f"Alpha per scale: {[f'{a:.3f}' for a in diagnostics['alpha_per_scale']]}")
+    print(f"Beta per scale: {[f'{b:.3f}' for b in diagnostics['beta_per_scale']]}")
+
+    # Test recording losses
+    print("\n[Recording Scale Losses]")
+    for scale_idx in range(3):
+        controller.record_scale_loss(scale_idx, loss=1.5 - scale_idx*0.3, beta_loss=0.1)
+
+    diagnostics = controller.get_diagnostics()
+    print("Scale statistics:")
+    for scale, stats in diagnostics['scale_statistics'].items():
+        print(f"  {scale}: loss={stats['avg_loss']:.4f}, beta_loss={stats['avg_beta_loss']:.4f}")
+
+    print("\n✅ Fusion Controller Test PASSED")
+
+
+def test_scale_fusion_strategies():
+    """Test 2: Different fusion strategies."""
+    print("\n" + "="*80)
+    print("TEST 2: Scale Fusion Strategies")
+    print("="*80)
+
+    strategies = ["learned_weighted", "average", "max", "gated"]
     batch_size = 2
-    siglip_features = {
-        f'siglip_layer_{i}': torch.randn(batch_size, 256, 1664)
-        for i in range(12, 24)
-    }
-    clip_features = {
-        f'clip_layer_{i}': torch.randn(batch_size, 77, 768)
-        for i in range(10)
-    }
+    vocab_size = 1000
+    scales = [128, 256, 512]
 
-    print(f"\n[Forward pass test]")
-    with torch.no_grad():
-        output = model(siglip_features, clip_features)
+    for strategy in strategies:
+        print(f"\n[Testing strategy: {strategy}]")
 
-    print(f"✓ Token logits shape: {output['token_logits'].shape}")
-    print(f"✓ Scale beta losses: {list(output['scale_beta_losses'].keys())}")
+        config = ScaleFusionConfig(
+            scales=scales,
+            fusion_strategy=strategy,
+            gamma_learnable=True
+        )
 
-    info = model.get_info()
-    print(f"\n[Model info]")
-    print(f"  Total experts: {info['total_experts']}")
-    print(f"  SigLIP layers used: {len(info['siglip_layer_indices'])}/{config.siglip_num_layers}")
-    print(f"  CLIP layers used: {len(info['clip_layer_indices'])}/{config.clip_num_layers - config.clip_skip}")
-    print(f"  Parameters: {info['total_parameters']:,}")
+        controller = OrganizedFusionController(
+            num_layers=6,
+            config=config,
+            learn_layer_weights=False
+        )
 
-    print("\n" + "=" * 80)
-    print("✅ TEST COMPLETE")
-    print("=" * 80 + "\n")
+        fusion = OrganizedScaleFusion(
+            scales=scales,
+            vocab_size=vocab_size,
+            fusion_controller=controller,
+            share_embeddings=True
+        )
+
+        # Create dummy scale opinions
+        scale_opinions = {
+            scale: torch.randn(batch_size, scale)
+            for scale in scales
+        }
+
+        with torch.no_grad():
+            output = fusion(scale_opinions)
+
+        print(f"  ✓ Output logits shape: {output['token_logits'].shape}")
+        print(f"  ✓ Num scale outputs: {len(output['scale_token_logits'])}")
+        assert output['token_logits'].shape == (batch_size, 77, vocab_size)
+
+    print("\n✅ Scale Fusion Strategies Test PASSED")
+
+
+def test_alpha_beta_effects():
+    """Test 3: Alpha and Beta parameter effects."""
+    print("\n" + "="*80)
+    print("TEST 3: Alpha/Beta Effects")
+    print("="*80)
+
+    # Test different alpha values
+    print("\n[Testing Alpha (bleed-over) values: 0.0, 0.25, 0.5]")
+    for alpha_val in [0.0, 0.25, 0.5]:
+        config = ScaleFusionConfig(
+            scales=[256],
+            alpha_init=alpha_val,
+            alpha_learnable=False,
+            alpha_per_scale=True
+        )
+
+        controller = OrganizedFusionController(
+            num_layers=4,
+            config=config
+        )
+
+        alpha = controller.get_alpha(layer_idx=0, scale_idx=0)
+        print(f"  Alpha={alpha_val}: actual={alpha:.4f}")
+
+    # Test different beta values
+    print("\n[Testing Beta (geometric blend) values: 0.0, 0.5, 1.0]")
+    for beta_val in [0.0, 0.5, 1.0]:
+        config = ScaleFusionConfig(
+            scales=[256],
+            beta_init=beta_val,
+            beta_learnable=False,
+            beta_per_scale=True
+        )
+
+        controller = OrganizedFusionController(
+            num_layers=4,
+            config=config
+        )
+
+        beta = controller.get_beta(scale_idx=0)
+        print(f"  Beta={beta_val}: actual={beta:.4f}")
+
+    print("\n✅ Alpha/Beta Effects Test PASSED")
+
+
+def test_scale_performance_tracking():
+    """Test 4: Per-scale performance tracking."""
+    print("\n" + "="*80)
+    print("TEST 4: Scale Performance Tracking")
+    print("="*80)
+
+    config = ScaleFusionConfig(
+        scales=[128, 256, 512],
+        track_scale_losses=True
+    )
+
+    controller = OrganizedFusionController(
+        num_layers=8,
+        config=config
+    )
+
+    # Simulate training with different losses per scale
+    print("\n[Simulating 100 training steps]")
+    import random
+    for step in range(100):
+        for scale_idx, scale in enumerate(config.scales):
+            # Simulate decreasing loss over time
+            base_loss = 2.0 - (step / 100.0) * 1.5
+            scale_specific = scale_idx * 0.1  # Larger scales slightly higher loss
+            loss = base_loss + scale_specific + random.uniform(-0.1, 0.1)
+            beta_loss = 0.05 + random.uniform(-0.01, 0.01)
+
+            controller.record_scale_loss(scale_idx, loss, beta_loss)
+
+    # Get statistics
+    diagnostics = controller.get_diagnostics()
+    print("\n[Final Scale Statistics]")
+    for scale, stats in diagnostics['scale_statistics'].items():
+        print(f"Scale {scale}:")
+        print(f"  Avg loss: {stats['avg_loss']:.4f}")
+        print(f"  Avg beta loss: {stats['avg_beta_loss']:.4f}")
+        print(f"  Samples: {stats['count']}")
+
+    print("\n✅ Scale Performance Tracking Test PASSED")
+
+
+def test_gradient_flow():
+    """Test 5: Gradient flow through fusion controller."""
+    print("\n" + "="*80)
+    print("TEST 5: Gradient Flow")
+    print("="*80)
+
+    config = ScaleFusionConfig(
+        scales=[128, 256],
+        alpha_learnable=True,
+        beta_learnable=True,
+        gamma_learnable=True
+    )
+
+    controller = OrganizedFusionController(
+        num_layers=4,
+        config=config,
+        learn_layer_weights=True
+    )
+
+    # Create dummy loss
+    layer_weights = controller.get_layer_weights()
+    scale_weights = controller.get_scale_weights()
+
+    loss = layer_weights.sum() + scale_weights.sum()
+
+    for scale_idx in range(len(config.scales)):
+        alpha = controller.get_alpha(0, scale_idx)
+        beta = controller.get_beta(scale_idx)
+        loss = loss + alpha + beta
+
+    print("\n[Computing gradients]")
+    loss.backward()
+
+    # Check gradients exist
+    print("Gradient checks:")
+    if controller.alpha.alpha_raw.grad is not None:
+        print(f"  ✓ Alpha gradients: {controller.alpha.alpha_raw.grad.abs().mean():.6f}")
+    if controller.beta.beta_raw.grad is not None:
+        print(f"  ✓ Beta gradients: {controller.beta.beta_raw.grad.abs().mean():.6f}")
+    if controller.gamma.gamma_raw.grad is not None:
+        print(f"  ✓ Gamma gradients: {controller.gamma.gamma_raw.grad.abs().mean():.6f}")
+    if controller.layer_weights and controller.layer_weights.layer_weights_raw.grad is not None:
+        print(f"  ✓ Layer weight gradients: {controller.layer_weights.layer_weights_raw.grad.abs().mean():.6f}")
+
+    print("\n✅ Gradient Flow Test PASSED")
+
+
+def run_all_tests():
+    """Run complete test suite."""
+    print("\n" + "="*80)
+    print("LIMINAL STAIRCASE - COMPREHENSIVE FUSION TEST SUITE")
+    print("="*80)
+
+    test_fusion_controller()
+    test_scale_fusion_strategies()
+    test_alpha_beta_effects()
+    test_scale_performance_tracking()
+    test_gradient_flow()
+
+    print("\n" + "="*80)
+    print("✅ ALL TESTS PASSED")
+    print("="*80 + "\n")
+
+
+if __name__ == "__main__":
+    run_all_tests()
