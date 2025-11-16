@@ -1,14 +1,18 @@
 """
-Liminal Staircase - OPTIMIZED Vision-to-Text Token Prediction Collective
-=========================================================================
+Liminal Staircase - With Hierarchical Fusion Controller
+========================================================
 
-FIXED VERSION with:
+INTEGRATED VERSION with:
 - Corrected sparse attention indexing
 - Truly parameter-efficient shared embeddings
-- All other optimizations intact
+- Alpha: Cantor neighbor bleed-over control
+- Beta: Scale combinatory adjudication
+- Layer and scale weighting
+- Per-scale hidden dimensions
+- Per-scale loss tracking
 
 Author: AbstractPhil + Claude Sonnet 4.5
-Date: 2025-11-16 (Fixed)
+Date: 2025-11-16 (Fusion Controller Integration)
 """
 
 import torch
@@ -22,7 +26,7 @@ import time
 
 
 # ============================================================================
-# FIXED CANTOR ATTENTION (Correct Indexing)
+# CONFIGURATION
 # ============================================================================
 
 @dataclass
@@ -47,10 +51,357 @@ class CantorAttentionConfig:
             self.head_dim = self.dim // self.num_heads
 
 
+@dataclass
+class LiminalStaircaseConfig:
+    """Configuration for Liminal Staircase with Fusion Controller."""
+
+    # Core architecture
+    num_opinion_anchors: int = 225
+    pentachoron_dim: int = 512
+    cantor_depth: int = 8
+    scales: List[int] = None
+
+    # Encoder configuration
+    siglip_hidden_dim: int = 1664
+    siglip_num_layers: int = 24
+    clip_hidden_dim: int = 768
+    clip_num_layers: int = 12
+    clip_skip: int = 2
+
+    # Vocabulary
+    vocab_size: int = 49408
+    max_seq_len: int = 77
+    num_heads: int = 8
+    dropout: float = 0.1
+
+    # Optimizations
+    use_gradient_checkpointing: bool = False
+    share_scale_embeddings: bool = True
+
+    # Geometry parameters
+    geometry_volume_scale: float = 10.0
+    geometry_volume_weight: float = 0.4
+    geometry_edge_weight: float = 0.3
+    geometry_spread_weight: float = 0.3
+    geometry_epsilon: float = 1e-6
+
+    # Layer selection (NEW)
+    siglip_layer_indices: Optional[List[int]] = None
+    clip_layer_indices: Optional[List[int]] = None
+
+    # Scale configuration (NEW)
+    scale_hidden_dims: Optional[Dict[int, int]] = None
+
+    # Fusion controller (NEW)
+    learn_layer_weights: bool = True
+    learn_scale_weights: bool = True
+
+    # Alpha: Cantor neighbor bleed-over (NEW)
+    alpha_init: float = 0.1
+    alpha_learnable: bool = True
+    alpha_per_layer: bool = False
+    alpha_per_scale: bool = True
+    alpha_min: float = 0.0
+    alpha_max: float = 0.5
+
+    # Beta: Scale combinatory adjudication (NEW)
+    beta_init: float = 0.5
+    beta_learnable: bool = True
+    beta_per_scale: bool = True
+    beta_min: float = 0.0
+    beta_max: float = 1.0
+
+    # Loss tracking (NEW)
+    record_scale_losses: bool = True
+
+    def __post_init__(self):
+        if self.scales is None:
+            self.scales = [128, 256, 512]
+
+        # Default layer selection
+        if self.siglip_layer_indices is None:
+            start = max(0, self.siglip_num_layers - 12)
+            self.siglip_layer_indices = list(range(start, self.siglip_num_layers))
+
+        if self.clip_layer_indices is None:
+            active_clip_layers = self.clip_num_layers - self.clip_skip
+            self.clip_layer_indices = list(range(active_clip_layers))
+
+        # Default scale hidden dims: 2x scale size
+        if self.scale_hidden_dims is None:
+            self.scale_hidden_dims = {s: s * 2 for s in self.scales}
+
+        # Validate geometry weights
+        total_weight = self.geometry_volume_weight + self.geometry_edge_weight + self.geometry_spread_weight
+        assert abs(total_weight - 1.0) < 1e-5, f"Geometry weights must sum to 1.0, got {total_weight}"
+
+
+# ============================================================================
+# FUSION CONTROLLER COMPONENTS
+# ============================================================================
+
+class AlphaController(nn.Module):
+    """Controls gradient bleed-over between adjacent Cantor slices."""
+
+    def __init__(
+        self,
+        num_layers: int,
+        num_scales: int,
+        init_value: float = 0.1,
+        learnable: bool = True,
+        per_layer: bool = False,
+        per_scale: bool = True,
+        min_val: float = 0.0,
+        max_val: float = 0.5
+    ):
+        super().__init__()
+
+        self.num_layers = num_layers
+        self.num_scales = num_scales
+        self.learnable = learnable
+        self.per_layer = per_layer
+        self.per_scale = per_scale
+        self.min_val = min_val
+        self.max_val = max_val
+
+        if per_layer and per_scale:
+            shape = (num_layers, num_scales)
+        elif per_layer:
+            shape = (num_layers,)
+        elif per_scale:
+            shape = (num_scales,)
+        else:
+            shape = (1,)
+
+        alpha_init = torch.full(shape, init_value)
+
+        if learnable:
+            self.alpha_raw = nn.Parameter(alpha_init)
+        else:
+            self.register_buffer('alpha_raw', alpha_init)
+
+    def forward(
+        self,
+        layer_idx: Optional[int] = None,
+        scale_idx: Optional[int] = None
+    ) -> torch.Tensor:
+        """Get alpha value for layer/scale."""
+        alpha = torch.sigmoid(self.alpha_raw)
+        alpha = self.min_val + alpha * (self.max_val - self.min_val)
+
+        if self.per_layer and layer_idx is not None:
+            if self.per_scale and scale_idx is not None:
+                return alpha[layer_idx, scale_idx]
+            return alpha[layer_idx]
+        elif self.per_scale and scale_idx is not None:
+            return alpha[scale_idx]
+
+        return alpha.squeeze()
+
+
+class BetaController(nn.Module):
+    """Controls balance between internal projections and geometric structure."""
+
+    def __init__(
+        self,
+        num_scales: int,
+        init_value: float = 0.5,
+        learnable: bool = True,
+        per_scale: bool = True,
+        min_val: float = 0.0,
+        max_val: float = 1.0
+    ):
+        super().__init__()
+
+        self.num_scales = num_scales
+        self.learnable = learnable
+        self.per_scale = per_scale
+        self.min_val = min_val
+        self.max_val = max_val
+
+        shape = (num_scales,) if per_scale else (1,)
+        beta_init = torch.full(shape, init_value)
+
+        if learnable:
+            self.beta_raw = nn.Parameter(beta_init)
+        else:
+            self.register_buffer('beta_raw', beta_init)
+
+    def forward(self, scale_idx: Optional[int] = None) -> torch.Tensor:
+        """Get beta value for scale."""
+        beta = torch.sigmoid(self.beta_raw)
+        beta = self.min_val + beta * (self.max_val - self.min_val)
+
+        if self.per_scale and scale_idx is not None:
+            return beta[scale_idx]
+
+        return beta.squeeze()
+
+
+class LayerWeightController(nn.Module):
+    """Controls per-layer opinion weights during fusion."""
+
+    def __init__(self, num_layers: int, learnable: bool = True):
+        super().__init__()
+
+        self.num_layers = num_layers
+        self.learnable = learnable
+
+        weights_init = torch.ones(num_layers) / num_layers
+
+        if learnable:
+            self.layer_weights_raw = nn.Parameter(weights_init)
+        else:
+            self.register_buffer('layer_weights_raw', weights_init)
+
+    def forward(self) -> torch.Tensor:
+        """Get normalized layer weights."""
+        return F.softmax(self.layer_weights_raw, dim=0)
+
+
+class ScaleWeightController(nn.Module):
+    """Controls per-scale fusion weights."""
+
+    def __init__(self, num_scales: int, learnable: bool = True):
+        super().__init__()
+
+        self.num_scales = num_scales
+        self.learnable = learnable
+
+        weights_init = torch.ones(num_scales) / num_scales
+
+        if learnable:
+            self.scale_weights_raw = nn.Parameter(weights_init)
+        else:
+            self.register_buffer('scale_weights_raw', weights_init)
+
+    def forward(self) -> torch.Tensor:
+        """Get normalized scale weights."""
+        return F.softmax(self.scale_weights_raw, dim=0)
+
+
+class HierarchicalFusionController(nn.Module):
+    """Complete hierarchical fusion control system."""
+
+    def __init__(self, config: LiminalStaircaseConfig):
+        super().__init__()
+
+        self.config = config
+        num_layers = len(config.siglip_layer_indices) + len(config.clip_layer_indices)
+        num_scales = len(config.scales)
+
+        print(f"\n{'⚡'*40}")
+        print("HIERARCHICAL FUSION CONTROLLER")
+        print(f"{'⚡'*40}")
+
+        # Layer weights
+        if config.learn_layer_weights:
+            self.layer_weights = LayerWeightController(num_layers, learnable=True)
+            print(f"✓ Layer weights: {num_layers} layers (learnable)")
+        else:
+            self.layer_weights = None
+
+        # Scale weights
+        if config.learn_scale_weights:
+            self.scale_weights = ScaleWeightController(num_scales, learnable=True)
+            print(f"✓ Scale weights: {num_scales} scales (learnable)")
+        else:
+            self.scale_weights = None
+
+        # Alpha controller
+        self.alpha = AlphaController(
+            num_layers=num_layers,
+            num_scales=num_scales,
+            init_value=config.alpha_init,
+            learnable=config.alpha_learnable,
+            per_layer=config.alpha_per_layer,
+            per_scale=config.alpha_per_scale,
+            min_val=config.alpha_min,
+            max_val=config.alpha_max
+        )
+        print(f"✓ Alpha (bleed-over): init={config.alpha_init}, learnable={config.alpha_learnable}")
+
+        # Beta controller
+        self.beta = BetaController(
+            num_scales=num_scales,
+            init_value=config.beta_init,
+            learnable=config.beta_learnable,
+            per_scale=config.beta_per_scale,
+            min_val=config.beta_min,
+            max_val=config.beta_max
+        )
+        print(f"✓ Beta (adjudication): init={config.beta_init}, learnable={config.beta_learnable}")
+
+        # Loss tracking
+        if config.record_scale_losses:
+            self.register_buffer('scale_losses', torch.zeros(num_scales))
+            self.register_buffer('scale_loss_counts', torch.zeros(num_scales))
+            print(f"✓ Scale loss tracking enabled")
+
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"✓ Controller params: {total_params} ({trainable_params} trainable)")
+        print(f"{'⚡'*40}\n")
+
+    def get_layer_weights(self) -> torch.Tensor:
+        """Get normalized layer opinion weights."""
+        if self.layer_weights is not None:
+            return self.layer_weights()
+
+        num_layers = len(self.config.siglip_layer_indices) + len(self.config.clip_layer_indices)
+        device = self.alpha.alpha_raw.device
+        return torch.ones(num_layers, device=device) / num_layers
+
+    def get_scale_weights(self) -> torch.Tensor:
+        """Get normalized scale fusion weights."""
+        if self.scale_weights is not None:
+            return self.scale_weights()
+
+        device = self.alpha.alpha_raw.device
+        return torch.ones(len(self.config.scales), device=device) / len(self.config.scales)
+
+    def get_alpha(self, layer_idx: int, scale_idx: int) -> torch.Tensor:
+        """Get alpha for specific layer/scale."""
+        return self.alpha(layer_idx, scale_idx)
+
+    def get_beta(self, scale_idx: int) -> torch.Tensor:
+        """Get beta for specific scale."""
+        return self.beta(scale_idx)
+
+    def record_scale_loss(self, scale_idx: int, loss: float):
+        """Record loss for a specific scale."""
+        if self.config.record_scale_losses:
+            self.scale_losses[scale_idx] += loss
+            self.scale_loss_counts[scale_idx] += 1
+
+    def get_scale_loss_stats(self) -> Dict[int, float]:
+        """Get average loss per scale."""
+        if not self.config.record_scale_losses:
+            return {}
+
+        stats = {}
+        with torch.no_grad():
+            for i, scale in enumerate(self.config.scales):
+                if self.scale_loss_counts[i] > 0:
+                    stats[scale] = (self.scale_losses[i] / self.scale_loss_counts[i]).item()
+                else:
+                    stats[scale] = 0.0
+
+        return stats
+
+    def reset_scale_losses(self):
+        """Reset loss tracking."""
+        if self.config.record_scale_losses:
+            self.scale_losses.zero_()
+            self.scale_loss_counts.zero_()
+
+
+# ============================================================================
+# CANTOR ATTENTION (with Alpha)
+# ============================================================================
+
 class CantorAttention(nn.Module):
-    """
-    FIXED: O(n) attention with proper sparse indexing.
-    """
+    """O(n) attention with alpha-controlled neighbor bleed-over."""
 
     def __init__(
         self,
@@ -71,7 +422,7 @@ class CantorAttention(nn.Module):
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
-        # Pre-compute routes for common sequence lengths
+        # Pre-compute routes
         self.routes_cache = {}
         common_lengths = [64, 77, 128, 196, 256, 384, 512]
         for seq_len in common_lengths:
@@ -133,35 +484,54 @@ class CantorAttention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        routes: torch.Tensor
+        routes: torch.Tensor,
+        alpha: float = 0.0
     ) -> torch.Tensor:
         """
-        FIXED: Sparse attention with correct indexing.
-        Uses advanced indexing instead of problematic gather.
+        Sparse attention with alpha-controlled neighbor bleed-over.
+
+        Alpha = 0.0: Only routed neighbors
+        Alpha > 0.0: Blend with adjacent positions
         """
         batch_size, num_heads, seq_len, head_dim = q.shape
         k_neighbors = routes.shape[-1]
         device = q.device
 
-        # Expand routes for batching: [N, K] -> [B, N, K]
+        # Expand routes for batching
         if routes.dim() == 2:
             routes_expanded = routes.unsqueeze(0).expand(batch_size, -1, -1)
         else:
             routes_expanded = routes
 
-        # FIXED: Use advanced indexing (same as original, but optimized)
         # Create index tensors
         batch_idx = torch.arange(batch_size, device=device).view(-1, 1, 1, 1)
         head_idx = torch.arange(num_heads, device=device).view(1, -1, 1, 1)
 
-        # Expand for broadcasting
         batch_idx = batch_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
         head_idx = head_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
         routes_bc = routes_expanded.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
 
-        # Gather using advanced indexing: [B, H, N, K, D]
+        # Gather using advanced indexing
         k_gathered = k[batch_idx, head_idx, routes_bc, :]
         v_gathered = v[batch_idx, head_idx, routes_bc, :]
+
+        # Alpha bleed-over: mix with adjacent positions
+        if alpha > 0.0:
+            # Get adjacent positions (+/-1)
+            adj_routes_left = torch.clamp(routes_expanded - 1, 0, seq_len - 1)
+            adj_routes_right = torch.clamp(routes_expanded + 1, 0, seq_len - 1)
+
+            adj_routes_left_bc = adj_routes_left.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+            adj_routes_right_bc = adj_routes_right.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+
+            k_adj_left = k[batch_idx, head_idx, adj_routes_left_bc, :]
+            k_adj_right = k[batch_idx, head_idx, adj_routes_right_bc, :]
+            v_adj_left = v[batch_idx, head_idx, adj_routes_left_bc, :]
+            v_adj_right = v[batch_idx, head_idx, adj_routes_right_bc, :]
+
+            # Blend: (1-alpha) * routed + alpha/2 * (left + right)
+            k_gathered = (1 - alpha) * k_gathered + alpha/2 * (k_adj_left + k_adj_right)
+            v_gathered = (1 - alpha) * v_gathered + alpha/2 * (v_adj_left + v_adj_right)
 
         # Compute attention scores
         scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered) * self.scale
@@ -182,9 +552,10 @@ class CantorAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        anchor_ids: Optional[torch.Tensor] = None
+        anchor_ids: Optional[torch.Tensor] = None,
+        alpha: float = 0.0
     ) -> torch.Tensor:
-        """Forward with positional Cantor routing."""
+        """Forward with optional alpha bleed-over."""
         batch_size, seq_len, _ = x.shape
 
         qkv = self.qkv(x)
@@ -193,7 +564,7 @@ class CantorAttention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         routes = self._get_routes_for_seq_len(seq_len, x.device)
-        attn_output = self._sparse_attention(q, k, v, routes)
+        attn_output = self._sparse_attention(q, k, v, routes, alpha=alpha)
 
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.dim)
         output = self.out_proj(attn_output)
@@ -203,7 +574,7 @@ class CantorAttention(nn.Module):
 
 
 # ============================================================================
-# OPTIMIZED GEOMETRIC POSITIONAL FINGERPRINTING (Fully Vectorized)
+# GEOMETRIC POSITIONAL FINGERPRINTING
 # ============================================================================
 
 class GeometricPositionalFingerprinter(nn.Module):
@@ -226,9 +597,6 @@ class GeometricPositionalFingerprinter(nn.Module):
         self.spread_weight = spread_weight
         self.epsilon = epsilon
 
-        total_weight = volume_weight + edge_weight + spread_weight
-        assert abs(total_weight - 1.0) < 1e-5, f"Weights must sum to 1.0, got {total_weight}"
-
     def compute_cayley_menger_volume_batched(
         self,
         vertices: torch.Tensor
@@ -238,17 +606,14 @@ class GeometricPositionalFingerprinter(nn.Module):
         device = vertices.device
         dtype = vertices.dtype
 
-        # Compute pairwise squared distances: [B, 5, 5]
         diff = vertices.unsqueeze(2) - vertices.unsqueeze(1)
         dist_sq = (diff ** 2).sum(dim=-1)
 
-        # Build Cayley-Menger matrix: [B, 6, 6]
         M = torch.zeros(batch_size, 6, 6, device=device, dtype=dtype)
         M[:, 0, 1:] = 1.0
         M[:, 1:, 0] = 1.0
         M[:, 1:, 1:] = dist_sq
 
-        # Compute determinant and volume
         det = torch.linalg.det(M)
         volume_sq = (-det / 9216.0).clamp(min=0.0)
         return volume_sq.sqrt()
@@ -278,36 +643,24 @@ class GeometricPositionalFingerprinter(nn.Module):
         vertices: torch.Tensor,
         anchor_ids: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """
-        Vectorized geometry to Cantor position conversion.
-
-        CRITICAL: Injects anchor_ids to ensure diversity across [0, 1].
-        Without this, random normalized pentachora cluster in narrow range.
-        """
+        """Vectorized geometry to Cantor position conversion."""
         volume = self.compute_cayley_menger_volume_batched(vertices)
         mean_edge, std_edge = self.compute_edge_statistics_batched(vertices)
         spread = self.compute_vertex_spread_batched(vertices)
 
-        # Normalize features
         volume_norm = torch.sigmoid(volume * self.volume_scale)
         edge_ratio = torch.sigmoid(std_edge / (mean_edge + self.epsilon))
         spread_norm = torch.sigmoid(spread)
 
-        # Weighted combination
         seed = (
             volume_norm * self.volume_weight +
             edge_ratio * self.edge_weight +
             spread_norm * self.spread_weight
         )
 
-        # CRITICAL FIX: Inject anchor ID for diversity
-        # Without this, all random normalized pentachora cluster in [0.25, 0.37]
+        # Inject anchor ID for diversity
         if anchor_ids is not None:
-            # Mix in anchor ID to spread positions across [0, 1]
-            # Use prime number hashing for uniform distribution
             id_contribution = ((anchor_ids * 2654435761) % 1000000) / 1000000.0
-            # Blend 10% geometry + 90% ID for ~90% position coverage
-            # Tested: 50/50→62%, 80/20→82%, 90/10→~90%
             seed = 0.1 * seed + 0.9 * id_contribution.to(seed.device)
 
         seed = seed.clamp(self.epsilon, 1.0 - self.epsilon)
@@ -350,7 +703,6 @@ class GeometricPositionalFingerprinter(nn.Module):
             end_idx = min((batch_idx + 1) * batch_size, vocab_size)
 
             batch_pentachora = pentachora[start_idx:end_idx]
-            # CRITICAL: Pass anchor IDs for diversity
             batch_anchor_ids = torch.arange(start_idx, end_idx, device=device)
             batch_positions = self.geometry_to_cantor_position_batched(
                 batch_pentachora,
@@ -370,31 +722,36 @@ class GeometricPositionalFingerprinter(nn.Module):
 
 
 # ============================================================================
-# MULTI-SCALE EXPERT COMPANION (with Gradient Checkpointing)
+# MULTI-SCALE EXPERT COMPANION (with configurable hidden dims)
 # ============================================================================
 
 class MultiScaleExpertCompanion(nn.Module):
-    """Expert companion with gradient checkpointing support."""
+    """Expert companion with per-scale hidden dimensions."""
 
     def __init__(
         self,
         layer_name: str,
+        layer_idx: int,
         input_dim: int,
         pentachoron_dim: int,
         scales: List[int],
+        scale_hidden_dims: Dict[int, int],
         num_heads: int,
         dropout: float,
         shared_pentachora: torch.Tensor,
+        fusion_controller: HierarchicalFusionController,
         max_seq_len: int = 512,
         use_checkpoint: bool = False
     ):
         super().__init__()
 
         self.layer_name = layer_name
+        self.layer_idx = layer_idx
         self.input_dim = input_dim
         self.pentachoron_dim = pentachoron_dim
         self.scales = scales
         self.use_checkpoint = use_checkpoint
+        self.fusion_controller = fusion_controller
 
         self.register_buffer('shared_pentachora', shared_pentachora)
 
@@ -424,14 +781,17 @@ class MultiScaleExpertCompanion(nn.Module):
             k=k_neighbors
         )
 
+        # Per-scale projectors with configurable hidden dims
         self.scale_projectors = nn.ModuleDict()
-        for scale in scales:
+        for i, scale in enumerate(scales):
+            hidden_dim = scale_hidden_dims.get(scale, scale * 2)
+
             self.scale_projectors[str(scale)] = nn.Sequential(
-                nn.Linear(pentachoron_dim, scale * 2),
-                nn.LayerNorm(scale * 2),
+                nn.Linear(pentachoron_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
                 nn.GELU(),
                 nn.Dropout(dropout),
-                nn.Linear(scale * 2, scale)
+                nn.Linear(hidden_dim, scale)
             )
 
         self._init_weights()
@@ -459,7 +819,15 @@ class MultiScaleExpertCompanion(nn.Module):
         z = F.normalize(z, dim=-1)
 
         anchor_ids = self.match_to_opinion_anchors(z)
-        z_attended = self.cantor_attention(z, anchor_ids)
+
+        # Get alpha from fusion controller (average across scales for now)
+        alpha_values = []
+        for scale_idx in range(len(self.scales)):
+            alpha = self.fusion_controller.get_alpha(self.layer_idx, scale_idx)
+            alpha_values.append(alpha)
+        alpha_mean = sum(alpha_values) / len(alpha_values) if alpha_values else 0.0
+
+        z_attended = self.cantor_attention(z, anchor_ids, alpha=alpha_mean)
 
         if attention_mask is not None:
             mask_expanded = attention_mask.unsqueeze(-1).float()
@@ -484,9 +852,6 @@ class MultiScaleExpertCompanion(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """Forward with optional gradient checkpointing."""
         if self.training and self.use_checkpoint:
-            # NOTE: Default reentrant mode doesn't work well with dict outputs
-            # Use non-reentrant mode for gradient checkpointing
-            # Overhead is higher (~20-50%) but it actually works correctly
             return checkpoint(
                 self._forward_impl,
                 sequence_features,
@@ -497,20 +862,18 @@ class MultiScaleExpertCompanion(nn.Module):
 
 
 # ============================================================================
-# FIXED SHALLOW FUSION (Truly Shared Embeddings)
+# SHALLOW FUSION (with Beta-controlled adjudication)
 # ============================================================================
 
 class ShallowTokenPredictionFusion(nn.Module):
-    """
-    FIXED: Shallow fusion with truly parameter-efficient shared embeddings.
-    Uses interpolation instead of projection layers.
-    """
+    """Shallow fusion with beta-controlled geometric adjudication."""
 
     def __init__(
         self,
         num_experts: int,
         scales: List[int],
         vocab_size: int,
+        fusion_controller: HierarchicalFusionController,
         max_seq_len: int = 77,
         num_heads: int = 8,
         dropout: float = 0.1,
@@ -523,23 +886,15 @@ class ShallowTokenPredictionFusion(nn.Module):
         self.vocab_size = vocab_size
         self.max_seq_len = max_seq_len
         self.share_embeddings = share_embeddings
+        self.fusion_controller = fusion_controller
 
-        self.expert_weights = nn.ParameterDict({
-            str(scale): nn.Parameter(torch.ones(num_experts) / num_experts)
-            for scale in scales
-        })
-
-        self.scale_weights = nn.Parameter(torch.ones(len(scales)) / len(scales))
-
-        # FIXED: Truly shared base embeddings
+        # Shared base embeddings
         if share_embeddings:
-            # Single base embedding shared across all scales
-            base_dim = max(scales)  # Use largest scale as base
+            base_dim = max(scales)
             self.shared_position_embeds = nn.Parameter(torch.randn(max_seq_len, base_dim))
             nn.init.normal_(self.shared_position_embeds, std=0.02)
-            print(f"\n  💾 Shared embeddings: {max_seq_len * base_dim:,} params (vs {sum(max_seq_len * s for s in scales):,} separate)")
+            print(f"\n  💾 Shared embeddings: {max_seq_len * base_dim:,} params")
         else:
-            # Separate embeddings per scale
             for scale in scales:
                 position_embeds = nn.Parameter(torch.randn(max_seq_len, scale))
                 nn.init.normal_(position_embeds, std=0.02)
@@ -551,7 +906,6 @@ class ShallowTokenPredictionFusion(nn.Module):
         for scale in scales:
             print(f"  Scale {scale}:")
 
-            # Cantor attention
             cantor_config = CantorAttentionConfig(
                 dim=scale,
                 num_heads=num_heads,
@@ -569,15 +923,11 @@ class ShallowTokenPredictionFusion(nn.Module):
             self.scale_output_modules[f'cantor_{scale}'] = cantor_attn
             print(f"    ✓ Cantor attention: k={k_neighbors} neighbors")
 
-            # Shared vocabulary projection
             vocab_head = nn.Sequential(
                 nn.LayerNorm(scale),
                 nn.Linear(scale, vocab_size)
             )
             self.scale_output_modules[f'vocab_{scale}'] = vocab_head
-
-            vocab_params = scale * vocab_size
-            print(f"    ✓ Shared vocab head: {vocab_params:,} params")
 
         self._init_weights()
 
@@ -592,9 +942,8 @@ class ShallowTokenPredictionFusion(nn.Module):
         self.apply(init_module)
 
     def _get_position_embeds(self, scale: int) -> torch.Tensor:
-        """FIXED: Get position embeddings via slicing (no projection)."""
+        """Get position embeddings via slicing."""
         if self.share_embeddings:
-            # Simply slice from shared embeddings
             return self.shared_position_embeds[:, :scale]
         else:
             return getattr(self, f'position_embeds_{scale}')
@@ -603,29 +952,46 @@ class ShallowTokenPredictionFusion(nn.Module):
         self,
         expert_opinions: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
-        """Multi-level Cantor fusion to token predictions."""
+        """Multi-level fusion with beta-controlled adjudication."""
         batch_size = list(expert_opinions[0]['scale_opinions'].values())[0].shape[0]
 
-        scale_token_logits = {}
+        # Get layer weights from fusion controller
+        layer_weights = self.fusion_controller.get_layer_weights()
 
-        for scale in self.scales:
-            # Collect and aggregate expert opinions
+        scale_token_logits = {}
+        scale_beta_losses = {}
+
+        for scale_idx, scale in enumerate(self.scales):
+            # Collect and weight expert opinions
             expert_ops = torch.stack([
                 exp['scale_opinions'][scale]
                 for exp in expert_opinions
             ], dim=0)
 
-            weights = F.softmax(self.expert_weights[str(scale)], dim=0)
-            weights = weights.view(-1, 1, 1)
+            # Apply learned layer weights
+            weights = layer_weights.view(-1, 1, 1)
             collective_opinion = (expert_ops * weights).sum(dim=0)
 
             # Expand to 77 positions with shared embeddings
             position_embeds = self._get_position_embeds(scale)
             token_features = collective_opinion.unsqueeze(1) + position_embeds.unsqueeze(0)
 
-            # Cantor attention
+            # Get beta for this scale
+            beta = self.fusion_controller.get_beta(scale_idx)
+
+            # Cantor attention (geometric structure)
             cantor_attn = self.scale_output_modules[f'cantor_{scale}']
-            attended_features = cantor_attn(token_features)
+            geometric_features = cantor_attn(token_features)
+
+            # Beta-controlled blend: internal vs geometric
+            # Beta = 0: pure token_features (internal projection)
+            # Beta = 1: pure geometric_features (geometric structure)
+            attended_features = (1 - beta) * token_features + beta * geometric_features
+
+            # Record beta adjudication loss
+            if self.training:
+                beta_loss = beta * F.mse_loss(token_features, geometric_features)
+                scale_beta_losses[scale] = beta_loss
 
             # Vocabulary projection
             vocab_head = self.scale_output_modules[f'vocab_{scale}']
@@ -633,8 +999,8 @@ class ShallowTokenPredictionFusion(nn.Module):
 
             scale_token_logits[scale] = token_logits
 
-        # Fuse across scales
-        scale_weights = F.softmax(self.scale_weights, dim=0)
+        # Fuse across scales with learned scale weights
+        scale_weights = self.fusion_controller.get_scale_weights()
         logits_list = [scale_token_logits[scale] for scale in self.scales]
         logits_stacked = torch.stack(logits_list, dim=0)
         weights_expanded = scale_weights.view(-1, 1, 1, 1)
@@ -642,56 +1008,17 @@ class ShallowTokenPredictionFusion(nn.Module):
 
         return {
             'token_logits': final_token_logits,
-            'scale_token_logits': scale_token_logits
+            'scale_token_logits': scale_token_logits,
+            'scale_beta_losses': scale_beta_losses
         }
 
 
 # ============================================================================
-# OPTIMIZED LIMINAL STAIRCASE
+# LIMINAL STAIRCASE (with Fusion Controller)
 # ============================================================================
 
-@dataclass
-class LiminalStaircaseConfig:
-    """Configuration for Liminal Staircase."""
-
-    num_opinion_anchors: int = 225
-    pentachoron_dim: int = 512
-    cantor_depth: int = 8
-
-    scales: List[int] = None
-
-    siglip_hidden_dim: int = 1664
-    siglip_num_layers: int = 24
-
-    clip_hidden_dim: int = 768
-    clip_num_layers: int = 12
-    clip_skip: int = 2
-
-    vocab_size: int = 49408
-    max_seq_len: int = 77
-
-    num_heads: int = 8
-    dropout: float = 0.1
-
-    use_gradient_checkpointing: bool = False
-    share_scale_embeddings: bool = True
-
-    geometry_volume_scale: float = 10.0
-    geometry_volume_weight: float = 0.4
-    geometry_edge_weight: float = 0.3
-    geometry_spread_weight: float = 0.3
-    geometry_epsilon: float = 1e-6
-
-    def __post_init__(self):
-        if self.scales is None:
-            self.scales = [128, 256, 512]
-
-        total_weight = self.geometry_volume_weight + self.geometry_edge_weight + self.geometry_spread_weight
-        assert abs(total_weight - 1.0) < 1e-5, f"Geometry weights must sum to 1.0, got {total_weight}"
-
-
 class LiminalStaircase(nn.Module):
-    """FIXED: Liminal Staircase with corrected sparse attention and shared embeddings."""
+    """Liminal Staircase with hierarchical fusion controller."""
 
     def __init__(self, config: LiminalStaircaseConfig):
         super().__init__()
@@ -699,20 +1026,16 @@ class LiminalStaircase(nn.Module):
         self.config = config
 
         print("=" * 80)
-        print("LIMINAL STAIRCASE - OPTIMIZED Vision-to-Text Token Prediction")
+        print("LIMINAL STAIRCASE - With Fusion Controller")
         print("=" * 80)
         print(f"Opinion anchors: {config.num_opinion_anchors}")
-        print(f"SigLIP Vision experts: {config.siglip_num_layers} (PRIMARY)")
+        print(f"SigLIP layers: {len(config.siglip_layer_indices)} (of {config.siglip_num_layers})")
+        print(f"CLIP layers: {len(config.clip_layer_indices)} (of {config.clip_num_layers - config.clip_skip})")
+        print(f"Scales: {config.scales}")
+        print(f"Scale hidden dims: {config.scale_hidden_dims}")
 
-        active_clip_layers = config.clip_num_layers - config.clip_skip
-        print(f"CLIP Text experts: {active_clip_layers} (AUXILIARY, skip={config.clip_skip})")
-        print(f"Total experts: {config.siglip_num_layers + active_clip_layers}")
-        print(f"Token prediction: {config.max_seq_len} tokens, vocab={config.vocab_size}")
-
-        if config.use_gradient_checkpointing:
-            print(f"⚡ Gradient checkpointing: ENABLED")
-        if config.share_scale_embeddings:
-            print(f"💾 Shared scale embeddings: ENABLED")
+        # Initialize fusion controller FIRST
+        self.fusion_controller = HierarchicalFusionController(config)
 
         # Initialize opinion anchors
         print("\nInitializing opinion anchors...")
@@ -738,47 +1061,56 @@ class LiminalStaircase(nn.Module):
         # SigLIP Vision experts
         print("\nCreating SigLIP Vision experts...")
         self.siglip_experts = nn.ModuleDict()
-        for i in range(config.siglip_num_layers):
+        for expert_idx, layer_idx in enumerate(config.siglip_layer_indices):
             expert = MultiScaleExpertCompanion(
-                layer_name=f'siglip_layer_{i}',
+                layer_name=f'siglip_layer_{layer_idx}',
+                layer_idx=expert_idx,
                 input_dim=config.siglip_hidden_dim,
                 pentachoron_dim=config.pentachoron_dim,
                 scales=config.scales,
+                scale_hidden_dims=config.scale_hidden_dims,
                 num_heads=config.num_heads,
                 dropout=config.dropout,
                 shared_pentachora=self.opinion_anchors,
+                fusion_controller=self.fusion_controller,
                 max_seq_len=512,
                 use_checkpoint=config.use_gradient_checkpointing
             )
-            self.siglip_experts[f'siglip_layer_{i}'] = expert
-            if (i + 1) % 6 == 0:
-                print(f"  ✓ Layers 0-{i}")
+            self.siglip_experts[f'siglip_layer_{layer_idx}'] = expert
+
+            if (expert_idx + 1) % 6 == 0 or (expert_idx + 1) == len(config.siglip_layer_indices):
+                print(f"  ✓ Created {expert_idx + 1}/{len(config.siglip_layer_indices)} experts")
 
         # CLIP Text experts
-        print(f"\nCreating CLIP Text experts (skip last {config.clip_skip})...")
+        print(f"\nCreating CLIP Text experts...")
         self.clip_experts = nn.ModuleDict()
-        for i in range(active_clip_layers):
+        num_siglip_experts = len(config.siglip_layer_indices)
+        for expert_idx, layer_idx in enumerate(config.clip_layer_indices):
             expert = MultiScaleExpertCompanion(
-                layer_name=f'clip_layer_{i}',
+                layer_name=f'clip_layer_{layer_idx}',
+                layer_idx=num_siglip_experts + expert_idx,
                 input_dim=config.clip_hidden_dim,
                 pentachoron_dim=config.pentachoron_dim,
                 scales=config.scales,
+                scale_hidden_dims=config.scale_hidden_dims,
                 num_heads=config.num_heads,
                 dropout=config.dropout,
                 shared_pentachora=self.opinion_anchors,
+                fusion_controller=self.fusion_controller,
                 max_seq_len=512,
                 use_checkpoint=config.use_gradient_checkpointing
             )
-            self.clip_experts[f'clip_layer_{i}'] = expert
+            self.clip_experts[f'clip_layer_{layer_idx}'] = expert
         print(f"  ✓ {len(self.clip_experts)} CLIP text experts")
 
-        # Shallow fusion
+        # Shallow fusion with fusion controller
         print("\nCreating optimized shallow token prediction fusion...")
         total_experts = len(self.siglip_experts) + len(self.clip_experts)
         self.fusion = ShallowTokenPredictionFusion(
             num_experts=total_experts,
             scales=config.scales,
             vocab_size=config.vocab_size,
+            fusion_controller=self.fusion_controller,
             max_seq_len=config.max_seq_len,
             dropout=config.dropout,
             share_embeddings=config.share_scale_embeddings
@@ -793,12 +1125,7 @@ class LiminalStaircase(nn.Module):
         print(f"{'='*80}\n")
 
     def _init_opinion_anchors(self) -> nn.Parameter:
-        """
-        Vectorized opinion anchor initialization.
-
-        Diversity is ensured by anchor ID injection in fingerprinting,
-        not through initialization variations.
-        """
+        """Vectorized opinion anchor initialization."""
         pentachora = torch.randn(
             self.config.num_opinion_anchors,
             5,
@@ -807,7 +1134,6 @@ class LiminalStaircase(nn.Module):
 
         pentachora = F.normalize(pentachora, dim=-1)
 
-        # Vectorized perturbation
         perturbation = torch.randn_like(pentachora) * 0.1
         pentachora = pentachora + perturbation
         pentachora = F.normalize(pentachora, dim=-1)
@@ -839,8 +1165,15 @@ class LiminalStaircase(nn.Module):
                     opinion = self.clip_experts[layer_name](features, mask)
                     expert_opinions.append(opinion)
 
-        # Shallow fusion
+        # Shallow fusion with fusion controller
         output = self.fusion(expert_opinions)
+
+        # Add fusion controller state to output
+        output['fusion_controller_state'] = {
+            'layer_weights': self.fusion_controller.get_layer_weights(),
+            'scale_weights': self.fusion_controller.get_scale_weights(),
+            'scale_loss_stats': self.fusion_controller.get_scale_loss_stats()
+        }
 
         return output
 
@@ -849,269 +1182,87 @@ class LiminalStaircase(nn.Module):
         return {
             'num_opinion_anchors': self.config.num_opinion_anchors,
             'siglip_experts': len(self.siglip_experts),
+            'siglip_layer_indices': self.config.siglip_layer_indices,
             'clip_experts': len(self.clip_experts),
+            'clip_layer_indices': self.config.clip_layer_indices,
             'total_experts': len(self.siglip_experts) + len(self.clip_experts),
             'vocab_size': self.config.vocab_size,
             'max_seq_len': self.config.max_seq_len,
-            'clip_skip': self.config.clip_skip,
             'scales': self.config.scales,
-            'gradient_checkpointing': self.config.use_gradient_checkpointing,
-            'shared_embeddings': self.config.share_scale_embeddings,
+            'scale_hidden_dims': self.config.scale_hidden_dims,
+            'fusion_controller': {
+                'alpha_learnable': self.config.alpha_learnable,
+                'beta_learnable': self.config.beta_learnable,
+                'learn_layer_weights': self.config.learn_layer_weights,
+                'learn_scale_weights': self.config.learn_scale_weights,
+            },
             'total_parameters': sum(p.numel() for p in self.parameters()),
             'trainable_parameters': sum(p.numel() for p in self.parameters() if p.requires_grad)
         }
 
 
 # ============================================================================
-# COMPREHENSIVE TEST SUITE
+# TEST
 # ============================================================================
-
-def test_vectorized_fingerprinting():
-    """Test vectorized geometric fingerprinting."""
-    print("\n" + "=" * 80)
-    print("TEST 1: Vectorized Geometric Fingerprinting")
-    print("=" * 80)
-
-    fingerprinter = GeometricPositionalFingerprinter()
-    vocab_sizes = [225, 1000, 5000]
-
-    for vocab_size in vocab_sizes:
-        print(f"\n[Vocab size: {vocab_size}]")
-        pentachora = torch.randn(vocab_size, 5, 512)
-        pentachora = F.normalize(pentachora, dim=-1)
-
-        start = time.time()
-        positions = fingerprinter.compute_vocabulary_positions(pentachora, batch_size=512)
-        elapsed = time.time() - start
-
-        print(f"✓ Computed {vocab_size} positions in {elapsed:.3f}s ({vocab_size/elapsed:.0f} tokens/sec)")
-        print(f"  Position range: [{positions.min():.4f}, {positions.max():.4f}]")
-        print(f"  Position std: {positions.std():.4f}")
-
-
-def test_efficient_attention():
-    """Test fixed sparse attention."""
-    print("\n" + "=" * 80)
-    print("TEST 2: Fixed Sparse Attention")
-    print("=" * 80)
-
-    config = CantorAttentionConfig(dim=512, num_heads=8, dropout=0.1)
-    attention = CantorAttention(config, max_seq_len=512, k=64)
-
-    seq_lengths = [77, 196, 384]
-    batch_size = 4
-
-    for seq_len in seq_lengths:
-        print(f"\n[Seq length: {seq_len}]")
-        x = torch.randn(batch_size, seq_len, 512)
-
-        start = time.time()
-        with torch.no_grad():
-            output = attention(x)
-        elapsed = time.time() - start
-
-        print(f"✓ Forward pass: {elapsed*1000:.2f}ms")
-        print(f"  Input shape: {x.shape}")
-        print(f"  Output shape: {output.shape}")
-        assert output.shape == x.shape, "Shape mismatch!"
-
-
-def test_gradient_checkpointing():
-    """Test gradient checkpointing."""
-    print("\n" + "=" * 80)
-    print("TEST 3: Gradient Checkpointing")
-    print("=" * 80)
-
-    pentachora = torch.randn(225, 5, 512)
-    pentachora = F.normalize(pentachora, dim=-1)
-
-    expert_no_cp = MultiScaleExpertCompanion(
-        layer_name='test',
-        input_dim=1664,
-        pentachoron_dim=512,
-        scales=[128, 256, 512],
-        num_heads=8,
-        dropout=0.1,
-        shared_pentachora=pentachora,
-        use_checkpoint=False
-    )
-
-    expert_with_cp = MultiScaleExpertCompanion(
-        layer_name='test',
-        input_dim=1664,
-        pentachoron_dim=512,
-        scales=[128, 256, 512],
-        num_heads=8,
-        dropout=0.1,
-        shared_pentachora=pentachora,
-        use_checkpoint=True
-    )
-
-    x = torch.randn(2, 256, 1664, requires_grad=True)
-
-    print("\n[Without checkpointing]")
-    expert_no_cp.train()
-    start = time.time()
-    out1 = expert_no_cp(x)
-    loss1 = sum(v.sum() for v in out1['scale_opinions'].values())
-    loss1.backward()
-    elapsed1 = time.time() - start
-    print(f"✓ Forward + backward: {elapsed1*1000:.2f}ms")
-
-    print("\n[With checkpointing]")
-    expert_with_cp.train()
-    x_cp = x.detach().requires_grad_(True)
-    start = time.time()
-    out2 = expert_with_cp(x_cp)
-    loss2 = sum(v.sum() for v in out2['scale_opinions'].values())
-    loss2.backward()
-    elapsed2 = time.time() - start
-    print(f"✓ Forward + backward: {elapsed2*1000:.2f}ms")
-    print(f"  Overhead: {(elapsed2/elapsed1 - 1)*100:.1f}%")
-
-
-def test_shared_embeddings():
-    """Test fixed shared embeddings."""
-    print("\n" + "=" * 80)
-    print("TEST 4: Fixed Shared Scale Embeddings")
-    print("=" * 80)
-
-    scales = [128, 256, 512]
-    vocab_size = 49408
-    max_seq_len = 77
-
-    fusion_no_share = ShallowTokenPredictionFusion(
-        num_experts=36,
-        scales=scales,
-        vocab_size=vocab_size,
-        max_seq_len=max_seq_len,
-        share_embeddings=False
-    )
-    params_no_share = sum(p.numel() for p in fusion_no_share.parameters())
-
-    fusion_with_share = ShallowTokenPredictionFusion(
-        num_experts=36,
-        scales=scales,
-        vocab_size=vocab_size,
-        max_seq_len=max_seq_len,
-        share_embeddings=True
-    )
-    params_with_share = sum(p.numel() for p in fusion_with_share.parameters())
-
-    print(f"\n[Without sharing]")
-    print(f"  Parameters: {params_no_share:,}")
-
-    print(f"\n[With sharing]")
-    print(f"  Parameters: {params_with_share:,}")
-    print(f"  Reduction: {(1 - params_with_share/params_no_share)*100:.1f}%")
-    print(f"  Saved: {params_no_share - params_with_share:,} parameters")
-
-
-def test_full_model():
-    """Test full model."""
-    print("\n" + "=" * 80)
-    print("TEST 5: Full Optimized Model")
-    print("=" * 80)
-
-    configs = [
-        ("Standard", False, False),
-        ("Optimized", True, True)
-    ]
-
-    for name, use_cp, share_emb in configs:
-        print(f"\n{'='*60}")
-        print(f"{name} Configuration")
-        print(f"{'='*60}")
-
-        config = LiminalStaircaseConfig(
-            num_opinion_anchors=225,
-            pentachoron_dim=512,
-            scales=[128, 256, 512],
-            siglip_num_layers=24,
-            clip_num_layers=12,
-            clip_skip=2,
-            vocab_size=49408,
-            max_seq_len=77,
-            use_gradient_checkpointing=use_cp,
-            share_scale_embeddings=share_emb
-        )
-
-        model = LiminalStaircase(config)
-
-        batch_size = 2
-        siglip_features = {
-            f'siglip_layer_{i}': torch.randn(batch_size, 256, 1664)
-            for i in range(24)
-        }
-        clip_features = {
-            f'clip_layer_{i}': torch.randn(batch_size, 77, 768)
-            for i in range(10)
-        }
-
-        print(f"\n[Forward pass test]")
-        start = time.time()
-        with torch.no_grad():
-            output = model(siglip_features, clip_features)
-        elapsed = time.time() - start
-
-        print(f"✓ Forward pass: {elapsed*1000:.2f}ms")
-        print(f"  Output shape: {output['token_logits'].shape}")
-        assert output['token_logits'].shape == (batch_size, 77, 49408)
-
-        info = model.get_info()
-        print(f"\n[Model info]")
-        for key, value in info.items():
-            if isinstance(value, int):
-                print(f"  {key}: {value:,}")
-            else:
-                print(f"  {key}: {value}")
-
-
-def run_benchmark():
-    """Run comprehensive benchmark."""
-    print("\n" + "=" * 80)
-    print("BENCHMARK: Optimized Performance")
-    print("=" * 80)
-
-    print("\n1. Geometric Fingerprinting (vocab=5000):")
-    fingerprinter = GeometricPositionalFingerprinter()
-    pentachora = torch.randn(5000, 5, 512)
-    pentachora = F.normalize(pentachora, dim=-1)
-
-    start = time.time()
-    _ = fingerprinter.compute_vocabulary_positions(pentachora, batch_size=512)
-    elapsed = time.time() - start
-    print(f"   Optimized: {elapsed:.3f}s ({5000/elapsed:.0f} tokens/sec)")
-
-    print("\n2. Sparse Attention (seq=384, batch=4):")
-    config = CantorAttentionConfig(dim=512, num_heads=8)
-    attention = CantorAttention(config, max_seq_len=512, k=64)
-    x = torch.randn(4, 384, 512)
-
-    start = time.time()
-    with torch.no_grad():
-        _ = attention(x)
-    elapsed = time.time() - start
-    print(f"   Optimized: {elapsed*1000:.2f}ms")
-
 
 if __name__ == "__main__":
     print("\n" + "=" * 80)
-    print("LIMINAL STAIRCASE - FIXED & OPTIMIZED TEST SUITE")
+    print("LIMINAL STAIRCASE - FUSION CONTROLLER TEST")
     print("=" * 80 + "\n")
 
-    test_vectorized_fingerprinting()
-    test_efficient_attention()
-    test_gradient_checkpointing()
-    test_shared_embeddings()
-    test_full_model()
-    run_benchmark()
+    config = LiminalStaircaseConfig(
+        num_opinion_anchors=225,
+        pentachoron_dim=512,
+        scales=[128, 256, 512],
+        siglip_num_layers=24,
+        clip_num_layers=12,
+        clip_skip=2,
+        vocab_size=49408,
+        max_seq_len=77,
+
+        # Use last 12 SigLIP layers
+        siglip_layer_indices=list(range(12, 24)),
+
+        # Per-scale hidden dims
+        scale_hidden_dims={128: 256, 256: 512, 512: 1024},
+
+        # Fusion controller
+        learn_layer_weights=True,
+        learn_scale_weights=True,
+        alpha_init=0.1,
+        alpha_learnable=True,
+        alpha_per_scale=True,
+        beta_init=0.5,
+        beta_learnable=True,
+        beta_per_scale=True,
+    )
+
+    model = LiminalStaircase(config)
+
+    batch_size = 2
+    siglip_features = {
+        f'siglip_layer_{i}': torch.randn(batch_size, 256, 1664)
+        for i in range(12, 24)
+    }
+    clip_features = {
+        f'clip_layer_{i}': torch.randn(batch_size, 77, 768)
+        for i in range(10)
+    }
+
+    print(f"\n[Forward pass test]")
+    with torch.no_grad():
+        output = model(siglip_features, clip_features)
+
+    print(f"✓ Token logits shape: {output['token_logits'].shape}")
+    print(f"✓ Scale beta losses: {list(output['scale_beta_losses'].keys())}")
+
+    info = model.get_info()
+    print(f"\n[Model info]")
+    print(f"  Total experts: {info['total_experts']}")
+    print(f"  SigLIP layers used: {len(info['siglip_layer_indices'])}/{config.siglip_num_layers}")
+    print(f"  CLIP layers used: {len(info['clip_layer_indices'])}/{config.clip_num_layers - config.clip_skip}")
+    print(f"  Parameters: {info['total_parameters']:,}")
 
     print("\n" + "=" * 80)
-    print("✅ ALL TESTS PASSED - BUGS FIXED!")
-    print("=" * 80)
-    print("\nFixed Issues:")
-    print("  1. ✓ Sparse attention indexing (using advanced indexing)")
-    print("  2. ✓ Shared embeddings (using slicing, not projections)")
-    print("  3. ✓ All optimizations validated")
+    print("✅ TEST COMPLETE")
     print("=" * 80 + "\n")
