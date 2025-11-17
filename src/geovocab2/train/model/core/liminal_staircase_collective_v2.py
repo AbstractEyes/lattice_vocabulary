@@ -460,170 +460,6 @@ HierarchicalFusionController = OrganizedFusionController
 
 
 # ============================================================================
-# CANTOR ATTENTION (with Alpha)
-# ============================================================================
-
-class CantorAttention(nn.Module):
-    """O(n) attention with alpha-controlled neighbor bleed-over."""
-
-    def __init__(
-        self,
-        config: CantorAttentionConfig,
-        max_seq_len: int = 512,
-        k: int = 64
-    ):
-        super().__init__()
-        self.config = config
-        self.dim = config.dim
-        self.num_heads = config.num_heads
-        self.head_dim = config.head_dim
-        self.scale = 1.0 / math.sqrt(self.head_dim)
-        self.k = k
-
-        self.qkv = nn.Linear(config.dim, 3 * config.dim, bias=config.qkv_bias)
-        self.out_proj = nn.Linear(config.dim, config.dim, bias=config.out_bias)
-        self.attn_dropout = nn.Dropout(config.dropout)
-        self.resid_dropout = nn.Dropout(config.dropout)
-
-        # Pre-compute routes
-        self.routes_cache = {}
-        common_lengths = [64, 77, 128, 196, 256, 384, 512]
-        for seq_len in common_lengths:
-            if seq_len <= max_seq_len:
-                routes = self._build_positional_routes(seq_len, k)
-                self.register_buffer(f'routes_{seq_len}', routes.to(torch.int32))
-                self.routes_cache[seq_len] = routes
-
-    def _compute_cantor_coord_vectorized(
-        self,
-        positions: torch.Tensor,
-        seq_len: int,
-        depth: int = 8
-    ) -> torch.Tensor:
-        """Vectorized Cantor coordinate computation."""
-        x = positions.float() / max(1, seq_len - 1)
-        x = torch.clamp(x, 1e-6, 1.0 - 1e-6)
-
-        cantor_val = torch.zeros_like(x)
-        factor = 0.5
-
-        for _ in range(depth):
-            x_scaled = x * 3.0
-            digit = x_scaled.long()
-            x_frac = x_scaled - digit.float()
-
-            middle_bit = (digit == 2).float()
-            cantor_val = cantor_val + middle_bit * factor
-
-            x = x_frac
-            factor *= 0.5
-
-        return torch.clamp(cantor_val, 0.0, 1.0)
-
-    def _build_positional_routes(self, seq_len: int, k: int) -> torch.Tensor:
-        """Vectorized route building."""
-        positions = torch.arange(seq_len, dtype=torch.long)
-        coords = self._compute_cantor_coord_vectorized(positions, seq_len)
-
-        distances = torch.abs(
-            coords.unsqueeze(1) - coords.unsqueeze(0)
-        )
-
-        _, routes = torch.topk(distances, k, dim=1, largest=False)
-        return routes
-
-    def _get_routes_for_seq_len(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        """Get or build routes for sequence length."""
-        if seq_len in self.routes_cache:
-            cached = getattr(self, f'routes_{seq_len}', None)
-            if cached is not None:
-                return cached.to(device).long()
-
-        routes = self._build_positional_routes(seq_len, self.k)
-        return routes.to(device)
-
-    def _sparse_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        routes: torch.Tensor,
-        alpha: float = 0.0
-    ) -> torch.Tensor:
-        """Sparse attention with alpha-controlled neighbor bleed-over."""
-        batch_size, num_heads, seq_len, head_dim = q.shape
-        k_neighbors = routes.shape[-1]
-        device = q.device
-
-        if routes.dim() == 2:
-            routes_expanded = routes.unsqueeze(0).expand(batch_size, -1, -1)
-        else:
-            routes_expanded = routes
-
-        batch_idx = torch.arange(batch_size, device=device).view(-1, 1, 1, 1)
-        head_idx = torch.arange(num_heads, device=device).view(1, -1, 1, 1)
-
-        batch_idx = batch_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
-        head_idx = head_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
-        routes_bc = routes_expanded.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
-
-        k_gathered = k[batch_idx, head_idx, routes_bc, :]
-        v_gathered = v[batch_idx, head_idx, routes_bc, :]
-
-        if alpha > 0.0:
-            adj_routes_left = torch.clamp(routes_expanded - 1, 0, seq_len - 1)
-            adj_routes_right = torch.clamp(routes_expanded + 1, 0, seq_len - 1)
-
-            adj_routes_left_bc = adj_routes_left.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
-            adj_routes_right_bc = adj_routes_right.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
-
-            k_adj_left = k[batch_idx, head_idx, adj_routes_left_bc, :]
-            k_adj_right = k[batch_idx, head_idx, adj_routes_right_bc, :]
-            v_adj_left = v[batch_idx, head_idx, adj_routes_left_bc, :]
-            v_adj_right = v[batch_idx, head_idx, adj_routes_right_bc, :]
-
-            k_gathered = (1 - alpha) * k_gathered + alpha/2 * (k_adj_left + k_adj_right)
-            v_gathered = (1 - alpha) * v_gathered + alpha/2 * (v_adj_left + v_adj_right)
-
-        scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered) * self.scale
-
-        if self.config.causal:
-            position_idx = torch.arange(seq_len, device=device).unsqueeze(1)
-            causal_mask = routes_expanded > position_idx.unsqueeze(0)
-            causal_mask = causal_mask.unsqueeze(1).expand(batch_size, num_heads, -1, -1)
-            scores = scores.masked_fill(causal_mask, float('-inf'))
-
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.attn_dropout(attn_weights)
-
-        output = torch.einsum('bhqk,bhqkd->bhqd', attn_weights, v_gathered)
-        return output
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        anchor_ids: Optional[torch.Tensor] = None,
-        alpha: float = 0.0
-    ) -> torch.Tensor:
-        """Forward with optional alpha bleed-over."""
-        batch_size, seq_len, _ = x.shape
-
-        qkv = self.qkv(x)
-        qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        routes = self._get_routes_for_seq_len(seq_len, x.device)
-        attn_output = self._sparse_attention(q, k, v, routes, alpha=alpha)
-
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.dim)
-        output = self.out_proj(attn_output)
-        output = self.resid_dropout(output)
-
-        return output
-
-
-# ============================================================================
 # GEOMETRIC POSITIONAL FINGERPRINTING
 # ============================================================================
 
@@ -908,22 +744,249 @@ class MultiScaleExpertCompanion(nn.Module):
 
 
 # ============================================================================
-# SHALLOW FUSION
+# GLOBAL CACHING SYSTEM
+# ============================================================================
+
+from functools import lru_cache
+import threading
+
+
+class GlobalCantorRouteCache:
+    """Thread-safe global cache for Cantor attention routes across all instances."""
+
+    def __init__(self):
+        self._cache = {}
+        self._lock = threading.Lock()
+
+    def get_key(self, seq_len: int, k: int, device: str) -> str:
+        """Generate cache key."""
+        return f"{seq_len}_{k}_{device}"
+
+    def get(self, seq_len: int, k: int, device: torch.device) -> Optional[torch.Tensor]:
+        """Thread-safe get from cache."""
+        key = self.get_key(seq_len, k, str(device))
+        with self._lock:
+            return self._cache.get(key)
+
+    def put(self, seq_len: int, k: int, device: torch.device, routes: torch.Tensor):
+        """Thread-safe put to cache."""
+        key = self.get_key(seq_len, k, str(device))
+        with self._lock:
+            self._cache[key] = routes
+
+    def clear(self):
+        """Clear entire cache."""
+        with self._lock:
+            self._cache.clear()
+
+
+# Global singleton cache
+_GLOBAL_ROUTE_CACHE = GlobalCantorRouteCache()
+
+
+@lru_cache(maxsize=256)
+def compute_cantor_coords_cached(seq_len: int, depth: int = 8) -> torch.Tensor:
+    """LRU-cached Cantor coordinate computation."""
+    positions = torch.arange(seq_len, dtype=torch.long)
+    x = positions.float() / max(1, seq_len - 1)
+    x = torch.clamp(x, 1e-6, 1.0 - 1e-6)
+
+    cantor_val = torch.zeros_like(x)
+    factor = 0.5
+
+    for _ in range(depth):
+        x_scaled = x * 3.0
+        digit = x_scaled.long()
+        x_frac = x_scaled - digit.float()
+
+        middle_bit = (digit == 2).float()
+        cantor_val = cantor_val + middle_bit * factor
+
+        x = x_frac
+        factor *= 0.5
+
+    return torch.clamp(cantor_val, 0.0, 1.0)
+
+
+# ============================================================================
+# OPTIMIZED CANTOR ATTENTION
+# ============================================================================
+
+class CantorAttention(nn.Module):
+    """O(n) attention with aggressive route caching and pre-warming."""
+
+    def __init__(
+            self,
+            config: CantorAttentionConfig,
+            max_seq_len: int = 512,
+            k: int = 64
+    ):
+        super().__init__()
+        self.config = config
+        self.dim = config.dim
+        self.num_heads = config.num_heads
+        self.head_dim = config.head_dim
+        self.scale = 1.0 / math.sqrt(self.head_dim)
+        self.k = k
+        self.max_seq_len = max_seq_len
+
+        self.qkv = nn.Linear(config.dim, 3 * config.dim, bias=config.qkv_bias)
+        self.out_proj = nn.Linear(config.dim, config.dim, bias=config.out_bias)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+
+        # Pre-warm cache for common sequence lengths
+        self._prewarm_cache()
+
+    def _prewarm_cache(self):
+        """Pre-compute and cache routes for common lengths."""
+        common_lengths = [64, 77, 128, 196, 256, 384, 512, 1024, 2048]
+
+        for seq_len in common_lengths:
+            if seq_len <= self.max_seq_len:
+                # Build routes on CPU first
+                routes_cpu = self._build_positional_routes_cached(seq_len, self.k)
+                # Store in global cache for CPU
+                _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, torch.device('cpu'), routes_cpu)
+
+    @staticmethod
+    def _build_positional_routes_cached(seq_len: int, k: int) -> torch.Tensor:
+        """Cached route building using global LRU-cached coords."""
+        coords = compute_cantor_coords_cached(seq_len, depth=8)
+
+        distances = torch.abs(
+            coords.unsqueeze(1) - coords.unsqueeze(0)
+        )
+
+        _, routes = torch.topk(distances, k, dim=1, largest=False)
+        return routes.to(torch.int32)
+
+    def _get_routes_for_seq_len(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        """Get cached routes with automatic device handling."""
+        # Try device-specific cache first
+        routes = _GLOBAL_ROUTE_CACHE.get(seq_len, self.k, device)
+        if routes is not None:
+            return routes.long()
+
+        # Try CPU cache and transfer
+        routes_cpu = _GLOBAL_ROUTE_CACHE.get(seq_len, self.k, torch.device('cpu'))
+        if routes_cpu is not None:
+            routes_device = routes_cpu.to(device, non_blocking=True)
+            _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, device, routes_device)
+            return routes_device.long()
+
+        # Build new routes (rare case)
+        routes = self._build_positional_routes_cached(seq_len, self.k).to(device)
+        _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, device, routes)
+        return routes.long()
+
+    def _sparse_attention(
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            routes: torch.Tensor,
+            alpha: float = 0.0
+    ) -> torch.Tensor:
+        """Optimized sparse attention with minimal overhead."""
+        batch_size, num_heads, seq_len, head_dim = q.shape
+        k_neighbors = routes.shape[-1]
+        device = q.device
+
+        # Expand routes efficiently
+        if routes.dim() == 2:
+            routes_expanded = routes.unsqueeze(0).expand(batch_size, -1, -1)
+        else:
+            routes_expanded = routes
+
+        # Create broadcast indices once
+        batch_idx = torch.arange(batch_size, device=device).view(-1, 1, 1, 1)
+        head_idx = torch.arange(num_heads, device=device).view(1, -1, 1, 1)
+
+        batch_idx = batch_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
+        head_idx = head_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
+        routes_bc = routes_expanded.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+
+        # Gather k and v
+        k_gathered = k[batch_idx, head_idx, routes_bc, :]
+        v_gathered = v[batch_idx, head_idx, routes_bc, :]
+
+        # Alpha bleed-over (only if needed)
+        if alpha > 0.0:
+            adj_left = torch.clamp(routes_expanded - 1, 0, seq_len - 1)
+            adj_right = torch.clamp(routes_expanded + 1, 0, seq_len - 1)
+
+            adj_left_bc = adj_left.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+            adj_right_bc = adj_right.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+
+            k_left = k[batch_idx, head_idx, adj_left_bc, :]
+            k_right = k[batch_idx, head_idx, adj_right_bc, :]
+            v_left = v[batch_idx, head_idx, adj_left_bc, :]
+            v_right = v[batch_idx, head_idx, adj_right_bc, :]
+
+            k_gathered = k_gathered.mul_(1 - alpha).add_(k_left.add_(k_right).mul_(alpha * 0.5))
+            v_gathered = v_gathered.mul_(1 - alpha).add_(v_left.add_(v_right).mul_(alpha * 0.5))
+
+        # Attention computation
+        scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered).mul_(self.scale)
+
+        if self.config.causal:
+            position_idx = torch.arange(seq_len, device=device).unsqueeze(1)
+            causal_mask = routes_expanded > position_idx.unsqueeze(0)
+            causal_mask = causal_mask.unsqueeze(1).expand(batch_size, num_heads, -1, -1)
+            scores = scores.masked_fill(causal_mask, float('-inf'))
+
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        output = torch.einsum('bhqk,bhqkd->bhqd', attn_weights, v_gathered)
+        return output
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            anchor_ids: Optional[torch.Tensor] = None,
+            alpha: float = 0.0
+    ) -> torch.Tensor:
+        """Forward with cached routes."""
+        batch_size, seq_len, _ = x.shape
+
+        # QKV projection
+        qkv = self.qkv(x)
+        qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # Get pre-cached routes (no computation!)
+        routes = self._get_routes_for_seq_len(seq_len, x.device)
+
+        # Sparse attention
+        attn_output = self._sparse_attention(q, k, v, routes, alpha=alpha)
+
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.dim)
+        output = self.out_proj(attn_output)
+        output = self.resid_dropout(output)
+
+        return output
+
+
+# ============================================================================
+# OPTIMIZED SHALLOW FUSION
 # ============================================================================
 
 class ShallowTokenPredictionFusion(nn.Module):
-    """Shallow fusion with beta-controlled geometric adjudication."""
+    """Shallow fusion with pre-cached position embeddings."""
 
     def __init__(
-        self,
-        num_experts: int,
-        scales: List[int],
-        vocab_size: int,
-        fusion_controller: OrganizedFusionController,
-        max_seq_len: int = 77,
-        num_heads: int = 8,
-        dropout: float = 0.1,
-        share_embeddings: bool = True
+            self,
+            num_experts: int,
+            scales: List[int],
+            vocab_size: int,
+            fusion_controller: OrganizedFusionController,
+            max_seq_len: int = 77,
+            num_heads: int = 8,
+            dropout: float = 0.1,
+            share_embeddings: bool = True
     ):
         super().__init__()
 
@@ -939,11 +1002,21 @@ class ShallowTokenPredictionFusion(nn.Module):
             self.shared_position_embeds = nn.Parameter(torch.randn(max_seq_len, base_dim))
             nn.init.normal_(self.shared_position_embeds, std=0.02)
             print(f"\n  💾 Shared embeddings: {max_seq_len * base_dim:,} params")
+
+            # PRE-CACHE position embedding slices for each scale
+            self._cached_pos_embeds = {}
+            print(f"  🔥 Pre-caching position embeddings for {len(scales)} scales...")
+            for scale in scales:
+                # Create a non-leaf tensor that won't track gradients separately
+                # but will receive gradients through the shared embeddings
+                self._cached_pos_embeds[scale] = None  # Will be populated in forward
         else:
+            self._cached_pos_embeds = {}
             for scale in scales:
                 position_embeds = nn.Parameter(torch.randn(max_seq_len, scale))
                 nn.init.normal_(position_embeds, std=0.02)
                 self.register_parameter(f'position_embeds_{scale}', position_embeds)
+                self._cached_pos_embeds[scale] = None
 
         self.scale_output_modules = nn.ModuleDict()
 
@@ -978,6 +1051,7 @@ class ShallowTokenPredictionFusion(nn.Module):
 
     def _init_weights(self):
         """Efficient initialization."""
+
         def init_module(m):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight, gain=0.5)
@@ -987,55 +1061,75 @@ class ShallowTokenPredictionFusion(nn.Module):
         self.apply(init_module)
 
     def _get_position_embeds(self, scale: int) -> torch.Tensor:
-        """Get position embeddings via slicing."""
+        """Get cached position embeddings (no slicing in forward!)."""
+        # Use cached slice if available
+        if self._cached_pos_embeds[scale] is not None:
+            return self._cached_pos_embeds[scale]
+
+        # Create and cache the slice
         if self.share_embeddings:
-            return self.shared_position_embeds[:, :scale]
+            # Slice and cache (gradient flows through shared_position_embeds)
+            pos_embeds = self.shared_position_embeds[:, :scale]
         else:
-            return getattr(self, f'position_embeds_{scale}')
+            pos_embeds = getattr(self, f'position_embeds_{scale}')
+
+        # Cache for future use
+        self._cached_pos_embeds[scale] = pos_embeds
+        return pos_embeds
 
     def forward(
             self,
             expert_opinions: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
-        """Multi-level fusion - returns features for trainer to compute losses."""
+        """Multi-level fusion with zero slicing overhead."""
         batch_size = list(expert_opinions[0]['scale_opinions'].values())[0].shape[0]
 
+        # Get layer weights once
         layer_weights = self.fusion_controller.get_layer_weights()
+        weights_view = layer_weights.view(-1, 1, 1)
 
         scale_token_logits = {}
-        scale_feature_pairs = {}  # For beta loss computation in trainer
+        scale_feature_pairs = {}
 
         for scale_idx, scale in enumerate(self.scales):
+            # Stack expert opinions
             expert_ops = torch.stack([
                 exp['scale_opinions'][scale]
                 for exp in expert_opinions
             ], dim=0)
 
-            weights = layer_weights.view(-1, 1, 1)
-            collective_opinion = (expert_ops * weights).sum(dim=0)
+            # Weighted fusion
+            collective_opinion = (expert_ops * weights_view).sum(dim=0)
 
+            # Get PRE-CACHED position embeddings (zero overhead!)
             position_embeds = self._get_position_embeds(scale)
             token_features = collective_opinion.unsqueeze(1) + position_embeds.unsqueeze(0)
 
+            # Get beta for this scale
             beta = self.fusion_controller.get_beta(scale_idx)
 
+            # Geometric processing with CACHED routes
             cantor_attn = self.scale_output_modules[f'cantor_{scale}']
             geometric_features = cantor_attn(token_features)
 
-            attended_features = (1 - beta) * token_features + beta * geometric_features
+            # Blend
+            attended_features = token_features.mul(1 - beta).add_(geometric_features.mul(beta))
 
             # Store for beta loss computation in trainer
-            scale_feature_pairs[scale] = {
-                'token_features': token_features,
-                'geometric_features': geometric_features,
-                'beta': beta
-            }
+            if self.training:
+                scale_feature_pairs[scale] = {
+                    'token_features': token_features,
+                    'geometric_features': geometric_features,
+                    'beta': beta
+                }
 
+            # Vocabulary projection
             vocab_head = self.scale_output_modules[f'vocab_{scale}']
             token_logits = vocab_head(attended_features)
 
             scale_token_logits[scale] = token_logits
 
+        # Final scale fusion
         scale_weights = self.fusion_controller.get_scale_weights()
         logits_list = [scale_token_logits[scale] for scale in self.scales]
         logits_stacked = torch.stack(logits_list, dim=0)
@@ -1045,7 +1139,7 @@ class ShallowTokenPredictionFusion(nn.Module):
         return {
             'token_logits': final_token_logits,
             'scale_token_logits': scale_token_logits,
-            'scale_feature_pairs': scale_feature_pairs  # For trainer to compute beta loss
+            'scale_feature_pairs': scale_feature_pairs if self.training else {}
         }
 
 # ============================================================================
