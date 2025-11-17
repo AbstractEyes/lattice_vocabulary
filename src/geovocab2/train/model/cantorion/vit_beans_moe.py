@@ -294,15 +294,13 @@ class CantorAttentionConfig:
     dropout: float = 0.1
 
 
+# ============================================================================
+# OPTIMIZED CANTOR GLOBAL ATTENTION (BATCHED)
+# ============================================================================
+
 class CantorGlobalAttention(nn.Module):
     """
-    Sparse O(n) attention using Cantor fingerprint routing.
-
-    Key features:
-    - Pre-computed expert routing based on Cantor coordinates
-    - Beta-weighted cross-expert fusion
-    - Multi-directional (5-way) projection fusion
-    - Fills Cantor dead space through geometric interpolation
+    OPTIMIZED: Batched sparse attention - removes nested loops.
     """
 
     def __init__(self, config: CantorAttentionConfig):
@@ -318,20 +316,19 @@ class CantorGlobalAttention(nn.Module):
         self.temperature = nn.Parameter(torch.tensor(config.temperature))
         self.dropout = nn.Dropout(config.dropout)
 
-        # Pre-compute Cantor coordinates for experts
+        # Pre-compute Cantor coordinates
         self.register_buffer(
             'expert_coords',
             self._compute_expert_cantor_coordinates()
         )
 
-        # Pre-compute routing table
+        # Pre-compute routing
         self.register_buffer(
             'expert_routes',
             self._build_expert_routes()
         )
 
     def _cantor_coordinate(self, position: int, max_len: int, depth: int) -> float:
-        """Compute Cantor set coordinate for expert."""
         x = position / max(1, max_len - 1)
         x = max(1e-6, min(x, 1.0 - 1e-6))
 
@@ -342,16 +339,13 @@ class CantorGlobalAttention(nn.Module):
             x *= 3.0
             digit = int(x)
             x -= digit
-
             if digit == 2:
                 cantor_val += factor
-
             factor *= 0.5
 
         return cantor_val
 
     def _compute_expert_cantor_coordinates(self) -> torch.Tensor:
-        """Map each expert to Cantor coordinate."""
         coords = torch.tensor([
             self._cantor_coordinate(i, self.num_experts, self.cantor_depth)
             for i in range(self.num_experts)
@@ -359,167 +353,180 @@ class CantorGlobalAttention(nn.Module):
         return coords
 
     def _build_expert_routes(self) -> torch.Tensor:
-        """Build routing table: which experts attend to which."""
         routes = torch.zeros(self.num_experts, self.local_window, dtype=torch.long)
-
         for i in range(self.num_experts):
-            distances = torch.abs(
-                self.expert_coords - self.expert_coords[i]
-            )
+            distances = torch.abs(self.expert_coords - self.expert_coords[i])
             _, nearest = torch.topk(distances, self.local_window, largest=False)
             routes[i] = nearest
-
         return routes
 
     def forward(
-        self,
-        expert_outputs: List[Dict[str, torch.Tensor]],
-        num_patches: int
+            self,
+            expert_outputs: List[Dict[str, torch.Tensor]],
+            num_patches: int
     ) -> torch.Tensor:
         """
-        Fuse expert outputs through sparse geometric attention.
-
-        Args:
-            expert_outputs: List of dicts from each expert
-            num_patches: Total number of patches
-
-        Returns:
-            fused: [batch, num_patches, full_feature_dim]
+        OPTIMIZED: Batched fusion - removed nested loops.
         """
         device = self.expert_coords.device
 
-        # Get batch size from first valid expert
+        # Get batch info
         batch_size = None
+        dtype = torch.float32
         for output in expert_outputs:
             if output['K'] is not None:
                 batch_size = output['K'].shape[0]
+                dtype = output['K'].dtype
                 break
 
         if batch_size is None:
-            raise ValueError("No valid expert outputs")
+            return torch.zeros(batch_size, num_patches, device=device, dtype=dtype)
 
-        # Collect projections across all 5 directions
-        all_projections = {dir_id: [] for dir_id in range(5)}
+        # ========================================================================
+        # OPTIMIZATION 1: Pre-gather all expert data (vectorized)
+        # ========================================================================
+
+        # Collect all valid projections upfront
+        valid_experts = []
+        expert_Qs = []
+        expert_Ks = []
+        expert_Vs = []
+        expert_masks = []
+        expert_betas_list = []
 
         for expert_id, output in enumerate(expert_outputs):
-            if output['projections']:
-                for proj in output['projections']:
-                    dir_id = proj['direction']
-                    all_projections[dir_id].append({
-                        'expert_id': expert_id,
-                        'K': proj['K'],      # [batch, patches_i]
-                        'Q': proj['Q'],
-                        'V': proj['V'],
-                        'mask': output['mask']
-                    })
+            if output['K'] is not None and len(output['projections']) > 0:
+                valid_experts.append(expert_id)
 
-        # Process each direction independently, then fuse
-        direction_outputs = []
+                # Average across 5 directions (avoid direction loop)
+                proj_Qs = torch.stack([p['Q'] for p in output['projections']], dim=0)
+                proj_Ks = torch.stack([p['K'] for p in output['projections']], dim=0)
+                proj_Vs = torch.stack([p['V'] for p in output['projections']], dim=0)
 
-        for dir_id in range(5):
-            dir_projs = all_projections[dir_id]
-            if not dir_projs:
-                continue
+                # Mean over directions: [batch, patches]
+                expert_Qs.append(proj_Qs.mean(dim=0))
+                expert_Ks.append(proj_Ks.mean(dim=0))
+                expert_Vs.append(proj_Vs.mean(dim=0))
+                expert_masks.append(output['mask'])
+                expert_betas_list.append(output['betas'])
 
-            # Sparse attention within this direction
-            attended_patches = torch.zeros(
-                batch_size, num_patches,
-                device=device, dtype=torch.float32
-            )
+        if len(valid_experts) == 0:
+            return torch.zeros(batch_size, num_patches, device=device, dtype=dtype)
 
-            for expert_id, output in enumerate(expert_outputs):
-                if not output['projections']:
-                    continue
+        # ========================================================================
+        # OPTIMIZATION 2: Pad all to same length (enables batching)
+        # ========================================================================
 
-                # Get neighbors via Cantor routing
-                neighbors = self.expert_routes[expert_id]
+        max_expert_patches = max(q.shape[1] for q in expert_Qs)
 
-                # Find this expert's projection in current direction
-                my_proj = None
-                for p in dir_projs:
-                    if p['expert_id'] == expert_id:
-                        my_proj = p
-                        break
+        expert_Qs_padded = []
+        expert_Ks_padded = []
+        expert_Vs_padded = []
 
-                if my_proj is None:
-                    continue
+        for Q, K, V in zip(expert_Qs, expert_Ks, expert_Vs):
+            if Q.shape[1] < max_expert_patches:
+                pad_size = max_expert_patches - Q.shape[1]
+                Q = F.pad(Q, (0, pad_size))
+                K = F.pad(K, (0, pad_size))
+                V = F.pad(V, (0, pad_size))
+            expert_Qs_padded.append(Q)
+            expert_Ks_padded.append(K)
+            expert_Vs_padded.append(V)
 
-                Q_i = my_proj['Q']  # [batch, my_patches]
-                mask_i = my_proj['mask']  # [num_patches]
+        # Stack: [num_valid_experts, batch, max_patches]
+        Q_all = torch.stack(expert_Qs_padded, dim=0)
+        K_all = torch.stack(expert_Ks_padded, dim=0)
+        V_all = torch.stack(expert_Vs_padded, dim=0)
 
-                # Gather neighbor projections
-                neighbor_projs = [p for p in dir_projs if p['expert_id'] in neighbors]
-                if not neighbor_projs:
-                    continue
+        # ========================================================================
+        # OPTIMIZATION 3: Batched attention computation
+        # ========================================================================
 
-                # Stack neighbor K and V
-                K_neighbors = []
-                V_neighbors = []
-                neighbor_indices = []
+        # Build routing mask: which experts attend to which
+        # [num_valid_experts, local_window]
+        routes = self.expert_routes[valid_experts]
 
-                for n_proj in neighbor_projs:
-                    K_neighbors.append(n_proj['K'])
-                    V_neighbors.append(n_proj['V'])
-                    neighbor_indices.append(n_proj['expert_id'])
+        # Map valid expert IDs to indices
+        expert_id_to_idx = {eid: idx for idx, eid in enumerate(valid_experts)}
 
-                # [batch, num_neighbors, neighbor_patches]
-                # Need to pad to same length for stacking
-                max_neighbor_patches = max(k.shape[1] for k in K_neighbors)
+        # Gather neighbor keys/values in batch
+        # [num_valid_experts, local_window, batch, max_patches]
+        K_neighbors = []
+        V_neighbors = []
 
-                K_padded = []
-                V_padded = []
-                for k, v in zip(K_neighbors, V_neighbors):
-                    if k.shape[1] < max_neighbor_patches:
-                        pad_size = max_neighbor_patches - k.shape[1]
-                        k = F.pad(k, (0, pad_size))
-                        v = F.pad(v, (0, pad_size))
-                    K_padded.append(k)
-                    V_padded.append(v)
+        for i, expert_id in enumerate(valid_experts):
+            neighbor_ids = routes[i]
 
-                K_stack = torch.stack(K_padded, dim=1)  # [batch, num_neighbors, patches]
-                V_stack = torch.stack(V_padded, dim=1)
+            neighbor_Ks = []
+            neighbor_Vs = []
 
-                # Compute attention scores
-                # [batch, my_patches, 1] @ [batch, num_neighbors, patches] -> [batch, my_patches, num_neighbors, patches]
-                scores = Q_i.unsqueeze(-1).unsqueeze(-1) * K_stack.unsqueeze(1)
-                scores = scores.sum(dim=-1)  # [batch, my_patches, num_neighbors]
-                scores = scores / math.sqrt(self.expert_dim)
-                scores = scores / self.temperature.abs()
+            for neighbor_id in neighbor_ids:
+                neighbor_id = neighbor_id.item()
+                if neighbor_id in expert_id_to_idx:
+                    idx = expert_id_to_idx[neighbor_id]
+                    neighbor_Ks.append(K_all[idx])
+                    neighbor_Vs.append(V_all[idx])
+                else:
+                    # Neighbor not valid, use zeros
+                    neighbor_Ks.append(torch.zeros_like(K_all[0]))
+                    neighbor_Vs.append(torch.zeros_like(V_all[0]))
 
-                # Apply beta modulation (VAE-Lyra binding)
-                betas = output['betas']
-                for neighbor_idx, neighbor_id in enumerate(neighbor_indices):
-                    if neighbor_id != expert_id:
-                        beta_key = f"expert_{neighbor_id}"
-                        if beta_key in betas:
-                            beta = torch.sigmoid(betas[beta_key])
-                            scores[:, :, neighbor_idx] *= beta
+            K_neighbors.append(torch.stack(neighbor_Ks, dim=0))
+            V_neighbors.append(torch.stack(neighbor_Vs, dim=0))
 
-                # Softmax attention
-                attn = F.softmax(scores, dim=-1)  # [batch, my_patches, num_neighbors]
-                attn = self.dropout(attn)
+        # [num_valid_experts, local_window, batch, max_patches]
+        K_neighbors = torch.stack(K_neighbors, dim=0)
+        V_neighbors = torch.stack(V_neighbors, dim=0)
 
-                # Apply attention to values
-                # [batch, my_patches, num_neighbors] @ [batch, num_neighbors, patches]
-                # Take mean over neighbor patches
-                V_mean = V_stack.mean(dim=-1)  # [batch, num_neighbors]
-                output_i = torch.matmul(attn, V_mean.unsqueeze(-1)).squeeze(-1)
-                # [batch, my_patches]
+        # Batched attention scores
+        # [num_valid_experts, batch, max_patches] x [num_valid_experts, local_window, batch, max_patches]
+        # -> [num_valid_experts, batch, max_patches, local_window]
 
-                # Place in global tensor
-                attended_patches[:, mask_i] = output_i
+        Q_expanded = Q_all.unsqueeze(2)  # [experts, batch, 1, patches]
+        K_transposed = K_neighbors.permute(0, 2, 3, 1)  # [experts, batch, patches, window]
 
-            direction_outputs.append(attended_patches)
+        scores = torch.matmul(Q_expanded, K_transposed).squeeze(2)
+        # [num_valid_experts, batch, patches, local_window]
 
-        # Fuse across 5 directions (cross-contamination fills dead space)
-        if direction_outputs:
-            fused_1d = torch.stack(direction_outputs).mean(dim=0)
-            # [batch, num_patches]
-        else:
-            fused_1d = torch.zeros(batch_size, num_patches, device=device)
+        scores = scores / math.sqrt(self.expert_dim)
+        scores = scores / self.temperature.abs()
 
-        return fused_1d
+        # Apply beta modulation (vectorized where possible)
+        for i, expert_id in enumerate(valid_experts):
+            betas = expert_betas_list[i]
+            neighbor_ids = routes[i]
 
+            for j, neighbor_id in enumerate(neighbor_ids):
+                neighbor_id = neighbor_id.item()
+                if neighbor_id != expert_id:
+                    beta_key = f"expert_{neighbor_id}"
+                    if beta_key in betas:
+                        beta = torch.sigmoid(betas[beta_key])
+                        scores[i, :, :, j] = scores[i, :, :, j] * beta
+
+        # Softmax
+        attn = F.softmax(scores, dim=-1)  # [experts, batch, patches, window]
+        attn = self.dropout(attn)
+
+        # Apply attention
+        # [experts, batch, patches, window] x [experts, window, batch, patches]
+        V_transposed = V_neighbors.permute(0, 2, 3, 1)  # [experts, batch, patches, window]
+
+        # Weighted sum over window
+        attended = (attn * V_transposed).sum(dim=-1)  # [experts, batch, patches]
+
+        # ========================================================================
+        # OPTIMIZATION 4: Scatter back to global tensor (vectorized)
+        # ========================================================================
+
+        output = torch.zeros(batch_size, num_patches, device=device, dtype=dtype)
+
+        for i, (expert_id, mask) in enumerate(zip(valid_experts, expert_masks)):
+            # Take only valid patches (up to actual size)
+            valid_patches = mask.sum().item()
+            output[:, mask] = attended[i, :, :valid_patches]
+
+        return output
 
 # ============================================================================
 # CANTOR MoE LAYER
