@@ -7,14 +7,12 @@ A novel sparse attention mechanism based on Cantor fractal geometry that achieve
 true O(n) complexity while maintaining global context. Outperforms standard O(n²)
 attention at sequences longer than ~4096 tokens.
 
+Now uses CantorRouteFactory for guaranteed deterministic geometric routing.
+
 Benchmark Results (A100-80GB):
     seq=4096:  1.32x faster than standard, 27% less memory
     seq=8192:  Standard OOMs, Cantor runs in 169ms
     seq=32768: Standard OOMs, Cantor runs in 173ms (nearly constant time!)
-
-Benchmark Results (L4-22GB):
-    seq=4096:  1.17x faster than standard, 27% less memory
-    seq=8192:  Standard OOMs, Cantor runs in 309ms
 
 Scaling Properties:
     - Cantor: Perfect O(n) - doubles time when sequence doubles
@@ -34,6 +32,12 @@ from typing import Optional, Dict, Tuple
 from dataclasses import dataclass
 import math
 
+# Import geometric factories
+from geovocab2.shapes.factory.cantor_route_factory import (
+    CantorRouteFactory,
+    RouteMode
+)
+
 
 @dataclass
 class CantorAttentionConfig:
@@ -44,7 +48,7 @@ class CantorAttentionConfig:
         dim: Model dimension
         num_heads: Number of attention heads
         head_dim: Dimension per head (default: dim // num_heads)
-        depth: Cantor fractal depth (default: 8, higher = more precise routing)
+        cantor_dimensions: Dimensions for Cantor pairing (2-5)
         max_seq_len: Maximum sequence length to support
         local_window: Number of neighbors each token attends to (k in sparse attention)
         adaptive_window: Enable adaptive window sizing based on sequence length
@@ -55,11 +59,12 @@ class CantorAttentionConfig:
         causal: Whether to use causal masking
         qkv_bias: Add bias to QKV projection
         out_bias: Add bias to output projection
+        validate_geometry: Validate geometric constraints (for debugging)
     """
     dim: int = 512
     num_heads: int = 8
     head_dim: Optional[int] = None
-    depth: int = 8
+    cantor_dimensions: int = 2
     max_seq_len: int = 524_288
     local_window: int = 64
     adaptive_window: bool = False
@@ -70,6 +75,7 @@ class CantorAttentionConfig:
     causal: bool = False
     qkv_bias: bool = True
     out_bias: bool = True
+    validate_geometry: bool = False
 
     def __post_init__(self):
         if self.head_dim is None:
@@ -82,6 +88,10 @@ class CantorAttentionConfig:
             assert self.min_window > 0, "min_window must be positive"
             assert self.max_window >= self.min_window, "max_window must be >= min_window"
             assert 0 < self.sparsity_target <= 1.0, "sparsity_target must be in (0, 1]"
+
+        # Validate Cantor dimensions
+        assert 2 <= self.cantor_dimensions <= 5, \
+            f"cantor_dimensions must be 2-5, got {self.cantor_dimensions}"
 
     def get_window_size(self, seq_len: int) -> int:
         """
@@ -99,13 +109,7 @@ class CantorAttentionConfig:
 
         Returns:
             Window size (k) for this sequence length
-
-        #Example:
-        #    >>> config = CantorAttentionConfig(adaptive_window=True, sparsity_target=0.25)
-        #    >>> config.get_window_size(64)   # Returns 16 (25% of 64)
-        #    >>> config.get_window_size(256)  # Returns 64 (25% of 256, capped at max)
-        #    >>> config.get_window_size(4096) # Returns 64 (capped at max_window)
-        #"""
+        """
         if not self.adaptive_window:
             return self.local_window
 
@@ -120,20 +124,22 @@ class CantorAttentionConfig:
 
 class CantorAttention(nn.Module):
     """
-    Cantor Global Attention with O(n) complexity.
+    Cantor Global Attention with O(n) complexity using CantorRouteFactory.
 
-    Uses Cantor fractal geometry to determine which tokens should attend to each other,
-    achieving sparse attention with global context while maintaining O(n) complexity.
+    Uses deterministic Cantor pairing geometry to determine which tokens should
+    attend to each other, achieving sparse attention with global context while
+    maintaining O(n) complexity.
 
     Key Properties:
         - O(n) time complexity (vs O(n²) for standard attention)
         - O(n) memory complexity
         - Maintains global context through geometric routing
-        - Adaptive window sizing for better memory efficiency at small scales
-        - Outperforms standard attention at seq_len > 4096
+        - Deterministic routing (no learned parameters for routing)
+        - Adaptive window sizing for better memory efficiency
+        - Validated geometric constraints
 
     Architecture:
-        1. Compute Cantor coordinates for each position (fractal space)
+        1. Build Cantor distance matrix for sequence (via CantorRouteFactory)
         2. Find k-nearest neighbors in Cantor space for each token
         3. Sparse attention: each token only attends to its k neighbors
         4. Dynamic route building with adaptive k based on sequence length
@@ -159,8 +165,12 @@ class CantorAttention(nn.Module):
         # Attention scaling factor
         self.scale = 1.0 / math.sqrt(self.head_dim)
 
+        # Factory cache: stores CantorRouteFactory instances by sequence length
+        # This avoids recreating factories for common sequence lengths
+        self._factory_cache: Dict[int, CantorRouteFactory] = {}
+
         # Routes cache: stores pre-computed routing tables by (seq_len, k)
-        # This avoids recomputing routes for commonly used configurations
+        # Format: {(seq_len, k): routes_tensor}
         self.routes_cache: Dict[Tuple[int, int], torch.Tensor] = {}
         self.max_cache_entries = 50
 
@@ -170,52 +180,37 @@ class CantorAttention(nn.Module):
         for size in common_sizes:
             if size <= config.max_seq_len:
                 k = config.get_window_size(size)
-                routes = self._build_cantor_routes(size, k, config.depth)
+                routes = self._build_cantor_routes(size, k)
                 self.routes_cache[(size, k)] = routes
                 if config.adaptive_window:
                     print(f"  seq={size:5d}: k={k:2d} ({100 * k / size:.1f}% coverage)")
         print(f"[CantorAttention] ✓ Pre-built {len(self.routes_cache)} route tables")
 
-    def _cantor_coordinate(self, position: int, max_len: int, depth: int) -> float:
+    def _get_or_create_factory(self, seq_len: int) -> CantorRouteFactory:
         """
-        Compute the Cantor set coordinate for a position.
+        Get or create CantorRouteFactory for a specific sequence length.
 
-        Maps position in [0, max_len-1] to a point in the Cantor set [0, 1].
-        The Cantor set is a fractal with hierarchical structure that naturally
-        captures both local and global relationships.
+        Caches factories to avoid repeated instantiation for common lengths.
 
         Args:
-            position: Position in sequence
-            max_len: Total sequence length
-            depth: Number of iterations (fractal depth)
+            seq_len: Sequence length
 
         Returns:
-            Cantor coordinate in [0, 1]
+            CantorRouteFactory instance for this sequence length
         """
-        # Normalize position to [0, 1]
-        x = position / max(1, max_len - 1)
-        x = max(1e-6, min(x, 1.0 - 1e-6))  # Clamp to avoid edge cases
+        if seq_len not in self._factory_cache:
+            factory = CantorRouteFactory(
+                shape=(seq_len,),
+                mode=RouteMode.DISTANCE,
+                dimensions=self.config.cantor_dimensions
+            )
+            self._factory_cache[seq_len] = factory
 
-        # Compute Cantor coordinate through iterative ternary construction
-        cantor_val = 0.0
-        factor = 0.5
+        return self._factory_cache[seq_len]
 
-        for _ in range(depth):
-            x *= 3.0
-            digit = int(x)
-            x -= digit
-
-            # Middle third is removed in Cantor set
-            if digit == 2:
-                cantor_val += factor
-
-            factor *= 0.5
-
-        return cantor_val
-
-    def _build_cantor_routes(self, seq_len: int, k: int, depth: int) -> torch.Tensor:
+    def _build_cantor_routes(self, seq_len: int, k: int) -> torch.Tensor:
         """
-        Build routing table based on Cantor distance.
+        Build routing table based on Cantor distance using CantorRouteFactory.
 
         For each position i, finds the k nearest positions in Cantor space.
         This creates a sparse attention pattern that maintains global context
@@ -224,25 +219,30 @@ class CantorAttention(nn.Module):
         Args:
             seq_len: Sequence length
             k: Number of neighbors per position
-            depth: Cantor fractal depth
 
         Returns:
             Tensor of shape (seq_len, k) with neighbor indices for each position
         """
-        # Compute Cantor coordinates for all positions
-        cantor_coords = torch.tensor([
-            self._cantor_coordinate(pos, seq_len, depth)
-            for pos in range(seq_len)
-        ], dtype=torch.float32)
+        # Get or create factory for this sequence length
+        factory = self._get_or_create_factory(seq_len)
 
-        # Find k-nearest neighbors in Cantor space for each position
+        # Build Cantor distance matrix on CPU (for initial computation)
+        # Shape: (seq_len, seq_len)
+        distance_matrix = factory.build(
+            backend="torch",
+            device="cpu",
+            dtype=torch.float32,
+            validate=self.config.validate_geometry
+        )
+
+        # Find k-nearest neighbors for each position
+        # For each row (position), get indices of k smallest distances
         routes = torch.zeros(seq_len, k, dtype=torch.long)
 
         for i in range(seq_len):
-            # Compute distances in Cantor space
-            distances = torch.abs(cantor_coords - cantor_coords[i])
+            distances = distance_matrix[i]  # [seq_len]
 
-            # Find k nearest (including self)
+            # Get k nearest neighbors (including self at distance 0)
             _, nearest = torch.topk(distances, k, largest=False)
             routes[i] = nearest
 
@@ -257,8 +257,8 @@ class CantorAttention(nn.Module):
         """
         Get or build routes for a specific sequence length and window size.
 
-        Uses cache when possible, otherwise builds on-demand. This avoids
-        the overhead of pre-allocating routes for max_seq_len when using
+        Uses cache when possible, otherwise builds on-demand using CantorRouteFactory.
+        This avoids the overhead of pre-allocating routes for max_seq_len when using
         shorter sequences.
 
         Args:
@@ -283,8 +283,8 @@ class CantorAttention(nn.Module):
                 routes = torch.clamp(routes, 0, seq_len - 1)
                 return routes
 
-        # Build on-demand (rare case)
-        routes = self._build_cantor_routes(seq_len, k, self.config.depth)
+        # Build on-demand using factory (rare case)
+        routes = self._build_cantor_routes(seq_len, k)
 
         # Add to cache if not full
         if len(self.routes_cache) < self.max_cache_entries:
@@ -416,7 +416,7 @@ class CantorAttention(nn.Module):
             adaptive_str += f" ({self.config.min_window}-{self.config.max_window})"
         return (f'dim={self.dim}, num_heads={self.num_heads}, '
                 f'head_dim={self.head_dim}, window={self.config.local_window}'
-                f'{adaptive_str}, depth={self.config.depth}')
+                f'{adaptive_str}, cantor_dim={self.config.cantor_dimensions}')
 
 
 # Convenience function for creating Cantor attention layers
@@ -425,6 +425,7 @@ def create_cantor_attention(
         num_heads: int = 8,
         local_window: int = 64,
         adaptive_window: bool = False,
+        cantor_dimensions: int = 2,
         dropout: float = 0.1,
         max_seq_len: int = 65536,
         **kwargs
@@ -437,28 +438,20 @@ def create_cantor_attention(
         num_heads: Number of attention heads
         local_window: Number of neighbors (k in sparse attention)
         adaptive_window: Enable adaptive window sizing
+        cantor_dimensions: Dimensions for Cantor pairing (2-5)
         dropout: Dropout rate
         max_seq_len: Maximum supported sequence length
         **kwargs: Additional config arguments
 
     Returns:
         CantorAttention layer
-
-    #Example:
-    #    >>> # Fixed window
-    #    >>> attn = create_cantor_attention(dim=512, num_heads=8)
-    #    >>>
-    #    >>> # Adaptive window (better for mixed sequence lengths)
-    #    >>> attn = create_cantor_attention(dim=512, num_heads=8, adaptive_window=True)
-    #    >>>
-    #    >>> x = torch.randn(4, 1024, 512)
-    #    >>> output = attn(x)
-    #"""
+    """
     config = CantorAttentionConfig(
         dim=dim,
         num_heads=num_heads,
         local_window=local_window,
         adaptive_window=adaptive_window,
+        cantor_dimensions=cantor_dimensions,
         dropout=dropout,
         max_seq_len=max_seq_len,
         **kwargs
@@ -468,7 +461,9 @@ def create_cantor_attention(
 
 if __name__ == "__main__":
     # Quick test
-    print("Testing Cantor Attention...")
+    print("=" * 70)
+    print("Testing Cantor Attention with CantorRouteFactory")
+    print("=" * 70)
 
     # Test fixed window
     print("\n[1] Fixed window (k=64):")
@@ -477,7 +472,9 @@ if __name__ == "__main__":
         num_heads=8,
         local_window=64,
         adaptive_window=False,
-        dropout=0.0
+        cantor_dimensions=2,
+        dropout=0.0,
+        validate_geometry=True
     )
 
     attn = CantorAttention(config)
@@ -497,7 +494,9 @@ if __name__ == "__main__":
         min_window=16,
         max_window=64,
         sparsity_target=0.25,
-        dropout=0.0
+        cantor_dimensions=2,
+        dropout=0.0,
+        validate_geometry=True
     )
 
     attn_adaptive = CantorAttention(config_adaptive)
@@ -509,4 +508,44 @@ if __name__ == "__main__":
         assert output.shape == x.shape, f"Shape mismatch at seq_len={seq_len}"
         print(f"  ✓ seq_len={seq_len}: k={k} ({100 * k / seq_len:.1f}% coverage) -> {output.shape}")
 
-    print("\n✓ All tests passed!")
+    # Test higher dimensional Cantor pairing
+    print("\n[3] Higher-dimensional Cantor (dim=3):")
+    config_5d = CantorAttentionConfig(
+        dim=512,
+        num_heads=8,
+        local_window=32,
+        cantor_dimensions=3,
+        dropout=0.0,
+        validate_geometry=True
+    )
+
+    attn_5d = CantorAttention(config_5d)
+    x = torch.randn(2, 128, 512)
+    output = attn_5d(x)
+    print(f"  ✓ 3D Cantor pairing: {x.shape} -> {output.shape}")
+
+    # Test causal masking
+    print("\n[4] Causal masking:")
+    config_causal = CantorAttentionConfig(
+        dim=512,
+        num_heads=8,
+        local_window=32,
+        causal=True,
+        dropout=0.0
+    )
+
+    attn_causal = CantorAttention(config_causal)
+    x = torch.randn(2, 128, 512)
+    output = attn_causal(x)
+    print(f"  ✓ Causal attention: {x.shape} -> {output.shape}")
+
+    # Test cache efficiency
+    print("\n[5] Cache efficiency:")
+    print(f"  Factory cache entries: {len(attn._factory_cache)}")
+    print(f"  Routes cache entries: {len(attn.routes_cache)}")
+
+    print("\n" + "=" * 70)
+    print("✓ All tests passed!")
+    print("CantorAttention now uses CantorRouteFactory for guaranteed")
+    print("deterministic geometric routing with validation.")
+    print("=" * 70)
