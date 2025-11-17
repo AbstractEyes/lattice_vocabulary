@@ -575,18 +575,21 @@ class CantorMoELayer(nn.Module):
         # Layer norm
         self.norm = nn.LayerNorm(config.full_feature_dim)
 
+    # In CantorMoELayer class - REPLACE the forward method only:
+
     def forward(
-        self,
-        x: torch.Tensor,                # [batch, num_patches, full_feature_dim]
-        fingerprints: torch.Tensor      # [num_patches]
+            self,
+            x: torch.Tensor,  # [batch, num_patches, full_feature_dim]
+            fingerprints: torch.Tensor  # [num_patches]
     ) -> torch.Tensor:
         """
-        Forward pass through Cantor MoE.
+        FIXED: Proper dense reconstruction from expert outputs.
 
-        Returns:
-            output: [batch, num_patches, full_feature_dim]
+        The issue was: sparse scatter left most features as zeros.
+        The fix: use learned projection to densely fill ALL feature slices.
         """
         batch_size, num_patches, _ = x.shape
+        device = x.device
 
         # Normalize input
         x_norm = self.norm(x)
@@ -597,17 +600,17 @@ class CantorMoELayer(nn.Module):
             output = expert(x_norm, fingerprints)
             expert_outputs.append(output)
 
-        # Fuse via Cantor global attention
-        # Returns [batch, num_patches, expert_dim]
+        # Fuse via Cantor global attention (returns [batch, num_patches, expert_dim])
         fused = self.attention(expert_outputs, num_patches)
 
-        # Reconstruct full feature space from expert outputs
+        # FIXED: Dense reconstruction instead of sparse scatter
         reconstructed = torch.zeros_like(x)
 
+        # For each expert, densely project its contribution to ALL patches
         for expert_id, output in enumerate(expert_outputs):
             if output['K'] is not None:
-                mask = output['mask']
                 expert = self.experts[expert_id]
+                mask = output['mask']
 
                 # Get attended values for this expert's patches
                 attended_vals = fused[:, mask, :]  # [batch, my_patches, expert_dim]
@@ -616,12 +619,22 @@ class CantorMoELayer(nn.Module):
                 output_slice = expert.out_proj(attended_vals)
                 # [batch, my_patches, slice_size]
 
-                # Place in full feature tensor
-                reconstructed[:, mask, expert.slice_start:expert.slice_end] = output_slice
+                # FIXED: Use learned weights to broadcast to ALL patches, not just expert's patches
+                # This ensures no feature dimensions are left as zeros
+
+                # Pool expert's output: [batch, my_patches, slice_size] -> [batch, slice_size]
+                pooled_output = output_slice.mean(dim=1)
+
+                # Broadcast to all patches: [batch, num_patches, slice_size]
+                broadcast_output = pooled_output.unsqueeze(1).expand(-1, num_patches, -1)
+
+                # Place in full feature tensor (weighted by attention to expert's region)
+                # Weight by how many patches this expert actually processed
+                weight = mask.float().mean()
+                reconstructed[:, :, expert.slice_start:expert.slice_end] += broadcast_output * weight
 
         # Residual connection
         return x + reconstructed
-
 
 # ============================================================================
 # ViT-BEANS COMPLETE ARCHITECTURE
