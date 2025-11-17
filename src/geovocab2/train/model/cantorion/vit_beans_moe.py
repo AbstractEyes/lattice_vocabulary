@@ -2,19 +2,7 @@
 ViT-Beans: Vision Transformer with Cantor Expert Attention Network System
 ==========================================================================
 
-A sparse, geometric vision transformer using:
-- Multi-dimensional Cantor fingerprinting for token routing
-- Sparse expert QKV (each expert processes feature slice)
-- Pentachoron multi-directional projections (5-way cross-contamination)
-- Alpha (visibility) and Beta (binding) learning from VAE-Lyra
-- Cantor global attention with O(n) complexity
-- Geometric routing to fill Cantor dead space
-
-Architecture Philosophy:
-- Small experts with large representational capacity
-- Fingerprint-determined feature slice allocation
-- Geometric coherence through fractal routing
-- Cross-contamination via pentachoron projections
+FIXED: Proper dimensional alignment with variable patch count handling.
 
 Author: AbstractPhil + Claude Sonnet 4.5
 License: Apache 2.0
@@ -79,19 +67,13 @@ class MultiDimensionalCantorFingerprinter:
         fingerprints = {}
 
         for dim in self.dimensions:
-            # Create coordinate grid for this dimension
-            # Use patch positions as base coordinates
             coords = torch.zeros(num_patches, dim, dtype=torch.long, device=device)
 
-            # Fill coordinates based on patch index
             for i in range(num_patches):
                 for d in range(dim):
                     coords[i, d] = (i * (d + 1)) % (num_patches)
 
-            # Compute Cantor pairing
             raw_fp = self._cantor_pair_nd(coords).float()
-
-            # Normalize to [0, 1]
             fp_normalized = self._normalize_fingerprint(raw_fp)
 
             fingerprints[dim] = fp_normalized
@@ -147,7 +129,7 @@ class CantorExpert(nn.Module):
         self.slice_end = self.slice_start + slice_size
         self.slice_size = slice_size
 
-        # Alpha: Learned visibility (VAE-Lyra mechanism)
+        # Alpha: Learned visibility
         self.alpha = nn.Parameter(torch.tensor(config.alpha_init))
 
         # Alpha gating network
@@ -158,19 +140,17 @@ class CantorExpert(nn.Module):
             nn.Sigmoid()
         )
 
-        # Sparse QKV projections (ONLY on feature slice)
+        # Sparse QKV projections
         self.q_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
         self.k_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
         self.v_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
 
-        # Pentachoron: 5 vertices = 5 projection directions
-        # This enables cross-contamination to fill Cantor dead space
+        # Pentachoron: 5 vertices = 5 projection directions for attention routing
         self.pentachoron = nn.Parameter(
             torch.randn(5, config.expert_dim) * 0.02
         )
 
         # Beta: Learned binding weights to neighbor experts
-        # Local binding (only to nearby experts in Cantor space)
         self.betas = nn.ParameterDict()
         for i in range(config.num_experts):
             if abs(i - config.expert_id) <= 2 and i != config.expert_id:
@@ -197,10 +177,13 @@ class CantorExpert(nn.Module):
     def forward(
         self,
         tokens: torch.Tensor,           # [batch, num_patches, full_feature_dim]
-        fingerprints: torch.Tensor      # [num_patches] - Cantor coordinates
+        fingerprints: torch.Tensor      # [num_patches]
     ) -> Dict[str, torch.Tensor]:
         """
         Process tokens in my fingerprint region.
+
+        Pentachoron projections create attention affinities (scalars)
+        but V stays [batch, patches, expert_dim] to preserve information.
 
         Returns:
             Dict containing:
@@ -224,10 +207,7 @@ class CantorExpert(nn.Module):
                 'Q': None,
                 'V': None,
                 'betas': self.betas,
-                'attended_output': torch.zeros(
-                    batch_size, num_patches, self.slice_size,
-                    device=device, dtype=tokens.dtype
-                )
+                'attended_output': None
             }
 
         # 2. Extract MY feature slice (SPARSE!)
@@ -235,51 +215,49 @@ class CantorExpert(nn.Module):
         my_features = my_tokens[..., self.slice_start:self.slice_end]
         # [batch, my_patches, slice_size]
 
-        # 3. Alpha-gated visibility (VAE-Lyra mechanism)
+        # 3. Alpha-gated visibility
         alpha_gate = self.alpha_gate(my_features)  # [batch, my_patches, 1]
         alpha_weight = torch.sigmoid(self.alpha)
         my_features = my_features * (alpha_gate * alpha_weight + (1 - alpha_weight))
 
-        # 4. Sparse QKV computation (ONLY on my slice!)
+        # 4. Sparse QKV computation
         Q = self.q_proj(my_features)  # [batch, my_patches, expert_dim]
-        K = self.k_proj(my_features)
-        V = self.v_proj(my_features)
+        K = self.k_proj(my_features)  # [batch, my_patches, expert_dim]
+        V = self.v_proj(my_features)  # [batch, my_patches, expert_dim]
 
         # 5. Pentachoron multi-directional projection
-        # Each vertex projects into different latent region
-        # This creates 5-way cross-contamination to fill dead space
+        # Project Q, K to scalars for attention affinity
+        # but keep V full-dimensional
         projections = []
 
         for vertex_id, vertex in enumerate(self.pentachoron):
             direction = F.normalize(vertex, dim=-1)  # [expert_dim]
 
-            # Project Q, K, V along this direction
-            # Einsum for batched projection: [batch, patches, dim] @ [dim] -> [batch, patches]
-            K_proj = torch.einsum('bpd,d->bp', K, direction)
-            Q_proj = torch.einsum('bpd,d->bp', Q, direction)
-            V_proj = torch.einsum('bpd,d->bp', V, direction)
+            # Project Q, K along this direction to get attention affinities (scalars)
+            K_affinity = torch.einsum('bpd,d->bp', K, direction)  # [batch, my_patches]
+            Q_affinity = torch.einsum('bpd,d->bp', Q, direction)  # [batch, my_patches]
 
+            # V stays FULL DIMENSIONAL
             projections.append({
-                'K': K_proj,      # [batch, my_patches]
-                'Q': Q_proj,      # [batch, my_patches]
-                'V': V_proj,      # [batch, my_patches]
+                'K_affinity': K_affinity,  # [batch, my_patches] - scalar affinity
+                'Q_affinity': Q_affinity,  # [batch, my_patches] - scalar affinity
+                'V': V,                     # [batch, my_patches, expert_dim] - FULL
                 'direction': vertex_id,
-                'vertex': direction
             })
 
         return {
             'projections': projections,
             'mask': mask,
             'K': K,  # [batch, my_patches, expert_dim]
-            'Q': Q,
-            'V': V,
+            'Q': Q,  # [batch, my_patches, expert_dim]
+            'V': V,  # [batch, my_patches, expert_dim]
             'betas': self.betas,
-            'attended_output': None  # Filled by attention layer
+            'attended_output': None
         }
 
 
 # ============================================================================
-# CANTOR GLOBAL ATTENTION
+# CANTOR GLOBAL ATTENTION (FIXED - HANDLES VARIABLE PATCH COUNTS)
 # ============================================================================
 
 @dataclass
@@ -297,6 +275,8 @@ class CantorAttentionConfig:
 class CantorGlobalAttention(nn.Module):
     """
     Sparse O(n) attention using Cantor fingerprint routing.
+
+    FIXED: Handles variable patch counts per expert correctly.
 
     Key features:
     - Pre-computed expert routing based on Cantor coordinates
@@ -379,12 +359,15 @@ class CantorGlobalAttention(nn.Module):
         """
         Fuse expert outputs through sparse geometric attention.
 
+        FIXED: Handles variable patch counts per expert by flattening
+               neighbor and patch dimensions for attention.
+
         Args:
             expert_outputs: List of dicts from each expert
             num_patches: Total number of patches
 
         Returns:
-            fused: [batch, num_patches, full_feature_dim]
+            fused: [batch, num_patches, expert_dim]
         """
         device = self.expert_coords.device
 
@@ -407,9 +390,9 @@ class CantorGlobalAttention(nn.Module):
                     dir_id = proj['direction']
                     all_projections[dir_id].append({
                         'expert_id': expert_id,
-                        'K': proj['K'],      # [batch, patches_i]
-                        'Q': proj['Q'],
-                        'V': proj['V'],
+                        'K_affinity': proj['K_affinity'],  # [batch, patches_i] - scalar
+                        'Q_affinity': proj['Q_affinity'],  # [batch, patches_i] - scalar
+                        'V': proj['V'],                     # [batch, patches_i, expert_dim] - FULL
                         'mask': output['mask']
                     })
 
@@ -421,9 +404,9 @@ class CantorGlobalAttention(nn.Module):
             if not dir_projs:
                 continue
 
-            # Sparse attention within this direction
+            # Initialize with full expert_dim
             attended_patches = torch.zeros(
-                batch_size, num_patches,
+                batch_size, num_patches, self.expert_dim,
                 device=device, dtype=torch.float32
             )
 
@@ -444,81 +427,92 @@ class CantorGlobalAttention(nn.Module):
                 if my_proj is None:
                     continue
 
-                Q_i = my_proj['Q']  # [batch, my_patches]
-                mask_i = my_proj['mask']  # [num_patches]
+                Q_affinity = my_proj['Q_affinity']  # [batch, my_patches]
+                mask_i = my_proj['mask']             # [num_patches]
 
                 # Gather neighbor projections
                 neighbor_projs = [p for p in dir_projs if p['expert_id'] in neighbors]
                 if not neighbor_projs:
                     continue
 
-                # Stack neighbor K and V
-                K_neighbors = []
-                V_neighbors = []
+                # Stack neighbor K affinities and V values
+                K_affinities = []
+                V_values = []
                 neighbor_indices = []
 
                 for n_proj in neighbor_projs:
-                    K_neighbors.append(n_proj['K'])
-                    V_neighbors.append(n_proj['V'])
+                    K_affinities.append(n_proj['K_affinity'])  # [batch, neighbor_patches]
+                    V_values.append(n_proj['V'])                # [batch, neighbor_patches, expert_dim]
                     neighbor_indices.append(n_proj['expert_id'])
 
-                # [batch, num_neighbors, neighbor_patches]
-                # Need to pad to same length for stacking
-                max_neighbor_patches = max(k.shape[1] for k in K_neighbors)
+                # Pad to same length for stacking
+                max_neighbor_patches = max(k.shape[1] for k in K_affinities)
 
-                K_padded = []
-                V_padded = []
-                for k, v in zip(K_neighbors, V_neighbors):
-                    if k.shape[1] < max_neighbor_patches:
-                        pad_size = max_neighbor_patches - k.shape[1]
-                        k = F.pad(k, (0, pad_size))
-                        v = F.pad(v, (0, pad_size))
-                    K_padded.append(k)
-                    V_padded.append(v)
+                K_affinities_padded = []
+                V_values_padded = []
+                for k_aff, v_val in zip(K_affinities, V_values):
+                    if k_aff.shape[1] < max_neighbor_patches:
+                        pad_size = max_neighbor_patches - k_aff.shape[1]
+                        k_aff = F.pad(k_aff, (0, pad_size))
+                        v_val = F.pad(v_val, (0, 0, 0, pad_size))  # Pad patches dimension only
+                    K_affinities_padded.append(k_aff)
+                    V_values_padded.append(v_val)
 
-                K_stack = torch.stack(K_padded, dim=1)  # [batch, num_neighbors, patches]
-                V_stack = torch.stack(V_padded, dim=1)
+                # Stack: [batch, num_neighbors, patches] and [batch, num_neighbors, patches, expert_dim]
+                K_affinity_stack = torch.stack(K_affinities_padded, dim=1)
+                V_stack = torch.stack(V_values_padded, dim=1)
 
-                # Compute attention scores
-                # [batch, my_patches, 1] @ [batch, num_neighbors, patches] -> [batch, my_patches, num_neighbors, patches]
-                scores = Q_i.unsqueeze(-1).unsqueeze(-1) * K_stack.unsqueeze(1)
-                scores = scores.sum(dim=-1)  # [batch, my_patches, num_neighbors]
+                # FIXED: Compute attention scores with variable patch counts
+                # Outer product: [batch, my_patches, 1, 1] * [batch, 1, num_neighbors, neighbor_patches]
+                # -> [batch, my_patches, num_neighbors, neighbor_patches]
+                scores = Q_affinity.unsqueeze(-1).unsqueeze(-1) * K_affinity_stack.unsqueeze(1)
+
+                # Flatten neighbor and patch dimensions for attention
+                B, my_patches, num_neighbors, neighbor_patches = scores.shape
+                scores = scores.reshape(B, my_patches, -1)  # [batch, my_patches, num_neighbors * neighbor_patches]
+
                 scores = scores / math.sqrt(self.expert_dim)
                 scores = scores / self.temperature.abs()
 
-                # Apply beta modulation (VAE-Lyra binding)
+                # Apply beta modulation to scores from specific neighbors
                 betas = output['betas']
+                patch_offset = 0
                 for neighbor_idx, neighbor_id in enumerate(neighbor_indices):
+                    actual_patches = K_affinities[neighbor_idx].shape[1]
+
                     if neighbor_id != expert_id:
                         beta_key = f"expert_{neighbor_id}"
                         if beta_key in betas:
                             beta = torch.sigmoid(betas[beta_key])
-                            scores[:, :, neighbor_idx] *= beta
+                            scores[:, :, patch_offset:patch_offset + actual_patches] *= beta
 
-                # Softmax attention
-                attn = F.softmax(scores, dim=-1)  # [batch, my_patches, num_neighbors]
+                    patch_offset += actual_patches
+
+                # Softmax attention over all neighbor patches
+                attn = F.softmax(scores, dim=-1)  # [batch, my_patches, num_neighbors * neighbor_patches]
                 attn = self.dropout(attn)
 
-                # Apply attention to values
-                # [batch, my_patches, num_neighbors] @ [batch, num_neighbors, patches]
-                # Take mean over neighbor patches
-                V_mean = V_stack.mean(dim=-1)  # [batch, num_neighbors]
-                output_i = torch.matmul(attn, V_mean.unsqueeze(-1)).squeeze(-1)
-                # [batch, my_patches]
+                # Apply attention to FULL DIMENSIONAL V
+                # Flatten V: [batch, num_neighbors, neighbor_patches, expert_dim] -> [batch, num_neighbors * neighbor_patches, expert_dim]
+                V_flat = V_stack.reshape(B, -1, self.expert_dim)
+
+                # Apply attention: [batch, my_patches, num_neighbors * neighbor_patches] @ [batch, num_neighbors * neighbor_patches, expert_dim]
+                # -> [batch, my_patches, expert_dim]
+                attended_V = torch.bmm(attn, V_flat)
 
                 # Place in global tensor
-                attended_patches[:, mask_i] = output_i
+                attended_patches[:, mask_i, :] = attended_V
 
             direction_outputs.append(attended_patches)
 
         # Fuse across 5 directions (cross-contamination fills dead space)
         if direction_outputs:
-            fused_1d = torch.stack(direction_outputs).mean(dim=0)
-            # [batch, num_patches]
+            # [5, batch, num_patches, expert_dim] -> [batch, num_patches, expert_dim]
+            fused = torch.stack(direction_outputs).mean(dim=0)
         else:
-            fused_1d = torch.zeros(batch_size, num_patches, device=device)
+            fused = torch.zeros(batch_size, num_patches, self.expert_dim, device=device)
 
-        return fused_1d
+        return fused  # [batch, num_patches, expert_dim]
 
 
 # ============================================================================
@@ -597,35 +591,29 @@ class CantorMoELayer(nn.Module):
         # Normalize input
         x_norm = self.norm(x)
 
-        # Process through all experts (sparse, each handles its region)
+        # Process through all experts
         expert_outputs = []
         for expert in self.experts:
             output = expert(x_norm, fingerprints)
             expert_outputs.append(output)
 
         # Fuse via Cantor global attention
-        fused_1d = self.attention(expert_outputs, num_patches)
-        # [batch, num_patches] - single attended value per patch
+        # Returns [batch, num_patches, expert_dim]
+        fused = self.attention(expert_outputs, num_patches)
 
         # Reconstruct full feature space from expert outputs
         reconstructed = torch.zeros_like(x)
 
         for expert_id, output in enumerate(expert_outputs):
-            if output['attended_output'] is None and output['K'] is not None:
-                # Project attended value back through expert
+            if output['K'] is not None:
                 mask = output['mask']
                 expert = self.experts[expert_id]
 
                 # Get attended values for this expert's patches
-                attended_vals = fused_1d[:, mask]  # [batch, my_patches]
-
-                # Expand to expert_dim for projection
-                attended_expanded = attended_vals.unsqueeze(-1).expand(
-                    -1, -1, expert.expert_dim
-                )
+                attended_vals = fused[:, mask, :]  # [batch, my_patches, expert_dim]
 
                 # Project back to feature slice
-                output_slice = expert.out_proj(attended_expanded)
+                output_slice = expert.out_proj(attended_vals)
                 # [batch, my_patches, slice_size]
 
                 # Place in full feature tensor
@@ -642,30 +630,21 @@ class CantorMoELayer(nn.Module):
 @dataclass
 class ViTBeansConfig:
     """Complete ViT-Beans configuration."""
-    # Image
     image_size: int = 224
     patch_size: int = 16
     in_channels: int = 3
-
-    # Architecture
     num_layers: int = 12
     feature_dim: int = 1024
     num_experts: int = 16
     expert_dim: int = 128
     num_heads: int = 8
     mlp_ratio: float = 4.0
-
-    # Cantor
     cantor_dimensions: List[int] = None
     cantor_depth: int = 8
     local_window: int = 3
-
-    # Learning
     alpha_init: float = 1.0
     beta_init: float = 0.3
     dropout: float = 0.1
-
-    # Classification
     num_classes: int = 1000
 
     def __post_init__(self):
@@ -705,7 +684,7 @@ class ViTBeans(nn.Module):
             stride=config.patch_size
         )
 
-        # Position embedding (traditional, for baseline)
+        # Position embedding
         self.pos_embed = nn.Parameter(
             torch.randn(1, self.num_patches + 1, config.feature_dim) * 0.02
         )
@@ -724,7 +703,7 @@ class ViTBeans(nn.Module):
         # Pre-compute fingerprints (cached)
         self.register_buffer(
             'patch_fingerprints',
-            torch.zeros(self.num_patches)  # Will be computed on first forward
+            torch.zeros(self.num_patches)
         )
         self._fingerprints_computed = False
 
@@ -762,12 +741,10 @@ class ViTBeans(nn.Module):
 
     def _init_weights(self):
         """Initialize weights."""
-        # Patch embedding
         nn.init.xavier_uniform_(self.patch_embed.weight)
         if self.patch_embed.bias is not None:
             nn.init.zeros_(self.patch_embed.bias)
 
-        # Classification head
         nn.init.xavier_uniform_(self.head.weight)
         nn.init.zeros_(self.head.bias)
 
@@ -777,7 +754,6 @@ class ViTBeans(nn.Module):
             fingerprints_dict = self.fingerprinter.compute_fingerprints(
                 self.num_patches, device
             )
-            # Use primary dimension (3D) for routing
             self.patch_fingerprints = fingerprints_dict[3]
             self._fingerprints_computed = True
 
@@ -798,8 +774,8 @@ class ViTBeans(nn.Module):
         self._compute_fingerprints(device)
 
         # Patch embedding
-        x = self.patch_embed(x)  # [batch, feature_dim, H', W']
-        x = x.flatten(2).transpose(1, 2)  # [batch, num_patches, feature_dim]
+        x = self.patch_embed(x)
+        x = x.flatten(2).transpose(1, 2)
 
         # Add CLS token
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
@@ -851,15 +827,12 @@ class ViTBeans(nn.Module):
             moe = layer['cantor_moe']
 
             for expert_idx, expert in enumerate(moe.experts):
-                # Count parameters
                 params = sum(p.numel() for p in expert.parameters())
                 stats['expert_params'].append(params)
 
-                # Get alpha
                 alpha = torch.sigmoid(expert.alpha).item()
                 stats['alpha_values'].append(alpha)
 
-                # Get betas
                 for key, beta in expert.betas.items():
                     beta_val = torch.sigmoid(beta).item()
                     stats['beta_values'].append(beta_val)
@@ -877,10 +850,9 @@ class ViTBeans(nn.Module):
 
 if __name__ == "__main__":
     print("=" * 80)
-    print("ViT-Beans: Cantor Expert Attention Network System")
+    print("ViT-Beans: FIXED - Proper Dimensional Alignment")
     print("=" * 80)
 
-    # Configuration
     config = ViTBeansConfig(
         image_size=224,
         patch_size=16,
@@ -900,15 +872,12 @@ if __name__ == "__main__":
     print(f"  Feature dim: {config.feature_dim}")
     print(f"  Experts: {config.num_experts}")
     print(f"  Expert dim: {config.expert_dim}")
-    print(f"  Classes: {config.num_classes}")
 
-    # Create model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nDevice: {device}")
 
     model = ViTBeans(config).to(device)
 
-    # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -916,7 +885,6 @@ if __name__ == "__main__":
     print(f"  Total: {total_params:,}")
     print(f"  Trainable: {trainable_params:,}")
 
-    # Get expert stats
     expert_stats = model.get_expert_stats()
     print(f"\nExpert Statistics:")
     print(f"  Total expert params: {expert_stats['total_expert_params']:,}")
@@ -924,7 +892,6 @@ if __name__ == "__main__":
     print(f"  Mean alpha: {expert_stats['mean_alpha']:.4f}")
     print(f"  Mean beta: {expert_stats['mean_beta']:.4f}")
 
-    # Test forward pass
     print(f"\nTesting forward pass...")
     batch_size = 2
     x = torch.randn(batch_size, 3, 224, 224, device=device)
@@ -937,22 +904,15 @@ if __name__ == "__main__":
     print(f"  Output shape: {logits.shape}")
     print(f"  ✓ Forward pass successful")
 
-    # Compute feature slicing efficiency
     slice_size = config.feature_dim // config.num_experts
     dense_qkv_params = config.feature_dim * config.feature_dim * 3
     sparse_qkv_params = slice_size * config.expert_dim * 3 * config.num_experts
 
     print(f"\nParameter Efficiency:")
-    print(f"  Dense QKV params (baseline): {dense_qkv_params:,}")
-    print(f"  Sparse QKV params (Beans): {sparse_qkv_params:,}")
+    print(f"  Dense QKV params: {dense_qkv_params:,}")
+    print(f"  Sparse QKV params: {sparse_qkv_params:,}")
     print(f"  Reduction: {(1 - sparse_qkv_params/dense_qkv_params) * 100:.1f}%")
 
     print("\n" + "=" * 80)
-    print("Key Innovations:")
-    print("  ✓ Multi-dimensional Cantor fingerprinting")
-    print("  ✓ Sparse expert QKV with feature slice allocation")
-    print("  ✓ Pentachoron 5-way projection for cross-contamination")
-    print("  ✓ Alpha visibility and Beta binding learning")
-    print("  ✓ O(n) Cantor global attention")
-    print("  ✓ Geometric routing fills Cantor dead space")
+    print("KEY FIX: Variable patch counts handled via flattened attention")
     print("=" * 80)
