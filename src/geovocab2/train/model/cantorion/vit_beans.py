@@ -2,6 +2,10 @@
 ViTBeans-V1 - FIXED
 ====================
 
+This variation is intentionally a SINGLE form, only implementing the Cantor + Simplex.
+The MOE variant IS highly divergent, so don't expect to import this for that.
+
+
 Conforms to axiom:
     K = Cantor-modulated keys (deterministic geometric routing)
     Q = Simplex-modulated geometric queries
