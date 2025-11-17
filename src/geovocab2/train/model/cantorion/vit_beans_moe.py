@@ -1,11 +1,11 @@
 """
-ViTBeans-V1 - Standard Linear with Explicit Cantor Masks
-==========================================================
+ViTBeans-V1 - Corrected Per-Expert Architecture
+=================================================
 
-Production-ready approach:
-- Regular nn.Linear layers
-- Explicit Cantor mask application from factory fingerprints
-- Each expert gets unique masks from its CantorRouteFactory
+Key fix: Experts maintain identity through to classification!
+- Fusion returns per-expert features
+- Each expert classifies independently with Cantor masks
+- Late fusion via weighted expert voting on logits
 """
 
 from __future__ import annotations
@@ -88,13 +88,7 @@ class ViTCantorCatBeansConfig:
 # ==========================================================================
 
 class CantorFingerprintCache(nn.Module):
-    """
-    Global Cantor fingerprint cache using CantorRouteFactory.
-
-    Provides:
-    - Routing weights for token→expert assignment
-    - Feature masks for linear layer outputs
-    """
+    """Global Cantor fingerprint cache using CantorRouteFactory."""
     def __init__(
         self,
         num_experts: int,
@@ -163,21 +157,10 @@ class CantorFingerprintCache(nn.Module):
         return weights
 
     def get_expert_feature_mask(self, expert_id: int, feature_dim: int, device: torch.device) -> torch.Tensor:
-        """
-        Generate Cantor mask for expert's feature dimension.
-
-        Args:
-            expert_id: Expert index
-            feature_dim: Output feature dimension
-            device: Device
-
-        Returns:
-            mask: [feature_dim] - Cantor mask values in [0,1]
-        """
-        # Build mask using expert's factory
+        """Generate Cantor mask for expert's feature dimension."""
         mask_factory = CantorRouteFactory(
             shape=(feature_dim, 1),
-            mode=RouteMode.ALPHA,  # Alpha channel [0,1]
+            mode=RouteMode.ALPHA,
             dimensions=self.expert_dims[expert_id],
             harmonic_quantize=True
         )
@@ -205,7 +188,6 @@ class PatchEmbed(nn.Module):
         self.num_patches = (cfg.image_size // cfg.patch_size) ** 2
         self.patch_size = cfg.patch_size
 
-        # Standard Conv2d
         self.proj = nn.Conv2d(
             cfg.in_channels,
             cfg.dim,
@@ -236,7 +218,6 @@ class KeyProjector(nn.Module):
                 cfg.dim, cfg.num_heads, dropout=cfg.dropout, batch_first=True
             )
 
-        # Standard linear
         self.to_cantor = nn.Linear(cfg.dim, cfg.cantor_dim, bias=False)
 
     def forward(self, tokens):
@@ -254,7 +235,7 @@ class KeyProjector(nn.Module):
         route_w = route_w.unsqueeze(0).expand(B, -1, -1).transpose(1, 2)  # [B, R, N]
 
         # Project to Cantor space
-        cantor_tokens = self.to_cantor(k_tokens)  # [B, N, cantor_dim]
+        cantor_tokens = self.to_cantor(k_tokens)
 
         # Aggregate to routes
         K = torch.einsum("brn,bnd->brd", route_w, cantor_tokens)
@@ -283,7 +264,6 @@ class SimplexQueryProjector(nn.Module):
         self.num_vertices = verts.shape[0]
         self.register_buffer("vertices", verts.unsqueeze(0), persistent=False)
 
-        # Standard linear
         self.to_simplex = nn.Linear(cfg.cantor_dim, cfg.simplex_dim)
 
         self.bary_refine = nn.Sequential(
@@ -320,7 +300,6 @@ class FlowMatchedValue(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-        # Standard linear layers
         self.value_proj = nn.Sequential(
             nn.Linear(cfg.dim, cfg.value_dim * 2),
             nn.GELU(),
@@ -348,14 +327,11 @@ class FlowMatchedValue(nn.Module):
 
 
 # ==========================================================================
-# PER-EXPERT PROCESSOR with Explicit Masking
+# PER-EXPERT PROCESSOR
 # ==========================================================================
 
 class CantorExpert(nn.Module):
-    """
-    Expert with standard linear layers + explicit Cantor masking.
-    Each expert gets unique masks from its CantorRouteFactory fingerprint.
-    """
+    """Expert with Cantor-masked linear layers."""
     def __init__(
         self,
         cfg: ViTCantorCatBeansConfig,
@@ -380,15 +356,13 @@ class CantorExpert(nn.Module):
             nn.Linear(cfg.fusion_dim, cfg.fusion_dim)
         )
 
-        # Pre-compute expert's masks
         if cfg.use_cantor_masks:
             self._register_masks()
 
     def _register_masks(self):
-        """Pre-compute and register Cantor masks for this expert."""
+        """Pre-compute Cantor masks."""
         device = next(self.parameters()).device if len(list(self.parameters())) > 0 else "cpu"
 
-        # Get masks for each layer's output dimension
         k_mask = self.fingerprint_cache.get_expert_feature_mask(
             self.expert_id, self.cfg.fusion_dim, device
         )
@@ -408,29 +382,24 @@ class CantorExpert(nn.Module):
         self.register_buffer('flow_mask', flow_mask, persistent=False)
 
     def _apply_mask(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Apply Cantor mask with floor and alpha scaling."""
+        """Apply Cantor mask."""
         if not self.cfg.use_cantor_masks:
             return x
 
-        # Ensure mask is on correct device
         mask = mask.to(x.device)
-
-        # Apply: output = floor + alpha * mask * output
         scaled_mask = self.cfg.mask_floor + self.cfg.mask_alpha * mask
         return x * scaled_mask
 
     def forward(self, k, q, v):
-        """Flow match K→Q→V with explicit Cantor masks."""
-        # Transform with standard linear, then apply masks
+        """Flow match with Cantor masks."""
         k_transformed = self._apply_mask(self.k_layer(k), self.k_mask)
         q_transformed = self._apply_mask(self.q_layer(q), self.q_mask)
         v_transformed = self._apply_mask(self.v_layer(v), self.v_mask)
 
-        # Flow matching: z_t = K + t·(Q ⊙ V)
+        # Flow matching
         flow_direction = q_transformed * v_transformed
         flow_state = k_transformed + flow_direction
 
-        # Flow network with mask
         flow_output = self.flow_net(flow_state)
         expert_output = self._apply_mask(flow_output, self.flow_mask)
 
@@ -438,24 +407,27 @@ class CantorExpert(nn.Module):
 
 
 # ==========================================================================
-# CANTOR MoE FUSION
+# CANTOR MoE FUSION (CORRECTED)
 # ==========================================================================
 
 class CantorMoEFusion(nn.Module):
-    """MoE fusion with masked experts."""
+    """
+    MoE fusion that PRESERVES per-expert features.
+    ✓ FIXED: Returns both fused Z and per-expert features
+    """
     def __init__(self, cfg: ViTCantorCatBeansConfig, fingerprint_cache: CantorFingerprintCache):
         super().__init__()
         self.cfg = cfg
         self.num_experts = cfg.num_routes
         self.fingerprint_cache = fingerprint_cache
 
-        # Create experts with explicit masking
+        # Create experts
         self.experts = nn.ModuleList([
             CantorExpert(cfg, i, fingerprint_cache)
             for i in range(self.num_experts)
         ])
 
-        # Geometric attention over experts
+        # Expert attention
         self.expert_attention = nn.MultiheadAttention(
             cfg.fusion_dim,
             num_heads=4,
@@ -472,15 +444,29 @@ class CantorMoEFusion(nn.Module):
             nn.Linear(cfg.fusion_dim, self.num_experts)
         )
 
-        # Final projection
+        # Final projection (for auxiliary tasks)
         self.output_proj = nn.Sequential(
             nn.Linear(cfg.fusion_dim, cfg.fusion_dim),
             nn.LayerNorm(cfg.fusion_dim),
             nn.GELU()
         )
 
-    def forward(self, K, Q, V, bary=None):
-        """MoE fusion with masked experts."""
+    def forward(self, K, Q, V, bary=None, return_expert_features=False):
+        """
+        Args:
+            K, Q, V: Route features
+            bary: Barycentric weights
+            return_expert_features: If True, return per-expert features
+
+        Returns:
+            If return_expert_features=False:
+                Z: [B, fusion_dim] - Fused representation
+            If return_expert_features=True:
+                dict with:
+                    - expert_features: [B, num_experts, fusion_dim]
+                    - expert_weights: [B, num_experts]
+                    - fused_z: [B, fusion_dim]
+        """
         B, R, _ = K.shape
 
         # Process each expert
@@ -493,7 +479,7 @@ class CantorMoEFusion(nn.Module):
             expert_out = self.experts[i](k_i, q_i, v_i)
             expert_outputs.append(expert_out)
 
-        all_experts = torch.stack(expert_outputs, dim=1)
+        all_experts = torch.stack(expert_outputs, dim=1)  # [B, R, fusion_dim]
 
         # Geometric attention
         attended_experts, _ = self.expert_attention(all_experts, all_experts, all_experts)
@@ -509,11 +495,150 @@ class CantorMoEFusion(nn.Module):
 
         expert_weights = F.softmax(gate_logits, dim=-1)
 
-        # Combine
-        Z = torch.einsum('br,brd->bd', expert_weights, attended_experts)
-        Z = self.output_proj(Z)
+        if return_expert_features:
+            # Return per-expert features for classification
+            Z_fused = torch.einsum('br,brd->bd', expert_weights, attended_experts)
+            Z_fused = self.output_proj(Z_fused)
 
-        return Z
+            return {
+                'expert_features': attended_experts,  # [B, R, fusion_dim]
+                'expert_weights': expert_weights,     # [B, R]
+                'fused_z': Z_fused                    # [B, fusion_dim]
+            }
+        else:
+            # Original behavior
+            Z = torch.einsum('br,brd->bd', expert_weights, attended_experts)
+            Z = self.output_proj(Z)
+            return Z
+
+
+# ==========================================================================
+# GEOMETRIC CLASSIFICATION HEAD
+# ==========================================================================
+
+class GeometricClassificationHead(nn.Module):
+    """
+    Geometric classification with TRUE per-expert voting.
+    ✓ FIXED: Each expert maintains identity through classification
+    """
+    def __init__(
+        self,
+        cfg: ViTCantorCatBeansConfig,
+        num_classes: int,
+        fingerprint_cache: CantorFingerprintCache,
+        use_class_simplex: bool = True
+    ):
+        super().__init__()
+        self.cfg = cfg
+        self.num_classes = num_classes
+        self.num_experts = cfg.num_routes
+        self.fingerprint_cache = fingerprint_cache
+        self.use_class_simplex = use_class_simplex
+
+        # Per-expert classifiers
+        self.expert_classifiers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(cfg.fusion_dim, cfg.fusion_dim // 2),
+                nn.LayerNorm(cfg.fusion_dim // 2),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+                nn.Linear(cfg.fusion_dim // 2, num_classes)
+            )
+            for _ in range(self.num_experts)
+        ])
+
+        # Optional: Class simplex embeddings
+        if use_class_simplex:
+            self.class_simplex_embeddings = nn.Parameter(
+                torch.randn(num_classes, cfg.simplex_dim) * 0.02
+            )
+            self.class_simplex_projs = nn.ModuleList([
+                nn.Linear(cfg.fusion_dim, cfg.simplex_dim)
+                for _ in range(self.num_experts)
+            ])
+
+        self.norm = nn.LayerNorm(num_classes)
+
+    def _get_expert_mask(self, expert_id: int, device: torch.device) -> torch.Tensor:
+        """Get Cantor mask for expert's class predictions."""
+        return self.fingerprint_cache.get_expert_feature_mask(
+            expert_id, self.num_classes, device
+        )
+
+    def forward(self, expert_features: torch.Tensor, expert_weights: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            expert_features: [B, num_experts, fusion_dim]
+            expert_weights: [B, num_experts]
+
+        Returns:
+            logits: [B, num_classes]
+        """
+        B, R, D = expert_features.shape
+        device = expert_features.device
+
+        expert_logits = []
+
+        # Each expert votes independently
+        for i in range(self.num_experts):
+            expert_feat = expert_features[:, i, :]
+
+            # Expert classification
+            logits = self.expert_classifiers[i](expert_feat)
+
+            # Apply Cantor mask
+            if self.cfg.use_cantor_masks:
+                mask = self._get_expert_mask(i, device)
+                scaled_mask = self.cfg.mask_floor + self.cfg.mask_alpha * mask
+                logits = logits * scaled_mask
+
+            # Add simplex affinity
+            if self.use_class_simplex:
+                expert_simplex = self.class_simplex_projs[i](expert_feat)
+                expert_simplex = F.normalize(expert_simplex, dim=-1)
+
+                class_emb = F.normalize(self.class_simplex_embeddings, dim=-1)
+                simplex_scores = torch.matmul(expert_simplex, class_emb.T)
+
+                # 70% classifier, 30% simplex
+                logits = 0.7 * logits + 0.3 * simplex_scores
+
+            expert_logits.append(logits)
+
+        # Stack and weight
+        all_logits = torch.stack(expert_logits, dim=1)  # [B, R, num_classes]
+        expert_weights_exp = expert_weights.unsqueeze(-1)
+        combined_logits = (all_logits * expert_weights_exp).sum(dim=1)
+
+        combined_logits = self.norm(combined_logits)
+
+        return combined_logits
+
+    def get_expert_predictions(self, expert_features: torch.Tensor, expert_weights: torch.Tensor):
+        """Get detailed per-expert predictions."""
+        B, R, D = expert_features.shape
+        device = expert_features.device
+
+        expert_logits = []
+
+        for i in range(self.num_experts):
+            expert_feat = expert_features[:, i, :]
+            logits = self.expert_classifiers[i](expert_feat)
+
+            if self.cfg.use_cantor_masks:
+                mask = self._get_expert_mask(i, device)
+                scaled_mask = self.cfg.mask_floor + self.cfg.mask_alpha * mask
+                logits = logits * scaled_mask
+
+            expert_logits.append(logits)
+
+        all_logits = torch.stack(expert_logits, dim=1)
+
+        return {
+            "expert_logits": all_logits,
+            "expert_weights": expert_weights,
+            "expert_features": expert_features
+        }
 
 
 # ==========================================================================
@@ -521,14 +646,13 @@ class CantorMoEFusion(nn.Module):
 # ==========================================================================
 
 class ViTCatBeans(nn.Module):
-    """GeoFractal Encoder with standard linear + explicit Cantor masks."""
+    """GeoFractal Encoder with per-expert paths."""
     def __init__(self, cfg: ViTCantorCatBeansConfig):
         super().__init__()
         self.cfg = cfg
 
         num_patches = (cfg.image_size // cfg.patch_size) ** 2
 
-        # Global fingerprint cache
         self.fingerprint_cache = CantorFingerprintCache(
             num_experts=cfg.num_routes,
             max_seq_len=num_patches,
@@ -543,21 +667,29 @@ class ViTCatBeans(nn.Module):
 
         self.pos_embed = nn.Parameter(torch.randn(1, num_patches, cfg.dim) * 0.02)
 
-    def forward(self, x):
+    def forward(self, x, return_expert_features=False):
+        """
+        Args:
+            x: [B, C, H, W]
+            return_expert_features: Whether to return per-expert features
+
+        Returns:
+            If return_expert_features=False: Z [B, fusion_dim]
+            If return_expert_features=True: dict with expert features
+        """
         tokens = self.patch(x)
         tokens = tokens + self.pos_embed
 
         K, route_w, k_tokens = self.key_projector(tokens)
         Q, bary = self.query_projector(K)
         V = self.value_projector(k_tokens, route_w, Q)
-        Z = self.fusion(K, Q, V, bary)
 
-        return Z
+        return self.fusion(K, Q, V, bary, return_expert_features=return_expert_features)
 
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("ViT CatBeans - Standard Linear + Explicit Cantor Masks")
+    print("ViT CatBeans - Corrected Per-Expert Architecture")
     print("=" * 70)
 
     cfg = ViTCantorCatBeansConfig(
@@ -578,9 +710,6 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\n[Device] {device}")
     print(f"[Experts] {cfg.num_routes}")
-    print(f"[Cantor Masks] {cfg.use_cantor_masks}")
-    print(f"[Mask Alpha] {cfg.mask_alpha}")
-    print(f"[Mask Floor] {cfg.mask_floor}")
 
     model = ViTCatBeans(cfg).to(device)
     total_params = sum(p.numel() for p in model.parameters())
@@ -590,7 +719,12 @@ if __name__ == "__main__":
     x = torch.randn(2, 3, cfg.image_size, cfg.image_size, device=device)
 
     with torch.no_grad():
-        Z = model(x)
+        # Test both modes
+        Z = model(x, return_expert_features=False)
+        print(f"\n[Fused Output] {Z.shape}")
 
-    print(f"\n[Output] {Z.shape}")
-    print("\n✓ Production-ready with standard linear + explicit masks!")
+        expert_output = model(x, return_expert_features=True)
+        print(f"[Expert Features] {expert_output['expert_features'].shape}")
+        print(f"[Expert Weights] {expert_output['expert_weights'].shape}")
+
+    print("\n✓ Per-expert architecture ready!")
