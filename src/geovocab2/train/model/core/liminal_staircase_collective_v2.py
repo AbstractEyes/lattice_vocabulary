@@ -994,16 +994,16 @@ class ShallowTokenPredictionFusion(nn.Module):
             return getattr(self, f'position_embeds_{scale}')
 
     def forward(
-        self,
-        expert_opinions: List[Dict[str, torch.Tensor]]
+            self,
+            expert_opinions: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
-        """Multi-level fusion with beta-controlled adjudication."""
+        """Multi-level fusion - returns features for trainer to compute losses."""
         batch_size = list(expert_opinions[0]['scale_opinions'].values())[0].shape[0]
 
         layer_weights = self.fusion_controller.get_layer_weights()
 
         scale_token_logits = {}
-        scale_beta_losses = {}
+        scale_feature_pairs = {}  # For beta loss computation in trainer
 
         for scale_idx, scale in enumerate(self.scales):
             expert_ops = torch.stack([
@@ -1024,9 +1024,12 @@ class ShallowTokenPredictionFusion(nn.Module):
 
             attended_features = (1 - beta) * token_features + beta * geometric_features
 
-            if self.training:
-                beta_loss = beta * F.mse_loss(token_features, geometric_features)
-                scale_beta_losses[scale] = beta_loss
+            # Store for beta loss computation in trainer
+            scale_feature_pairs[scale] = {
+                'token_features': token_features,
+                'geometric_features': geometric_features,
+                'beta': beta
+            }
 
             vocab_head = self.scale_output_modules[f'vocab_{scale}']
             token_logits = vocab_head(attended_features)
@@ -1042,9 +1045,8 @@ class ShallowTokenPredictionFusion(nn.Module):
         return {
             'token_logits': final_token_logits,
             'scale_token_logits': scale_token_logits,
-            'scale_beta_losses': scale_beta_losses
+            'scale_feature_pairs': scale_feature_pairs  # For trainer to compute beta loss
         }
-
 
 # ============================================================================
 # LIMINAL STAIRCASE
