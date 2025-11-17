@@ -1,5 +1,5 @@
 """
-Liminal Staircase - Collective V2 with Organized Fusion
+Liminal Staircase - Collective V2 with Organized Fusion + Geometric Initialization
 ========================================================
 
 COMPLETE INTEGRATED VERSION with:
@@ -10,19 +10,23 @@ COMPLETE INTEGRATED VERSION with:
 - Per-scale hidden dimensions
 - Per-scale loss tracking
 - Full gradient flow
+- GEOMETRIC PENTACHORON INITIALIZATION using SimplexFactory
 
 Author: AbstractPhil + Claude Sonnet 4.5
-Date: 2025-11-16 (Organized Fusion Integration)
+Date: 2025-11-17 (Geometric Initialization)
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Literal
 from dataclasses import dataclass
 import math
 import time
+
+# Import SimplexFactory for geometric initialization
+from geovocab2.shapes.factory.simplex_factory import SimplexFactory
 
 
 # ============================================================================
@@ -128,6 +132,13 @@ class LiminalStaircaseConfig:
     geometry_edge_weight: float = 0.3
     geometry_spread_weight: float = 0.3
     geometry_epsilon: float = 1e-6
+
+    # Geometric initialization
+    geometric_init_method: Literal["regular", "random", "uniform", "hybrid"] = "hybrid"
+    geometric_init_scale: float = 1.0
+    geometric_init_validate: bool = False
+    geometric_init_normalize: bool = True
+    geometric_init_seed: Optional[int] = 42
 
     # Layer selection
     siglip_layer_indices: Optional[List[int]] = None
@@ -460,6 +471,227 @@ HierarchicalFusionController = OrganizedFusionController
 
 
 # ============================================================================
+# CANTOR ATTENTION (with Alpha) - CACHING OPTIMIZATIONS
+# ============================================================================
+
+from functools import lru_cache
+import threading
+
+class GlobalCantorRouteCache:
+    """Thread-safe global cache for Cantor attention routes across all instances."""
+
+    def __init__(self):
+        self._cache = {}
+        self._lock = threading.Lock()
+
+    def get_key(self, seq_len: int, k: int, device: str) -> str:
+        """Generate cache key."""
+        return f"{seq_len}_{k}_{device}"
+
+    def get(self, seq_len: int, k: int, device: torch.device) -> Optional[torch.Tensor]:
+        """Thread-safe get from cache."""
+        key = self.get_key(seq_len, k, str(device))
+        with self._lock:
+            return self._cache.get(key)
+
+    def put(self, seq_len: int, k: int, device: torch.device, routes: torch.Tensor):
+        """Thread-safe put to cache."""
+        key = self.get_key(seq_len, k, str(device))
+        with self._lock:
+            self._cache[key] = routes
+
+    def clear(self):
+        """Clear entire cache."""
+        with self._lock:
+            self._cache.clear()
+
+# Global singleton cache
+_GLOBAL_ROUTE_CACHE = GlobalCantorRouteCache()
+
+
+@lru_cache(maxsize=256)
+def compute_cantor_coords_cached(seq_len: int, depth: int = 8) -> torch.Tensor:
+    """LRU-cached Cantor coordinate computation."""
+    positions = torch.arange(seq_len, dtype=torch.long)
+    x = positions.float() / max(1, seq_len - 1)
+    x = torch.clamp(x, 1e-6, 1.0 - 1e-6)
+
+    cantor_val = torch.zeros_like(x)
+    factor = 0.5
+
+    for _ in range(depth):
+        x_scaled = x * 3.0
+        digit = x_scaled.long()
+        x_frac = x_scaled - digit.float()
+
+        middle_bit = (digit == 2).float()
+        cantor_val = cantor_val + middle_bit * factor
+
+        x = x_frac
+        factor *= 0.5
+
+    return torch.clamp(cantor_val, 0.0, 1.0)
+
+
+class CantorAttention(nn.Module):
+    """O(n) attention with aggressive route caching and pre-warming."""
+
+    def __init__(
+        self,
+        config: CantorAttentionConfig,
+        max_seq_len: int = 512,
+        k: int = 64
+    ):
+        super().__init__()
+        self.config = config
+        self.dim = config.dim
+        self.num_heads = config.num_heads
+        self.head_dim = config.head_dim
+        self.scale = 1.0 / math.sqrt(self.head_dim)
+        self.k = k
+        self.max_seq_len = max_seq_len
+
+        self.qkv = nn.Linear(config.dim, 3 * config.dim, bias=config.qkv_bias)
+        self.out_proj = nn.Linear(config.dim, config.dim, bias=config.out_bias)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+
+        # Pre-warm cache for common sequence lengths
+        self._prewarm_cache()
+
+    def _prewarm_cache(self):
+        """Pre-compute and cache routes for common lengths."""
+        common_lengths = [64, 77, 128, 196, 256, 384, 512, 1024, 2048]
+
+        for seq_len in common_lengths:
+            if seq_len <= self.max_seq_len:
+                # Build routes on CPU first
+                routes_cpu = self._build_positional_routes_cached(seq_len, self.k)
+                # Store in global cache for CPU
+                _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, torch.device('cpu'), routes_cpu)
+
+    @staticmethod
+    def _build_positional_routes_cached(seq_len: int, k: int) -> torch.Tensor:
+        """Cached route building using global LRU-cached coords."""
+        coords = compute_cantor_coords_cached(seq_len, depth=8)
+
+        distances = torch.abs(
+            coords.unsqueeze(1) - coords.unsqueeze(0)
+        )
+
+        _, routes = torch.topk(distances, k, dim=1, largest=False)
+        return routes.to(torch.int32)
+
+    def _get_routes_for_seq_len(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        """Get cached routes with automatic device handling."""
+        # Try device-specific cache first
+        routes = _GLOBAL_ROUTE_CACHE.get(seq_len, self.k, device)
+        if routes is not None:
+            return routes.long()
+
+        # Try CPU cache and transfer
+        routes_cpu = _GLOBAL_ROUTE_CACHE.get(seq_len, self.k, torch.device('cpu'))
+        if routes_cpu is not None:
+            routes_device = routes_cpu.to(device, non_blocking=True)
+            _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, device, routes_device)
+            return routes_device.long()
+
+        # Build new routes (rare case)
+        routes = self._build_positional_routes_cached(seq_len, self.k).to(device)
+        _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, device, routes)
+        return routes.long()
+
+    def _sparse_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        routes: torch.Tensor,
+        alpha: float = 0.0
+    ) -> torch.Tensor:
+        """Optimized sparse attention with minimal overhead."""
+        batch_size, num_heads, seq_len, head_dim = q.shape
+        k_neighbors = routes.shape[-1]
+        device = q.device
+
+        # Expand routes efficiently
+        if routes.dim() == 2:
+            routes_expanded = routes.unsqueeze(0).expand(batch_size, -1, -1)
+        else:
+            routes_expanded = routes
+
+        # Create broadcast indices once
+        batch_idx = torch.arange(batch_size, device=device).view(-1, 1, 1, 1)
+        head_idx = torch.arange(num_heads, device=device).view(1, -1, 1, 1)
+
+        batch_idx = batch_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
+        head_idx = head_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
+        routes_bc = routes_expanded.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+
+        # Gather k and v
+        k_gathered = k[batch_idx, head_idx, routes_bc, :]
+        v_gathered = v[batch_idx, head_idx, routes_bc, :]
+
+        # Alpha bleed-over (only if needed)
+        if alpha > 0.0:
+            adj_left = torch.clamp(routes_expanded - 1, 0, seq_len - 1)
+            adj_right = torch.clamp(routes_expanded + 1, 0, seq_len - 1)
+
+            adj_left_bc = adj_left.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+            adj_right_bc = adj_right.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
+
+            k_left = k[batch_idx, head_idx, adj_left_bc, :]
+            k_right = k[batch_idx, head_idx, adj_right_bc, :]
+            v_left = v[batch_idx, head_idx, adj_left_bc, :]
+            v_right = v[batch_idx, head_idx, adj_right_bc, :]
+
+            k_gathered = k_gathered.mul_(1 - alpha).add_(k_left.add_(k_right).mul_(alpha * 0.5))
+            v_gathered = v_gathered.mul_(1 - alpha).add_(v_left.add_(v_right).mul_(alpha * 0.5))
+
+        # Attention computation
+        scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered).mul_(self.scale)
+
+        if self.config.causal:
+            position_idx = torch.arange(seq_len, device=device).unsqueeze(1)
+            causal_mask = routes_expanded > position_idx.unsqueeze(0)
+            causal_mask = causal_mask.unsqueeze(1).expand(batch_size, num_heads, -1, -1)
+            scores = scores.masked_fill(causal_mask, float('-inf'))
+
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        output = torch.einsum('bhqk,bhqkd->bhqd', attn_weights, v_gathered)
+        return output
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        anchor_ids: Optional[torch.Tensor] = None,
+        alpha: float = 0.0
+    ) -> torch.Tensor:
+        """Forward with cached routes."""
+        batch_size, seq_len, _ = x.shape
+
+        # QKV projection
+        qkv = self.qkv(x)
+        qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # Get pre-cached routes (no computation!)
+        routes = self._get_routes_for_seq_len(seq_len, x.device)
+
+        # Sparse attention
+        attn_output = self._sparse_attention(q, k, v, routes, alpha=alpha)
+
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.dim)
+        output = self.out_proj(attn_output)
+        output = self.resid_dropout(output)
+
+        return output
+
+
+# ============================================================================
 # GEOMETRIC POSITIONAL FINGERPRINTING
 # ============================================================================
 
@@ -744,249 +976,22 @@ class MultiScaleExpertCompanion(nn.Module):
 
 
 # ============================================================================
-# GLOBAL CACHING SYSTEM
-# ============================================================================
-
-from functools import lru_cache
-import threading
-
-
-class GlobalCantorRouteCache:
-    """Thread-safe global cache for Cantor attention routes across all instances."""
-
-    def __init__(self):
-        self._cache = {}
-        self._lock = threading.Lock()
-
-    def get_key(self, seq_len: int, k: int, device: str) -> str:
-        """Generate cache key."""
-        return f"{seq_len}_{k}_{device}"
-
-    def get(self, seq_len: int, k: int, device: torch.device) -> Optional[torch.Tensor]:
-        """Thread-safe get from cache."""
-        key = self.get_key(seq_len, k, str(device))
-        with self._lock:
-            return self._cache.get(key)
-
-    def put(self, seq_len: int, k: int, device: torch.device, routes: torch.Tensor):
-        """Thread-safe put to cache."""
-        key = self.get_key(seq_len, k, str(device))
-        with self._lock:
-            self._cache[key] = routes
-
-    def clear(self):
-        """Clear entire cache."""
-        with self._lock:
-            self._cache.clear()
-
-
-# Global singleton cache
-_GLOBAL_ROUTE_CACHE = GlobalCantorRouteCache()
-
-
-@lru_cache(maxsize=256)
-def compute_cantor_coords_cached(seq_len: int, depth: int = 8) -> torch.Tensor:
-    """LRU-cached Cantor coordinate computation."""
-    positions = torch.arange(seq_len, dtype=torch.long)
-    x = positions.float() / max(1, seq_len - 1)
-    x = torch.clamp(x, 1e-6, 1.0 - 1e-6)
-
-    cantor_val = torch.zeros_like(x)
-    factor = 0.5
-
-    for _ in range(depth):
-        x_scaled = x * 3.0
-        digit = x_scaled.long()
-        x_frac = x_scaled - digit.float()
-
-        middle_bit = (digit == 2).float()
-        cantor_val = cantor_val + middle_bit * factor
-
-        x = x_frac
-        factor *= 0.5
-
-    return torch.clamp(cantor_val, 0.0, 1.0)
-
-
-# ============================================================================
-# OPTIMIZED CANTOR ATTENTION
-# ============================================================================
-
-class CantorAttention(nn.Module):
-    """O(n) attention with aggressive route caching and pre-warming."""
-
-    def __init__(
-            self,
-            config: CantorAttentionConfig,
-            max_seq_len: int = 512,
-            k: int = 64
-    ):
-        super().__init__()
-        self.config = config
-        self.dim = config.dim
-        self.num_heads = config.num_heads
-        self.head_dim = config.head_dim
-        self.scale = 1.0 / math.sqrt(self.head_dim)
-        self.k = k
-        self.max_seq_len = max_seq_len
-
-        self.qkv = nn.Linear(config.dim, 3 * config.dim, bias=config.qkv_bias)
-        self.out_proj = nn.Linear(config.dim, config.dim, bias=config.out_bias)
-        self.attn_dropout = nn.Dropout(config.dropout)
-        self.resid_dropout = nn.Dropout(config.dropout)
-
-        # Pre-warm cache for common sequence lengths
-        self._prewarm_cache()
-
-    def _prewarm_cache(self):
-        """Pre-compute and cache routes for common lengths."""
-        common_lengths = [64, 77, 128, 196, 256, 384, 512, 1024, 2048]
-
-        for seq_len in common_lengths:
-            if seq_len <= self.max_seq_len:
-                # Build routes on CPU first
-                routes_cpu = self._build_positional_routes_cached(seq_len, self.k)
-                # Store in global cache for CPU
-                _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, torch.device('cpu'), routes_cpu)
-
-    @staticmethod
-    def _build_positional_routes_cached(seq_len: int, k: int) -> torch.Tensor:
-        """Cached route building using global LRU-cached coords."""
-        coords = compute_cantor_coords_cached(seq_len, depth=8)
-
-        distances = torch.abs(
-            coords.unsqueeze(1) - coords.unsqueeze(0)
-        )
-
-        _, routes = torch.topk(distances, k, dim=1, largest=False)
-        return routes.to(torch.int32)
-
-    def _get_routes_for_seq_len(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        """Get cached routes with automatic device handling."""
-        # Try device-specific cache first
-        routes = _GLOBAL_ROUTE_CACHE.get(seq_len, self.k, device)
-        if routes is not None:
-            return routes.long()
-
-        # Try CPU cache and transfer
-        routes_cpu = _GLOBAL_ROUTE_CACHE.get(seq_len, self.k, torch.device('cpu'))
-        if routes_cpu is not None:
-            routes_device = routes_cpu.to(device, non_blocking=True)
-            _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, device, routes_device)
-            return routes_device.long()
-
-        # Build new routes (rare case)
-        routes = self._build_positional_routes_cached(seq_len, self.k).to(device)
-        _GLOBAL_ROUTE_CACHE.put(seq_len, self.k, device, routes)
-        return routes.long()
-
-    def _sparse_attention(
-            self,
-            q: torch.Tensor,
-            k: torch.Tensor,
-            v: torch.Tensor,
-            routes: torch.Tensor,
-            alpha: float = 0.0
-    ) -> torch.Tensor:
-        """Optimized sparse attention with minimal overhead."""
-        batch_size, num_heads, seq_len, head_dim = q.shape
-        k_neighbors = routes.shape[-1]
-        device = q.device
-
-        # Expand routes efficiently
-        if routes.dim() == 2:
-            routes_expanded = routes.unsqueeze(0).expand(batch_size, -1, -1)
-        else:
-            routes_expanded = routes
-
-        # Create broadcast indices once
-        batch_idx = torch.arange(batch_size, device=device).view(-1, 1, 1, 1)
-        head_idx = torch.arange(num_heads, device=device).view(1, -1, 1, 1)
-
-        batch_idx = batch_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
-        head_idx = head_idx.expand(batch_size, num_heads, seq_len, k_neighbors)
-        routes_bc = routes_expanded.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
-
-        # Gather k and v
-        k_gathered = k[batch_idx, head_idx, routes_bc, :]
-        v_gathered = v[batch_idx, head_idx, routes_bc, :]
-
-        # Alpha bleed-over (only if needed)
-        if alpha > 0.0:
-            adj_left = torch.clamp(routes_expanded - 1, 0, seq_len - 1)
-            adj_right = torch.clamp(routes_expanded + 1, 0, seq_len - 1)
-
-            adj_left_bc = adj_left.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
-            adj_right_bc = adj_right.unsqueeze(1).expand(batch_size, num_heads, seq_len, k_neighbors)
-
-            k_left = k[batch_idx, head_idx, adj_left_bc, :]
-            k_right = k[batch_idx, head_idx, adj_right_bc, :]
-            v_left = v[batch_idx, head_idx, adj_left_bc, :]
-            v_right = v[batch_idx, head_idx, adj_right_bc, :]
-
-            k_gathered = k_gathered.mul_(1 - alpha).add_(k_left.add_(k_right).mul_(alpha * 0.5))
-            v_gathered = v_gathered.mul_(1 - alpha).add_(v_left.add_(v_right).mul_(alpha * 0.5))
-
-        # Attention computation
-        scores = torch.einsum('bhqd,bhqkd->bhqk', q, k_gathered).mul_(self.scale)
-
-        if self.config.causal:
-            position_idx = torch.arange(seq_len, device=device).unsqueeze(1)
-            causal_mask = routes_expanded > position_idx.unsqueeze(0)
-            causal_mask = causal_mask.unsqueeze(1).expand(batch_size, num_heads, -1, -1)
-            scores = scores.masked_fill(causal_mask, float('-inf'))
-
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.attn_dropout(attn_weights)
-
-        output = torch.einsum('bhqk,bhqkd->bhqd', attn_weights, v_gathered)
-        return output
-
-    def forward(
-            self,
-            x: torch.Tensor,
-            anchor_ids: Optional[torch.Tensor] = None,
-            alpha: float = 0.0
-    ) -> torch.Tensor:
-        """Forward with cached routes."""
-        batch_size, seq_len, _ = x.shape
-
-        # QKV projection
-        qkv = self.qkv(x)
-        qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        # Get pre-cached routes (no computation!)
-        routes = self._get_routes_for_seq_len(seq_len, x.device)
-
-        # Sparse attention
-        attn_output = self._sparse_attention(q, k, v, routes, alpha=alpha)
-
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.dim)
-        output = self.out_proj(attn_output)
-        output = self.resid_dropout(output)
-
-        return output
-
-
-# ============================================================================
-# OPTIMIZED SHALLOW FUSION
+# SHALLOW FUSION WITH CACHED EMBEDDINGS
 # ============================================================================
 
 class ShallowTokenPredictionFusion(nn.Module):
     """Shallow fusion with pre-cached position embeddings."""
 
     def __init__(
-            self,
-            num_experts: int,
-            scales: List[int],
-            vocab_size: int,
-            fusion_controller: OrganizedFusionController,
-            max_seq_len: int = 77,
-            num_heads: int = 8,
-            dropout: float = 0.1,
-            share_embeddings: bool = True
+        self,
+        num_experts: int,
+        scales: List[int],
+        vocab_size: int,
+        fusion_controller: OrganizedFusionController,
+        max_seq_len: int = 77,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        share_embeddings: bool = True
     ):
         super().__init__()
 
@@ -1007,8 +1012,6 @@ class ShallowTokenPredictionFusion(nn.Module):
             self._cached_pos_embeds = {}
             print(f"  🔥 Pre-caching position embeddings for {len(scales)} scales...")
             for scale in scales:
-                # Create a non-leaf tensor that won't track gradients separately
-                # but will receive gradients through the shared embeddings
                 self._cached_pos_embeds[scale] = None  # Will be populated in forward
         else:
             self._cached_pos_embeds = {}
@@ -1051,7 +1054,6 @@ class ShallowTokenPredictionFusion(nn.Module):
 
     def _init_weights(self):
         """Efficient initialization."""
-
         def init_module(m):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight, gain=0.5)
@@ -1078,8 +1080,8 @@ class ShallowTokenPredictionFusion(nn.Module):
         return pos_embeds
 
     def forward(
-            self,
-            expert_opinions: List[Dict[str, torch.Tensor]]
+        self,
+        expert_opinions: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
         """Multi-level fusion with zero slicing overhead."""
         batch_size = list(expert_opinions[0]['scale_opinions'].values())[0].shape[0]
@@ -1142,12 +1144,13 @@ class ShallowTokenPredictionFusion(nn.Module):
             'scale_feature_pairs': scale_feature_pairs if self.training else {}
         }
 
+
 # ============================================================================
-# LIMINAL STAIRCASE
+# LIMINAL STAIRCASE WITH GEOMETRIC INITIALIZATION
 # ============================================================================
 
 class LiminalStaircase(nn.Module):
-    """Liminal Staircase with organized fusion controller."""
+    """Liminal Staircase with organized fusion controller and geometric pentachora."""
 
     def __init__(self, config: LiminalStaircaseConfig):
         super().__init__()
@@ -1155,7 +1158,7 @@ class LiminalStaircase(nn.Module):
         self.config = config
 
         print("=" * 80)
-        print("LIMINAL STAIRCASE - With Organized Fusion Controller")
+        print("LIMINAL STAIRCASE - With Geometric Pentachora + Organized Fusion")
         print("=" * 80)
         print(f"Opinion anchors: {config.num_opinion_anchors}")
         print(f"SigLIP layers: {len(config.siglip_layer_indices)} (of {config.siglip_num_layers})")
@@ -1171,10 +1174,10 @@ class LiminalStaircase(nn.Module):
             learn_layer_weights=config.scale_fusion.learn_layer_weights
         )
 
-        # Initialize opinion anchors
-        print("\nInitializing opinion anchors...")
-        self.opinion_anchors = self._init_opinion_anchors()
-        print(f"✓ {config.num_opinion_anchors} pentachora created")
+        # Initialize opinion anchors using GEOMETRIC METHOD
+        print("\n🔷 Initializing GEOMETRIC opinion anchors...")
+        self.opinion_anchors = self._init_opinion_anchors_geometric()
+        print(f"✓ {config.num_opinion_anchors} geometric pentachora created")
 
         # Compute positional fingerprints
         print("\nComputing positional fingerprints...")
@@ -1258,19 +1261,113 @@ class LiminalStaircase(nn.Module):
         print(f"Trainable parameters: {trainable_params:,}")
         print(f"{'='*80}\n")
 
-    def _init_opinion_anchors(self) -> nn.Parameter:
-        """Vectorized opinion anchor initialization."""
-        pentachora = torch.randn(
-            self.config.num_opinion_anchors,
-            5,
-            self.config.pentachoron_dim
-        )
+    def _init_opinion_anchors_geometric(self) -> nn.Parameter:
+        """Initialize opinion anchors using SimplexFactory for proper 4-simplices."""
 
-        pentachora = F.normalize(pentachora, dim=-1)
+        method = self.config.geometric_init_method
 
-        perturbation = torch.randn_like(pentachora) * 0.1
-        pentachora = pentachora + perturbation
-        pentachora = F.normalize(pentachora, dim=-1)
+        print(f"  Method: {method}")
+        print(f"  Dimension: {self.config.pentachoron_dim}")
+        print(f"  Scale: {self.config.geometric_init_scale}")
+        print(f"  Normalize: {self.config.geometric_init_normalize}")
+        print(f"  Validate: {self.config.geometric_init_validate}")
+
+        start_time = time.time()
+
+        if method == "hybrid":
+            # Hybrid: mix of regular, random, and uniform
+            num_regular = self.config.num_opinion_anchors // 3
+            num_random = self.config.num_opinion_anchors // 2
+            num_uniform = self.config.num_opinion_anchors - num_regular - num_random
+
+            pentachora_parts = []
+            offset = 0
+
+            # Regular
+            for method_name, count in [("regular", num_regular), ("random", num_random), ("uniform", num_uniform)]:
+                if count > 0:
+                    factory = SimplexFactory(
+                        k=4,
+                        embed_dim=self.config.pentachoron_dim,
+                        method=method_name,
+                        scale=self.config.geometric_init_scale,
+                        seed=self.config.geometric_init_seed
+                    )
+
+                    part_pentachora = []
+                    for i in range(count):
+                        anchor_seed = (self.config.geometric_init_seed + offset + i) if self.config.geometric_init_seed is not None else None
+                        pentachoron = factory.build(
+                            backend="torch",
+                            device="cpu",
+                            seed=anchor_seed,
+                            validate=self.config.geometric_init_validate
+                        )
+                        part_pentachora.append(pentachoron)
+
+                    pentachora_parts.append(torch.stack(part_pentachora, dim=0))
+                    offset += count
+                    print(f"    ✓ Generated {count} {method_name} pentachora")
+
+            pentachora = torch.cat(pentachora_parts, dim=0)
+
+        else:
+            # Single method
+            factory = SimplexFactory(
+                k=4,
+                embed_dim=self.config.pentachoron_dim,
+                method=method,
+                scale=self.config.geometric_init_scale,
+                seed=self.config.geometric_init_seed
+            )
+
+            pentachora_list = []
+            valid_count = 0
+
+            for i in range(self.config.num_opinion_anchors):
+                anchor_seed = (self.config.geometric_init_seed + i) if self.config.geometric_init_seed is not None else None
+
+                pentachoron = factory.build(
+                    backend="torch",
+                    device="cpu",
+                    seed=anchor_seed,
+                    validate=self.config.geometric_init_validate
+                )
+
+                if self.config.geometric_init_validate:
+                    is_valid, msg = factory.validate(pentachoron)
+                    if is_valid:
+                        valid_count += 1
+                    else:
+                        print(f"    ⚠️  Anchor {i}: {msg}")
+
+                pentachora_list.append(pentachoron)
+
+                if (i + 1) % 50 == 0:
+                    elapsed = time.time() - start_time
+                    rate = (i + 1) / elapsed
+                    print(f"    Generated {i + 1}/{self.config.num_opinion_anchors} ({rate:.0f} anchors/sec)")
+
+            pentachora = torch.stack(pentachora_list, dim=0)
+
+            if self.config.geometric_init_validate:
+                print(f"    Valid: {valid_count}/{self.config.num_opinion_anchors} ({100*valid_count/self.config.num_opinion_anchors:.1f}%)")
+
+        # Normalize if requested
+        if self.config.geometric_init_normalize:
+            pentachora = F.normalize(pentachora, dim=-1)
+
+        elapsed = time.time() - start_time
+
+        # Statistics
+        centroid_norms = torch.norm(pentachora.mean(dim=1), dim=-1)
+        edge_lengths = torch.norm(pentachora[:, 1] - pentachora[:, 0], dim=-1)
+
+        print(f"    Time: {elapsed:.2f}s")
+        print(f"    Shape: {pentachora.shape}")
+        print(f"    Range: [{pentachora.min():.4f}, {pentachora.max():.4f}]")
+        print(f"    Centroid norms: mean={centroid_norms.mean():.4f}, std={centroid_norms.std():.4f}")
+        print(f"    Edge lengths: mean={edge_lengths.mean():.4f}, std={edge_lengths.std():.4f}")
 
         return nn.Parameter(pentachora, requires_grad=True)
 
@@ -1317,6 +1414,7 @@ class LiminalStaircase(nn.Module):
             'max_seq_len': self.config.max_seq_len,
             'scales': self.config.scale_fusion.scales,
             'scale_hidden_dims': self.config.scale_fusion.scale_hidden_dims,
+            'geometric_init_method': self.config.geometric_init_method,
             'fusion_controller': {
                 'alpha_learnable': self.config.scale_fusion.alpha_learnable,
                 'beta_learnable': self.config.scale_fusion.beta_learnable,
@@ -1334,7 +1432,7 @@ class LiminalStaircase(nn.Module):
 
 if __name__ == "__main__":
     print("\n" + "=" * 80)
-    print("LIMINAL STAIRCASE - ORGANIZED FUSION TEST")
+    print("LIMINAL STAIRCASE - GEOMETRIC INITIALIZATION TEST")
     print("=" * 80 + "\n")
 
     # Test with ScaleFusionConfig
@@ -1355,7 +1453,10 @@ if __name__ == "__main__":
         vocab_size=49408,
         max_seq_len=77,
         siglip_layer_indices=list(range(12, 24)),
-        scale_fusion=fusion_config
+        scale_fusion=fusion_config,
+        geometric_init_method="hybrid",  # Test hybrid initialization
+        geometric_init_validate=True,    # Validate pentachora
+        geometric_init_seed=42
     )
 
     model = LiminalStaircase(config)
@@ -1381,7 +1482,8 @@ if __name__ == "__main__":
     print(f"\n[Model info]")
     print(f"  Total experts: {info['total_experts']}")
     print(f"  Parameters: {info['total_parameters']:,}")
+    print(f"  Geometric init: {info['geometric_init_method']}")
 
     print("\n" + "=" * 80)
-    print("✅ TEST COMPLETE - Ready for training!")
+    print("✅ TEST COMPLETE - Geometric pentachora + organized fusion ready!")
     print("=" * 80 + "\n")

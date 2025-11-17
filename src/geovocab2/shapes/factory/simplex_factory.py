@@ -13,6 +13,8 @@ Examples:
 This factory generates simplices in d-dimensional embedding space and
 validates them using Cayley-Menger determinants from FormulaBase.
 
+geovocab2.shapes.factory.simplex_factory.SimplexFactory
+
 License: MIT
 """
 
