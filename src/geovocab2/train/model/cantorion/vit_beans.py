@@ -1,5 +1,5 @@
 """
-GeoFractalEncoder-v2
+ViTBeans-V1 - FIXED
 ====================
 
 Conforms to axiom:
@@ -49,7 +49,7 @@ except ImportError:
 
 
 # ==========================================================================
-# CONFIG
+# CONFIG - FIXED
 # ==========================================================================
 
 @dataclass
@@ -69,11 +69,10 @@ class ViTCantorCatBeansConfig:
     # Geometric routing
     num_routes: int = 16
     simplex_k: int = 4        # 4-simplex / pentachoron (5 vertices)
-    cantor_dimensions: int = 2  # Cantor pairing dimensions
+    cantor_dimensions: int = 2  # Cantor pairing dimensions (2-5)
 
     # Attention params (if using CantorAttention)
     num_heads: int = 8
-    cantor_depth: int = 8
     max_seq_len: int = 512_000
     local_window: int = 64
     dropout: float = 0.1
@@ -90,7 +89,7 @@ class ViTCantorCatBeansConfig:
         return CantorAttentionConfig(
             dim=self.dim,
             num_heads=self.num_heads,
-            depth=self.cantor_depth,
+            cantor_dimensions=self.cantor_dimensions,  # FIXED: use cantor_dimensions, not depth
             max_seq_len=self.max_seq_len,
             local_window=self.local_window,
             dropout=self.dropout,
