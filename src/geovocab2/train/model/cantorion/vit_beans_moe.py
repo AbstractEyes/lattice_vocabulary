@@ -6,7 +6,7 @@ Enhanced with DIRECT TOKEN CONTROL for dense mode.
 
 Supports 3 modes:
 - 'dense': Dense masked Cantor attention (FAST - recommended)
-  * NEW: Supports explicit token masks for manual routing
+  * NOW with explicit token/patch control via manual masks
 - 'sparse': Original sparse Cantor attention (SLOW - for experiments)
 - 'standard': Standard multi-head attention (BASELINE)
 
@@ -134,7 +134,7 @@ class DenseCantorExpert(nn.Module):
             tokens: [B, N, D] input tokens
             fingerprints: [N] fingerprint values (for automatic routing)
             explicit_mask: [B, N] or [N] boolean mask (for manual control)
-                          If provided, overrides fingerprint-based routing
+                          If provided, OVERRIDES fingerprint-based routing
 
         Returns:
             Dict with Q, K, V, mask, and statistics
@@ -158,7 +158,7 @@ class DenseCantorExpert(nn.Module):
                 mask = (fingerprints >= self.fp_min) & (fingerprints < self.fp_max)
             mask = mask.unsqueeze(0).expand(batch_size, -1)
         else:
-            # No routing - process everything
+            # No routing - process everything (fallback)
             mask = torch.ones(batch_size, num_patches, dtype=torch.bool, device=tokens.device)
 
         # Extract feature slice for ALL patches
@@ -451,7 +451,36 @@ class ViTBeansConfig:
 
 
 class ViTBeans(nn.Module):
-    """ViT-Beans with configurable attention modes and MANUAL TOKEN CONTROL."""
+    """ViT-Beans with configurable attention modes and MANUAL TOKEN CONTROL.
+
+    Usage Examples:
+    ---------------
+
+    # 1. AUTOMATIC ROUTING (default)
+    model = ViTBeans(config)
+    logits = model(images)  # Uses fingerprint-based routing
+
+    # 2. MANUAL ROUTING - Equal division
+    masks = model.create_manual_masks({
+        0: list(range(0, 49)),      # Expert 0: patches 0-48
+        1: list(range(49, 98)),     # Expert 1: patches 49-97
+        2: list(range(98, 147)),    # Expert 2: patches 98-146
+        3: list(range(147, 196))    # Expert 3: patches 147-195
+    })
+    logits = model(images, expert_masks=masks)
+
+    # 3. MANUAL ROUTING - Spatial regions
+    masks = model.create_spatial_masks(
+        grid_size=14,  # For 224x224 with patch_size=16
+        regions={
+            0: [(0, 6), (0, 6)],     # Top-left quadrant
+            1: [(8, 14), (0, 6)],    # Top-right quadrant
+            2: [(0, 6), (8, 14)],    # Bottom-left quadrant
+            3: [(8, 14), (8, 14)]    # Bottom-right quadrant
+        }
+    )
+    logits = model(images, expert_masks=masks)
+    """
 
     def __init__(self, config: ViTBeansConfig):
         super().__init__()
@@ -461,6 +490,7 @@ class ViTBeans(nn.Module):
         # Calculate patches
         assert config.image_size % config.patch_size == 0
         self.num_patches = (config.image_size // config.patch_size) ** 2
+        self.grid_size = config.image_size // config.patch_size
 
         # Patch embedding
         self.patch_embed = nn.Conv2d(
@@ -640,12 +670,13 @@ class ViTBeans(nn.Module):
             masks: [E, B, N] boolean tensor
 
         Example:
-            # Expert 0 handles patches 0-9, Expert 1 handles patches 10-19, etc.
+            # Equal division among 4 experts
             masks = model.create_manual_masks({
-                0: list(range(10)),
-                1: list(range(10, 20)),
-                2: list(range(20, 30)),
-            })
+                0: list(range(0, 49)),
+                1: list(range(49, 98)),
+                2: list(range(98, 147)),
+                3: list(range(147, 196)),
+            }, batch_size=8)
             logits = model(images, expert_masks=masks)
         """
         device = next(self.parameters()).device
@@ -663,37 +694,124 @@ class ViTBeans(nn.Module):
 
         return masks
 
-    def diagnose_expert_coverage(self) -> Dict:
-        """Diagnose expert coverage (only for Cantor modes)."""
+    def create_spatial_masks(
+        self,
+        grid_size: Optional[int] = None,
+        regions: Optional[Dict[int, Tuple[Tuple[int, int], Tuple[int, int]]]] = None,
+        batch_size: int = 1
+    ) -> torch.Tensor:
+        """Helper to create spatial region masks for experts.
+
+        Args:
+            grid_size: Size of patch grid (e.g., 14 for 224x224 images with 16x16 patches)
+                      If None, uses self.grid_size
+            regions: Dict mapping expert_id -> ((y_start, y_end), (x_start, x_end))
+                    Ranges are inclusive on start, exclusive on end
+            batch_size: Batch size for masks
+
+        Returns:
+            masks: [E, B, N] boolean tensor
+
+        Example:
+            # Divide into quadrants for 4 experts
+            masks = model.create_spatial_masks(
+                grid_size=14,
+                regions={
+                    0: ((0, 7), (0, 7)),      # Top-left
+                    1: ((0, 7), (7, 14)),     # Top-right
+                    2: ((7, 14), (0, 7)),     # Bottom-left
+                    3: ((7, 14), (7, 14)),    # Bottom-right
+                },
+                batch_size=8
+            )
+            logits = model(images, expert_masks=masks)
+        """
+        if grid_size is None:
+            grid_size = self.grid_size
+
+        device = next(self.parameters()).device
+        masks = torch.zeros(
+            self.config.num_experts,
+            batch_size,
+            self.num_patches,
+            dtype=torch.bool,
+            device=device
+        )
+
+        if regions is None:
+            return masks
+
+        for expert_id, ((y_start, y_end), (x_start, x_end)) in regions.items():
+            if expert_id < self.config.num_experts:
+                for y in range(y_start, y_end):
+                    for x in range(x_start, x_end):
+                        patch_idx = y * grid_size + x
+                        if patch_idx < self.num_patches:
+                            masks[expert_id, :, patch_idx] = True
+
+        return masks
+
+    def diagnose_expert_coverage(
+        self,
+        expert_masks: Optional[torch.Tensor] = None
+    ) -> Dict:
+        """Diagnose expert coverage (only for Cantor modes).
+
+        Args:
+            expert_masks: Optional manual masks to diagnose. If None, uses fingerprints.
+        """
         if self.config.attention_mode == 'standard':
             return {'mode': 'standard', 'no_experts': True}
 
         device = next(self.parameters()).device
-        self._compute_fingerprints(device)
-        fingerprints = self.patch_fingerprints
 
         coverage = {}
         total_covered = 0
 
-        moe = self.layers[0]['attention']
-        for expert in moe.experts:
-            if expert.is_last_expert:
-                mask = (fingerprints >= expert.fp_min) & (fingerprints <= expert.fp_max)
+        if expert_masks is not None:
+            # Diagnose manual masks
+            if expert_masks.dim() == 3:
+                # [E, B, N] - use first batch
+                masks = expert_masks[:, 0, :]
             else:
-                mask = (fingerprints >= expert.fp_min) & (fingerprints < expert.fp_max)
+                # [E, N]
+                masks = expert_masks
 
-            num_patches = mask.sum().item()
-            coverage[f'expert_{expert.expert_id}'] = {
-                'patches': num_patches,
-                'range': f'[{expert.fp_min:.4f}, {expert.fp_max:.4f}{")" if not expert.is_last_expert else "]"}',
-                'is_last': expert.is_last_expert
-            }
-            total_covered += num_patches
+            for expert_id in range(self.config.num_experts):
+                mask = masks[expert_id]
+                num_patches = mask.sum().item()
+                coverage[f'expert_{expert_id}'] = {
+                    'patches': num_patches,
+                    'mode': 'manual'
+                }
+                total_covered += num_patches
+
+        else:
+            # Diagnose fingerprint-based routing
+            self._compute_fingerprints(device)
+            fingerprints = self.patch_fingerprints
+
+            moe = self.layers[0]['attention']
+            for expert in moe.experts:
+                if expert.is_last_expert:
+                    mask = (fingerprints >= expert.fp_min) & (fingerprints <= expert.fp_max)
+                else:
+                    mask = (fingerprints >= expert.fp_min) & (fingerprints < expert.fp_max)
+
+                num_patches = mask.sum().item()
+                coverage[f'expert_{expert.expert_id}'] = {
+                    'patches': num_patches,
+                    'range': f'[{expert.fp_min:.4f}, {expert.fp_max:.4f}{")" if not expert.is_last_expert else "]"}',
+                    'is_last': expert.is_last_expert,
+                    'mode': 'fingerprint'
+                }
+                total_covered += num_patches
+
+            coverage['max_fingerprint'] = fingerprints.max().item()
+            coverage['min_fingerprint'] = fingerprints.min().item()
 
         coverage['total_patches'] = self.num_patches
         coverage['total_covered'] = total_covered
-        coverage['max_fingerprint'] = fingerprints.max().item()
-        coverage['min_fingerprint'] = fingerprints.min().item()
 
         return coverage
 
@@ -704,100 +822,113 @@ class ViTBeans(nn.Module):
 
 if __name__ == "__main__":
     print("=" * 80)
-    print("ViT-Beans Multi-Mode Test with Manual Token Control")
+    print("ViT-Beans with Manual Token Control")
     print("=" * 80)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}")
 
-    # Test configuration
     config = ViTBeansConfig(
-        image_size=32,
-        patch_size=4,
-        num_layers=2,
-        feature_dim=256,
-        num_experts=4,
+        image_size=224,
+        patch_size=16,
+        num_layers=4,
+        feature_dim=512,
+        num_experts=8,
         expert_dim=64,
-        num_classes=100,
+        num_classes=1000,
         attention_mode='dense'
     )
 
     model = ViTBeans(config).to(device)
     print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Patches: {model.num_patches}")
+    print(f"Patches: {model.num_patches} ({model.grid_size}x{model.grid_size})")
 
-    # Test 1: Automatic routing (fingerprint-based)
+    # Test 1: Automatic routing
     print("\n" + "=" * 80)
-    print("Test 1: AUTOMATIC ROUTING (fingerprint-based)")
+    print("Test 1: AUTOMATIC ROUTING")
     print("=" * 80)
 
-    x = torch.randn(2, 3, 32, 32, device=device)
+    x = torch.randn(2, 3, 224, 224, device=device)
     model.eval()
     with torch.no_grad():
         logits_auto = model(x)
-    print(f"✅ Automatic routing output shape: {logits_auto.shape}")
+        coverage_auto = model.diagnose_expert_coverage()
 
-    # Test 2: Manual routing - specific expert assignments
+    print(f"Output shape: {logits_auto.shape}")
+    print("Expert coverage (fingerprint-based):")
+    for i in range(config.num_experts):
+        info = coverage_auto[f'expert_{i}']
+        print(f"  Expert {i}: {info['patches']} patches, range {info['range']}")
+
+    # Test 2: Manual equal division
     print("\n" + "=" * 80)
-    print("Test 2: MANUAL ROUTING (explicit patch assignment)")
+    print("Test 2: MANUAL EQUAL DIVISION")
     print("=" * 80)
 
-    # Create manual masks: divide patches equally among experts
-    patches_per_expert = model.num_patches // 4
-    manual_assignments = {
-        0: list(range(0, patches_per_expert)),
-        1: list(range(patches_per_expert, 2 * patches_per_expert)),
-        2: list(range(2 * patches_per_expert, 3 * patches_per_expert)),
-        3: list(range(3 * patches_per_expert, model.num_patches)),
+    patches_per_expert = model.num_patches // config.num_experts
+    manual_equal = {
+        i: list(range(i * patches_per_expert, (i + 1) * patches_per_expert))
+        for i in range(config.num_experts)
+    }
+    # Handle remainder
+    manual_equal[config.num_experts - 1].extend(
+        list(range(config.num_experts * patches_per_expert, model.num_patches))
+    )
+
+    masks_equal = model.create_manual_masks(manual_equal, batch_size=2)
+    with torch.no_grad():
+        logits_equal = model(x, expert_masks=masks_equal)
+        coverage_equal = model.diagnose_expert_coverage(masks_equal)
+
+    print(f"Output shape: {logits_equal.shape}")
+    print("Expert coverage (manual equal):")
+    for i in range(config.num_experts):
+        info = coverage_equal[f'expert_{i}']
+        print(f"  Expert {i}: {info['patches']} patches")
+
+    # Test 3: Spatial quadrants
+    print("\n" + "=" * 80)
+    print("Test 3: SPATIAL REGION CONTROL")
+    print("=" * 80)
+
+    # For 8 experts, create 8 spatial regions
+    half = model.grid_size // 2
+    quarter_x = model.grid_size // 4
+    quarter_y = model.grid_size // 4
+
+    spatial_regions = {
+        0: ((0, quarter_y), (0, half)),              # Top-left corner
+        1: ((0, quarter_y), (half, model.grid_size)), # Top-right corner
+        2: ((quarter_y, half), (0, half)),           # Left region
+        3: ((quarter_y, half), (half, model.grid_size)), # Right region
+        4: ((half, half + quarter_y), (0, half)),    # Lower-left region
+        5: ((half, half + quarter_y), (half, model.grid_size)), # Lower-right region
+        6: ((half + quarter_y, model.grid_size), (0, half)),    # Bottom-left
+        7: ((half + quarter_y, model.grid_size), (half, model.grid_size))  # Bottom-right
     }
 
-    print("Expert assignments:")
-    for expert_id, patches in manual_assignments.items():
-        print(f"  Expert {expert_id}: {len(patches)} patches ({patches[0]}-{patches[-1]})")
-
-    masks = model.create_manual_masks(manual_assignments, batch_size=2)
-    print(f"Mask shape: {masks.shape}")
+    masks_spatial = model.create_spatial_masks(
+        regions=spatial_regions,
+        batch_size=2
+    )
 
     with torch.no_grad():
-        logits_manual = model(x, expert_masks=masks)
-    print(f"✅ Manual routing output shape: {logits_manual.shape}")
+        logits_spatial = model(x, expert_masks=masks_spatial)
+        coverage_spatial = model.diagnose_expert_coverage(masks_spatial)
 
-    # Test 3: Custom selective routing
+    print(f"Output shape: {logits_spatial.shape}")
+    print("Expert coverage (spatial):")
+    for i in range(config.num_experts):
+        info = coverage_spatial[f'expert_{i}']
+        print(f"  Expert {i}: {info['patches']} patches")
+
     print("\n" + "=" * 80)
-    print("Test 3: SELECTIVE ROUTING (only some patches per expert)")
+    print("✅ All manual control modes working!")
     print("=" * 80)
 
-    # Expert 0: corners only
-    # Expert 1: edges only
-    # Expert 2: center only
-    # Expert 3: everything else
-    selective_assignments = {
-        0: [0, 7, 56, 63],  # corners of 8x8 grid
-        1: list(range(1, 7)) + list(range(57, 63)),  # top and bottom edges
-        2: [27, 28, 35, 36],  # center 2x2
-        3: list(range(8, 56)),  # everything else
-    }
-
-    print("Selective assignments:")
-    for expert_id, patches in selective_assignments.items():
-        print(f"  Expert {expert_id}: {len(patches)} patches")
-
-    masks_selective = model.create_manual_masks(selective_assignments, batch_size=2)
-    with torch.no_grad():
-        logits_selective = model(x, expert_masks=masks_selective)
-    print(f"✅ Selective routing output shape: {logits_selective.shape}")
-
-    # Test 4: Compare outputs
-    print("\n" + "=" * 80)
-    print("Test 4: OUTPUT COMPARISON")
-    print("=" * 80)
-
-    print(f"Automatic routing mean: {logits_auto.mean().item():.4f}")
-    print(f"Manual routing mean: {logits_manual.mean().item():.4f}")
-    print(f"Selective routing mean: {logits_selective.mean().item():.4f}")
-
-    print("\n✅ All manual control tests passed!")
     print("\nUSAGE SUMMARY:")
     print("-" * 80)
-    print("1. Automatic: model(images)")
-    print("2. Manual: model(images, expert_masks=masks)")
-    print("3. Create masks: model.create_manual_masks({expert_id: [patch_ids]})")
+    print("1. Automatic:  logits = model(images)")
+    print("2. Manual:     logits = model(images, expert_masks=masks)")
+    print("3. Equal div:  masks = model.create_manual_masks({0: [0,1,2], ...})")
+    print("4. Spatial:    masks = model.create_spatial_masks(regions={...})")
