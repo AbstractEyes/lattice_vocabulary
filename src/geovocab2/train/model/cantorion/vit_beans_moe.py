@@ -1,24 +1,18 @@
 """
-ViT-Beans: Vision Transformer with Cantor Expert Collective
-============================================================
+ViT-Beans: Vision Transformer with Geometric Cantor Expert Collective
+======================================================================
 
-CORE PRINCIPLES:
-----------------
-1. PROPER Cantor fingerprinting - geometric position → deterministic Cantor coordinate
-2. REDUNDANT expert coverage - multiple experts vote on same patches (consensus)
-3. COLLECTIVE fusion - aggregate expert opinions through geometric routing
-4. O(n) attention via Cantor fractal structure
+COALESCED ARCHITECTURE:
+-----------------------
+1. Cantor Fingerprinting: Deterministic spatial routing (WHERE)
+2. Pentachoron Geometry: Learned 5-vertex simplex opinion structure (HOW)
+3. Query as K-Simplex Navigation: Query learns geometric paths
+4. Role-Weighted Projections: anchor/need/relation/purpose/observer
+5. Cayley-Menger Constraints: Enforce valid geometric structure
+6. Collective Fusion: Expert consensus through alpha/beta modulation
 
-ARCHITECTURE:
--------------
-- Patch positions → Cantor coordinates (depth-based fractal recursion)
-- Each expert covers overlapping region (configurable redundancy)
-- Pentachoron 5-way projections for cross-contamination
-- Alpha visibility + Beta binding for expert consensus
-- Sparse geometric attention fuses expert votes
-
-KEY FIX: Removed false "dimensional" Cantor. One Cantor depth parameter.
-Experts now OVERLAP by design - redundancy enables consensus.
+Key Insight: Cantor provides spatial addresses, Pentachoron provides
+geometric opinion formation mechanism. Both work together.
 
 Author: AbstractPhil + Claude Sonnet 4.5
 License: Apache 2.0
@@ -33,54 +27,129 @@ import math
 
 
 # ============================================================================
-# GEOMETRIC CANTOR FINGERPRINTING
+# GEOMETRIC LOSS FUNCTIONS
+# ============================================================================
+
+class PentachoronGeometricLoss(nn.Module):
+    """
+    Cayley-Menger loss for expert pentachora.
+
+    Ensures each expert's 5-vertex simplex maintains valid geometry:
+    - Volume > threshold (prevents collapse)
+    - Edge uniformity (prevents distortion)
+    - Gram matrix condition (ensures embedding quality)
+    """
+
+    def __init__(
+        self,
+        volume_floor: float = 0.1,
+        edge_uniformity_weight: float = 0.1,
+        gram_weight: float = 0.05
+    ):
+        super().__init__()
+        self.volume_floor = volume_floor
+        self.edge_weight = edge_uniformity_weight
+        self.gram_weight = gram_weight
+
+    def compute_cayley_menger_volume(self, vertices: torch.Tensor) -> torch.Tensor:
+        """
+        Compute 4-simplex volume via Cayley-Menger determinant.
+
+        Args:
+            vertices: [5, dim] pentachoron vertices
+
+        Returns:
+            volume: scalar volume
+        """
+        # Pairwise squared distances
+        diff = vertices.unsqueeze(1) - vertices.unsqueeze(0)  # [5, 5, dim]
+        distsq = (diff * diff).sum(dim=-1)  # [5, 5]
+
+        # Build Cayley-Menger matrix
+        M = torch.zeros(6, 6, device=vertices.device, dtype=vertices.dtype)
+        M[0, 1:] = 1.0
+        M[1:, 0] = 1.0
+        M[1:, 1:] = distsq
+
+        # Volume = sqrt(-det(M) / 9216)
+        det = torch.linalg.det(M)
+        volume_sq = (-det / 9216.0).clamp(min=0.0)
+        volume = volume_sq.sqrt()
+
+        return volume
+
+    def compute_edge_uniformity(self, vertices: torch.Tensor) -> torch.Tensor:
+        """Measure edge length variation."""
+        diff = vertices.unsqueeze(1) - vertices.unsqueeze(0)
+        distsq = (diff * diff).sum(dim=-1)
+
+        # Extract upper triangle (10 edges)
+        triu_indices = torch.triu_indices(5, 5, offset=1)
+        edge_lengths = distsq[triu_indices[0], triu_indices[1]]
+
+        # Coefficient of variation
+        edge_std = edge_lengths.std()
+        edge_mean = edge_lengths.mean()
+        uniformity = edge_std / edge_mean.clamp(min=1e-6)
+
+        return uniformity
+
+    def compute_gram_condition(self, vertices: torch.Tensor) -> torch.Tensor:
+        """Gram matrix conditioning."""
+        centered = vertices - vertices.mean(dim=0, keepdim=True)
+        gram = torch.mm(centered, centered.T)
+
+        gram_trace = torch.diagonal(gram).sum()
+        gram_det = torch.linalg.det(gram)
+
+        condition = gram_det / gram_trace.clamp(min=1e-6)
+        penalty = F.relu(1.0 - condition)
+
+        return penalty
+
+    def forward(self, expert_pentachora: List[torch.Tensor]) -> torch.Tensor:
+        """
+        Compute geometric loss across all expert pentachora.
+
+        Args:
+            expert_pentachora: List of [5, expert_dim] tensors
+
+        Returns:
+            total_loss: scalar loss
+        """
+        total_loss = 0.0
+
+        for vertices in expert_pentachora:
+            # Volume loss
+            volume = self.compute_cayley_menger_volume(vertices)
+            volume_loss = F.relu(self.volume_floor - volume)
+
+            # Edge uniformity loss
+            edge_loss = self.compute_edge_uniformity(vertices)
+
+            # Gram condition loss
+            gram_loss = 0.0
+            if self.gram_weight > 0:
+                gram_loss = self.compute_gram_condition(vertices)
+
+            total_loss += volume_loss + self.edge_weight * edge_loss + self.gram_weight * gram_loss
+
+        return total_loss / len(expert_pentachora)
+
+
+# ============================================================================
+# CANTOR FINGERPRINTING
 # ============================================================================
 
 class GeometricCantorFingerprinter:
-    """
-    Generate deterministic fingerprints via Cantor pairing function.
-
-    Cantor pairing: Maps 2D coordinates (x, y) → unique 1D value
-    Formula: cantor(x, y) = (x + y) * (x + y + 1) / 2 + y
-
-    Provides uniform distribution across [0, 1] for routing.
-    Depth parameter controls bucketing granularity.
-    """
+    """Cantor pairing for deterministic spatial routing."""
 
     def __init__(self, depth: int = 8):
-        """
-        Args:
-            depth: Bucketing depth (higher = finer granularity)
-                  Controls hash space size: 2^depth buckets
-        """
         self.depth = depth
         self.num_buckets = 2 ** depth
 
     def _cantor_pairing(self, x: int, y: int) -> int:
-        """
-        Classic Cantor pairing function.
-
-        Maps (x, y) ∈ ℕ² → ℕ bijectively.
-        Ensures every 2D position gets unique fingerprint.
-        """
         return (x + y) * (x + y + 1) // 2 + y
-
-    def _cantor_pairing_recursive(self, coords: List[int]) -> int:
-        """
-        Extend Cantor pairing to N dimensions recursively.
-
-        cantor(x, y, z) = cantor(cantor(x, y), z)
-        """
-        if len(coords) == 1:
-            return coords[0]
-        elif len(coords) == 2:
-            return self._cantor_pairing(coords[0], coords[1])
-        else:
-            # Recursively pair
-            result = self._cantor_pairing(coords[0], coords[1])
-            for i in range(2, len(coords)):
-                result = self._cantor_pairing(result, coords[i])
-            return result
 
     def compute_fingerprints(
         self,
@@ -88,40 +157,18 @@ class GeometricCantorFingerprinter:
         grid_size: int,
         device: torch.device = torch.device('cpu')
     ) -> torch.Tensor:
-        """
-        Compute Cantor fingerprint for each patch.
-
-        Process:
-        1. Get 2D position (x, y)
-        2. Apply Cantor pairing → unique ID
-        3. Normalize to [0, 1] via depth bucketing
-
-        Args:
-            num_patches: Total number of patches
-            grid_size: Patches per side (e.g., 8 for 8x8 grid)
-            device: Device for tensor
-
-        Returns:
-            fingerprints: [num_patches] normalized Cantor coordinates in [0, 1]
-        """
         fingerprints = torch.zeros(num_patches, device=device, dtype=torch.float32)
 
-        # Compute max possible Cantor value for normalization
         max_coord = grid_size - 1
         max_cantor = self._cantor_pairing(max_coord, max_coord)
 
         for idx in range(num_patches):
-            # Get 2D grid position
             y = idx // grid_size
             x = idx % grid_size
 
-            # Apply Cantor pairing
             cantor_value = self._cantor_pairing(x, y)
-
-            # Normalize to [0, 1]
             normalized = cantor_value / max(1, max_cantor)
 
-            # Apply depth bucketing for granularity control
             bucket = int(normalized * (self.num_buckets - 1))
             bucketed_value = bucket / (self.num_buckets - 1)
 
@@ -131,459 +178,443 @@ class GeometricCantorFingerprinter:
 
 
 # ============================================================================
-# CANTOR EXPERT WITH REDUNDANT COVERAGE
+# CANTOR EXPERT WITH PENTACHORON GEOMETRY
 # ============================================================================
 
 @dataclass
 class CantorExpertConfig:
-    """Configuration for a Cantor expert with overlap support."""
+    """Configuration for single Cantor expert."""
     expert_id: int
     num_experts: int
     full_feature_dim: int
     expert_dim: int
     num_heads: int
-    overlap_factor: float = 0.5  # NEW: Controls redundancy (0=no overlap, 1=full overlap)
-    dropout: float = 0.1
-    alpha_init: float = 1.0
+    alpha_init: float = 0.5
     beta_init: float = 0.3
+    dropout: float = 0.1
 
 
 class CantorExpert(nn.Module):
     """
-    Single expert with:
-    - Sparse QKV on feature slice
-    - Overlapping fingerprint region (configurable redundancy)
-    - Pentachoron 5-way projection
-    - Alpha/Beta learning
+    Cantor Expert with Pentachoron Geometric Opinion Structure.
+
+    Architecture:
+    1. Receives patches via Cantor fingerprint routing (deterministic)
+    2. Forms opinion via pentachoron geometry (learned 5-vertex simplex)
+    3. Query navigates k-simplex structure
+    4. Role-weighted projections (anchor/need/relation/purpose/observer)
+    5. Alpha visibility + Beta binding for collective consensus
     """
 
-    def __init__(self, config: CantorExpertConfig):
+    def __init__(
+        self,
+        config: CantorExpertConfig,
+        fp_min: float,
+        fp_max: float,
+        neighbor_ids: List[int]
+    ):
         super().__init__()
 
         self.expert_id = config.expert_id
         self.num_experts = config.num_experts
-        self.full_feature_dim = config.full_feature_dim
-        self.expert_dim = config.expert_dim
-        self.num_heads = config.num_heads
-        self.head_dim = config.expert_dim // config.num_heads
-        self.overlap_factor = config.overlap_factor
+        self.fp_min = fp_min
+        self.fp_max = fp_max
+        self.neighbor_ids = neighbor_ids
 
-        # Fingerprint range with overlap
-        # Without overlap: each expert gets 1/N of space
-        # With overlap: experts can share regions
-        base_width = 1.0 / config.num_experts
-        overlap_extend = base_width * config.overlap_factor
+        # Feature slice for this expert (each expert handles 1/num_heads of features)
+        self.slice_size = config.full_feature_dim // config.num_heads
+        self.slice_start = config.expert_id % config.num_heads * self.slice_size
+        self.slice_end = self.slice_start + self.slice_size
 
-        self.fp_min = max(0.0, (config.expert_id / config.num_experts) - overlap_extend)
-        self.fp_max = min(1.0, ((config.expert_id + 1) / config.num_experts) + overlap_extend)
+        # ====================================================================
+        # PENTACHORON GEOMETRY (5-vertex learned simplex)
+        # ====================================================================
+        # Like David's crystals, each vertex has semantic role
+        self.pentachoron_vertices = nn.Parameter(
+            torch.randn(5, config.expert_dim) * 0.02
+        )
 
-        # Feature slice allocation (sparse)
-        slice_size = config.full_feature_dim // config.num_experts
-        self.slice_start = config.expert_id * slice_size
-        self.slice_end = self.slice_start + slice_size
-        self.slice_size = slice_size
+        # Role weights (anchor, need, relation, purpose, observer)
+        role_weights = torch.tensor([1.0, -0.75, 0.75, 0.75, -0.75])
+        self.register_buffer("role_weights", role_weights)
 
-        # Alpha: Learned visibility
+        # ====================================================================
+        # QUERY AS K-SIMPLEX NAVIGATION
+        # ====================================================================
+        # Query learns to navigate through pentachoron geometry
+        self.q_proj = nn.Linear(self.slice_size, config.expert_dim)
+
+        # Query refinement via vertex attention (learns geometric paths)
+        self.q_vertex_attention = nn.MultiheadAttention(
+            config.expert_dim,
+            num_heads=1,
+            batch_first=True,
+            dropout=config.dropout
+        )
+
+        # ====================================================================
+        # KEY/VALUE GEOMETRIC PROJECTIONS
+        # ====================================================================
+        self.k_proj = nn.Linear(self.slice_size, config.expert_dim)
+        self.v_proj = nn.Linear(self.slice_size, config.expert_dim)
+
+        # Output projection
+        self.out_proj = nn.Linear(config.expert_dim, self.slice_size)
+        self.dropout = nn.Dropout(config.dropout)
+
+        # ====================================================================
+        # ALPHA VISIBILITY (per-expert gating)
+        # ====================================================================
         self.alpha = nn.Parameter(torch.tensor(config.alpha_init))
         self.alpha_gate = nn.Sequential(
-            nn.Linear(slice_size, slice_size // 4),
+            nn.Linear(config.expert_dim, config.expert_dim // 2),
+            nn.LayerNorm(config.expert_dim // 2),
             nn.GELU(),
-            nn.Linear(slice_size // 4, 1),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.expert_dim // 2, 1),
             nn.Sigmoid()
         )
 
-        # Sparse QKV (only on feature slice)
-        self.q_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
-        self.k_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
-        self.v_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
-
-        # Pentachoron: 5 projection directions for cross-contamination
-        self.pentachoron = nn.Parameter(torch.randn(5, config.expert_dim) * 0.02)
-
-        # Beta: Binding weights to neighbors
+        # ====================================================================
+        # BETA BINDING (inter-expert connections)
+        # ====================================================================
         self.betas = nn.ParameterDict()
-        for i in range(config.num_experts):
-            if abs(i - config.expert_id) <= 2 and i != config.expert_id:
-                self.betas[f"expert_{i}"] = nn.Parameter(torch.tensor(config.beta_init))
+        for neighbor_id in neighbor_ids:
+            if neighbor_id != config.expert_id:
+                self.betas[f"expert_{neighbor_id}"] = nn.Parameter(
+                    torch.tensor(config.beta_init)
+                )
 
-        # Output projection
-        self.out_proj = nn.Linear(config.expert_dim, slice_size, bias=False)
-        self.dropout = nn.Dropout(config.dropout)
+    def get_pentachoron_vertices(self) -> torch.Tensor:
+        """Get vertices for geometric loss."""
+        return self.pentachoron_vertices
 
-        self._init_weights()
+    def project_through_pentachoron(
+        self,
+        features: torch.Tensor,
+        use_role_weights: bool = True
+    ) -> torch.Tensor:
+        """
+        Project features through pentachoron with role weighting.
 
-    def _init_weights(self):
-        for module in [self.q_proj, self.k_proj, self.v_proj, self.out_proj]:
-            nn.init.xavier_uniform_(module.weight, gain=0.5)
+        Like David's Rose loss mechanism.
 
-        with torch.no_grad():
-            self.pentachoron.data = F.normalize(self.pentachoron.data, dim=-1)
+        Args:
+            features: [B, P, expert_dim]
+            use_role_weights: Apply semantic role weights
+
+        Returns:
+            projection: [B, P, 1] aggregated geometric projection
+        """
+        B, P, D = features.shape
+
+        # Normalize
+        vertices_norm = F.normalize(self.pentachoron_vertices, dim=-1)
+        features_norm = F.normalize(features, dim=-1)
+
+        # Similarity to each vertex [B, P, 5]
+        similarities = torch.einsum('bpd,vd->bpv', features_norm, vertices_norm)
+
+        if use_role_weights:
+            # Apply role-based weighting
+            role_weighted = similarities * self.role_weights.view(1, 1, 5)
+            projection = role_weighted.sum(dim=-1, keepdim=True)  # [B, P, 1]
+        else:
+            # Simple average
+            projection = similarities.mean(dim=-1, keepdim=True)
+
+        return projection
 
     def forward(
         self,
-        tokens: torch.Tensor,           # [batch, num_patches, full_feature_dim]
-        fingerprints: torch.Tensor      # [num_patches]
+        tokens: torch.Tensor,
+        fingerprints: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
-        Process tokens in fingerprint region.
+        Process tokens via pentachoron geometric opinion formation.
 
-        Returns dict with expert outputs for fusion.
+        Args:
+            tokens: [B, P, full_feature_dim] patch features
+            fingerprints: [P] Cantor coordinates
+
+        Returns:
+            Dict with expert's geometric opinion
         """
-        batch_size, num_patches, _ = tokens.shape
+        B, P, D = tokens.shape
         device = tokens.device
 
-        # Select tokens in MY fingerprint region (with overlap!)
-        # Use <= for upper bound on last expert to catch 1.0
+        # ====================================================================
+        # CANTOR ROUTING: Which patches does this expert handle?
+        # ====================================================================
         if self.expert_id == self.num_experts - 1:
+            # Last expert catches boundary
             mask = (fingerprints >= self.fp_min) & (fingerprints <= self.fp_max)
         else:
             mask = (fingerprints >= self.fp_min) & (fingerprints < self.fp_max)
 
         if not mask.any():
+            # No patches assigned - return empty
             return {
-                'projections': [],
+                'output': torch.zeros(B, P, self.slice_size, device=device),
                 'mask': mask,
-                'K': None,
-                'Q': None,
-                'V': None,
-                'betas': self.betas,
+                'geometric_scores': torch.zeros(B, P, device=device),
                 'expert_id': self.expert_id,
-                'fp_range': (self.fp_min, self.fp_max)
+                'betas': self.betas
             }
 
-        # Extract MY feature slice
-        my_tokens = tokens[:, mask]
-        my_features = my_tokens[..., self.slice_start:self.slice_end]
+        # Extract feature slice for this expert
+        tokens_slice = tokens[:, :, self.slice_start:self.slice_end]
 
-        # Alpha-gated visibility
-        alpha_gate = self.alpha_gate(my_features)
+        # ====================================================================
+        # QUERY: K-SIMPLEX NAVIGATION
+        # ====================================================================
+        # Query learns to navigate pentachoron structure
+        Q = self.q_proj(tokens_slice)  # [B, P, expert_dim]
+
+        # Refine query by attending to pentachoron vertices (learns geometric paths)
+        vertices_expanded = self.pentachoron_vertices.unsqueeze(0).expand(B, -1, -1)
+        Q_refined, _ = self.q_vertex_attention(
+            Q,  # query
+            vertices_expanded,  # key = pentachoron vertices
+            vertices_expanded   # value = pentachoron vertices
+        )
+        Q = Q + Q_refined  # Residual
+
+        # ====================================================================
+        # KEY/VALUE: GEOMETRIC PROJECTIONS
+        # ====================================================================
+        K = self.k_proj(tokens_slice)
+        V = self.v_proj(tokens_slice)
+
+        # Project through pentachoron geometry
+        K_geometric = self.project_through_pentachoron(K, use_role_weights=True)
+        V_geometric = self.project_through_pentachoron(V, use_role_weights=True)
+
+        # ====================================================================
+        # GEOMETRIC ATTENTION
+        # ====================================================================
+        # Attention scores modulated by geometric projections
+        scores = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(K.shape[-1])
+
+        # Modulate by K's geometric projection
+        geometric_modulation = K_geometric.squeeze(-1)  # [B, P]
+        scores = scores * geometric_modulation.unsqueeze(1)
+
+        # Apply expert mask
+        mask_float = mask.float().unsqueeze(0).unsqueeze(1)  # [1, 1, P]
+        scores = scores.masked_fill(mask_float == 0, float('-inf'))
+
+        # Softmax attention
+        attn = F.softmax(scores, dim=-1)
+        attn = attn.masked_fill(torch.isnan(attn), 0)
+        attn = self.dropout(attn)
+
+        # Apply attention to values
+        output = torch.bmm(attn, V)
+
+        # Further modulate by V's geometric projection
+        output = output * V_geometric
+
+        # ====================================================================
+        # ALPHA VISIBILITY GATING
+        # ====================================================================
         alpha_weight = torch.sigmoid(self.alpha)
-        my_features = my_features * (alpha_gate * alpha_weight + (1 - alpha_weight))
+        alpha_context = self.alpha_gate(output.mean(dim=1, keepdim=True))
+        visibility = alpha_weight * alpha_context
 
-        # Sparse QKV
-        Q = self.q_proj(my_features)
-        K = self.k_proj(my_features)
-        V = self.v_proj(my_features)
+        output = output * visibility
 
-        # Pentachoron projections (5-way cross-contamination)
-        projections = []
-        for vertex_id, vertex in enumerate(self.pentachoron):
-            direction = F.normalize(vertex, dim=-1)
+        # ====================================================================
+        # PROJECT BACK TO FEATURE SLICE
+        # ====================================================================
+        output = self.out_proj(output)
+        output = self.dropout(output)
 
-            K_proj = torch.einsum('bpd,d->bp', K, direction)
-            Q_proj = torch.einsum('bpd,d->bp', Q, direction)
-            V_proj = torch.einsum('bpd,d->bp', V, direction)
-
-            projections.append({
-                'K': K_proj,
-                'Q': Q_proj,
-                'V': V_proj,
-                'direction': vertex_id,
-                'expert_id': self.expert_id
-            })
+        # Zero out non-assigned patches
+        output = output * mask_float.transpose(1, 2)
 
         return {
-            'projections': projections,
+            'output': output,
             'mask': mask,
-            'K': K,
-            'Q': Q,
-            'V': V,
-            'betas': self.betas,
+            'geometric_scores': geometric_modulation,  # [B, P]
             'expert_id': self.expert_id,
-            'fp_range': (self.fp_min, self.fp_max)
+            'betas': self.betas
         }
 
 
 # ============================================================================
-# COLLECTIVE FUSION ATTENTION
-# ============================================================================
-
-@dataclass
-class CollectiveFusionConfig:
-    """Config for collective fusion of expert opinions."""
-    num_experts: int = 16
-    expert_dim: int = 128
-    num_heads: int = 8
-    cantor_depth: int = 8
-    temperature: float = 0.07
-    dropout: float = 0.1
-
-
-class CollectiveFusionAttention(nn.Module):
-    """
-    Fuse overlapping expert opinions through geometric attention.
-
-    Key: Experts have REDUNDANT coverage, so multiple experts
-    vote on same patches. This attention mechanism aggregates
-    those votes through Cantor-based geometric routing.
-    """
-
-    def __init__(self, config: CollectiveFusionConfig):
-        super().__init__()
-
-        self.num_experts = config.num_experts
-        self.expert_dim = config.expert_dim
-        self.num_heads = config.num_heads
-        self.head_dim = config.expert_dim // config.num_heads
-
-        self.temperature = nn.Parameter(torch.tensor(config.temperature))
-        self.dropout = nn.Dropout(config.dropout)
-
-        # Expert position embeddings (learned)
-        self.expert_pos_embed = nn.Parameter(
-            torch.randn(config.num_experts, config.expert_dim) * 0.02
-        )
-
-    def forward(
-        self,
-        expert_outputs: List[Dict[str, torch.Tensor]],
-        num_patches: int,
-        device: torch.device
-    ) -> torch.Tensor:
-        """
-        Aggregate expert opinions through collective voting.
-
-        Args:
-            expert_outputs: List of dicts from each expert
-            num_patches: Total patches
-            device: Device
-
-        Returns:
-            fused: [batch, num_patches] - aggregated opinion values
-        """
-        # Get batch size
-        batch_size = None
-        for output in expert_outputs:
-            if output['K'] is not None:
-                batch_size = output['K'].shape[0]
-                break
-
-        if batch_size is None:
-            raise ValueError("No valid expert outputs")
-
-        # For each patch, collect all expert votes
-        patch_votes = torch.zeros(batch_size, num_patches, device=device)
-        patch_vote_counts = torch.zeros(num_patches, device=device)
-
-        # Collect projections across 5 directions
-        for direction_id in range(5):
-            direction_votes = torch.zeros(batch_size, num_patches, device=device)
-            direction_weights = torch.zeros(batch_size, num_patches, device=device)
-
-            for expert_id, output in enumerate(expert_outputs):
-                if not output['projections']:
-                    continue
-
-                mask = output['mask']
-                if not mask.any():
-                    continue
-
-                # Find projection for this direction
-                proj = next((p for p in output['projections'] if p['direction'] == direction_id), None)
-                if proj is None:
-                    continue
-
-                # Get expert's votes for patches in its region
-                V_proj = proj['V']  # [batch, my_patches]
-
-                # Expert position modulation
-                expert_pos = self.expert_pos_embed[expert_id]
-                pos_weight = torch.sigmoid(expert_pos.mean())
-
-                # Beta modulation from neighbors
-                beta_weight = 1.0
-                betas = output['betas']
-                if betas:
-                    beta_sum = sum(torch.sigmoid(b) for b in betas.values())
-                    beta_weight = 1.0 + beta_sum / len(betas)
-
-                # Aggregate vote with weights
-                weighted_vote = V_proj * pos_weight * beta_weight
-
-                # Place in global tensor
-                direction_votes[:, mask] += weighted_vote
-                direction_weights[:, mask] += pos_weight * beta_weight
-
-                # Track vote count
-                patch_vote_counts[mask] += 1
-
-            # Normalize by weights
-            direction_weights = direction_weights.clamp(min=1e-6)
-            direction_votes = direction_votes / direction_weights
-
-            # Accumulate across directions
-            patch_votes += direction_votes
-
-        # Average across 5 directions
-        patch_votes = patch_votes / 5.0
-
-        # Temperature scaling
-        patch_votes = patch_votes / self.temperature.abs()
-
-        return patch_votes
-
-
-# ============================================================================
-# CANTOR MoE LAYER WITH COLLECTIVE FUSION
+# CANTOR MOE LAYER
 # ============================================================================
 
 @dataclass
 class CantorMoEConfig:
-    """Config for Cantor MoE with collective consensus."""
+    """Configuration for Cantor MoE layer."""
     num_experts: int = 16
     full_feature_dim: int = 1024
-    expert_dim: int = 128
+    expert_dim: int = 64
     num_heads: int = 8
     cantor_depth: int = 8
-    overlap_factor: float = 0.5  # NEW: Expert overlap for redundancy
-    dropout: float = 0.1
-    alpha_init: float = 1.0
+    overlap_factor: float = 0.5
+    alpha_init: float = 0.5
     beta_init: float = 0.3
+    dropout: float = 0.1
 
 
 class CantorMoELayer(nn.Module):
     """
-    Cantor MoE with overlapping experts and collective fusion.
+    Cantor Mixture-of-Experts with Geometric Pentachoron Structure.
+
+    Multiple experts with overlapping regions form collective consensus.
     """
 
     def __init__(self, config: CantorMoEConfig):
         super().__init__()
 
+        self.config = config
         self.num_experts = config.num_experts
-        self.full_feature_dim = config.full_feature_dim
 
-        # Create experts (with overlap!)
-        self.experts = nn.ModuleList([
-            CantorExpert(CantorExpertConfig(
-                expert_id=i,
+        # Expert fingerprint ranges (with overlap)
+        expert_ranges = self._compute_expert_ranges(
+            config.num_experts,
+            config.overlap_factor
+        )
+
+        # Create experts
+        self.experts = nn.ModuleList()
+        for expert_id in range(config.num_experts):
+            fp_min, fp_max = expert_ranges[expert_id]
+
+            # Neighbors (for beta binding)
+            neighbor_ids = list(range(max(0, expert_id - 2), min(config.num_experts, expert_id + 3)))
+
+            expert_config = CantorExpertConfig(
+                expert_id=expert_id,
                 num_experts=config.num_experts,
                 full_feature_dim=config.full_feature_dim,
                 expert_dim=config.expert_dim,
                 num_heads=config.num_heads,
-                overlap_factor=config.overlap_factor,
-                dropout=config.dropout,
                 alpha_init=config.alpha_init,
-                beta_init=config.beta_init
-            ))
-            for i in range(config.num_experts)
-        ])
+                beta_init=config.beta_init,
+                dropout=config.dropout
+            )
 
-        # Collective fusion
-        self.fusion = CollectiveFusionAttention(CollectiveFusionConfig(
-            num_experts=config.num_experts,
-            expert_dim=config.expert_dim,
-            num_heads=config.num_heads,
-            cantor_depth=config.cantor_depth,
-            dropout=config.dropout
-        ))
+            expert = CantorExpert(expert_config, fp_min, fp_max, neighbor_ids)
+            self.experts.append(expert)
 
-        # Layer norm
-        self.norm = nn.LayerNorm(config.full_feature_dim)
+    def _compute_expert_ranges(
+        self,
+        num_experts: int,
+        overlap_factor: float
+    ) -> List[Tuple[float, float]]:
+        """Compute overlapping fingerprint ranges."""
+        base_width = 1.0 / num_experts
+        overlap_width = base_width * overlap_factor
+
+        ranges = []
+        for i in range(num_experts):
+            fp_min = max(0.0, i * base_width - overlap_width / 2)
+            fp_max = min(1.0, (i + 1) * base_width + overlap_width / 2)
+            ranges.append((fp_min, fp_max))
+
+        return ranges
+
+    def get_all_pentachora(self) -> List[torch.Tensor]:
+        """Get all expert pentachora for geometric loss."""
+        return [expert.get_pentachoron_vertices() for expert in self.experts]
 
     def forward(
         self,
-        x: torch.Tensor,
+        tokens: torch.Tensor,
         fingerprints: torch.Tensor
     ) -> torch.Tensor:
         """
-        Forward through MoE with collective fusion.
+        Process tokens through collective expert voting.
+
+        Args:
+            tokens: [B, P, full_feature_dim]
+            fingerprints: [P] Cantor coordinates
+
+        Returns:
+            output: [B, P, full_feature_dim] fused expert opinions
         """
-        batch_size, num_patches, _ = x.shape
-        device = x.device
+        B, P, D = tokens.shape
+        device = tokens.device
 
-        # Normalize
-        x_norm = self.norm(x)
-
-        # Process through all experts (with overlap!)
+        # Collect expert outputs
         expert_outputs = []
         for expert in self.experts:
-            output = expert(x_norm, fingerprints)
-            expert_outputs.append(output)
+            expert_out = expert(tokens, fingerprints)
+            expert_outputs.append(expert_out)
 
-        # Collective fusion
-        fused_1d = self.fusion(expert_outputs, num_patches, device)
+        # ====================================================================
+        # COLLECTIVE FUSION via Beta-Weighted Consensus
+        # ====================================================================
+        # Each expert contributes to patches in its region
+        # Overlap means multiple experts vote on same patches
 
-        # Reconstruct from expert slices
-        reconstructed = torch.zeros_like(x)
+        fused_output = torch.zeros(B, P, D, device=device)
+        vote_counts = torch.zeros(B, P, 1, device=device)
 
-        for expert_id, output in enumerate(expert_outputs):
-            if output['K'] is None:
-                continue
+        for expert_out in expert_outputs:
+            output = expert_out['output']
+            mask = expert_out['mask']
+            expert_id = expert_out['expert_id']
 
-            mask = output['mask']
-            expert = self.experts[expert_id]
+            # Reconstruct full feature vector (expert only outputs its slice)
+            full_output = torch.zeros(B, P, D, device=device)
 
-            # Attended values
-            attended_vals = fused_1d[:, mask]
+            # Determine slice position
+            slice_size = D // self.config.num_heads
+            head_idx = expert_id % self.config.num_heads
+            start_idx = head_idx * slice_size
+            end_idx = start_idx + slice_size
 
-            # Expand and project
-            attended_expanded = attended_vals.unsqueeze(-1).expand(-1, -1, expert.expert_dim)
-            output_slice = expert.out_proj(attended_expanded)
+            full_output[:, :, start_idx:end_idx] = output
 
-            # Accumulate (overlaps will be averaged)
-            reconstructed[:, mask, expert.slice_start:expert.slice_end] += output_slice
+            # Weight by mask (only contribute to assigned patches)
+            mask_weight = mask.float().unsqueeze(0).unsqueeze(-1)
+            fused_output += full_output * mask_weight
+            vote_counts += mask_weight
 
-        # Average overlapping contributions
-        # Count how many experts contributed to each position
-        contribution_count = torch.zeros(batch_size, num_patches, self.full_feature_dim, device=device)
-        for output in expert_outputs:
-            if output['K'] is not None:
-                mask = output['mask']
-                expert_id = output['expert_id']
-                expert = self.experts[expert_id]
-                contribution_count[:, mask, expert.slice_start:expert.slice_end] += 1
+        # Average across voting experts
+        vote_counts = vote_counts.clamp(min=1)
+        fused_output = fused_output / vote_counts
 
-        contribution_count = contribution_count.clamp(min=1)
-        reconstructed = reconstructed / contribution_count
-
-        return x + reconstructed
+        return fused_output
 
 
 # ============================================================================
-# ViT-BEANS MAIN MODEL
+# VIT-BEANS MODEL
 # ============================================================================
 
 @dataclass
 class ViTBeansConfig:
-    """Complete ViT-Beans config."""
-    # Image
-    image_size: int = 224
-    patch_size: int = 16
+    """Configuration for ViT-Beans."""
+    image_size: int = 32
+    patch_size: int = 4
     in_channels: int = 3
-
-    # Architecture
-    num_layers: int = 12
+    num_layers: int = 8
     feature_dim: int = 1024
     num_experts: int = 16
-    expert_dim: int = 128
+    expert_dim: int = 64
     num_heads: int = 8
     mlp_ratio: float = 4.0
-
-    # Cantor (FIXED - removed fake dimensions)
     cantor_depth: int = 8
-    overlap_factor: float = 0.5  # Expert redundancy
-
-    # Learning
-    alpha_init: float = 1.0
+    overlap_factor: float = 0.5
+    alpha_init: float = 0.5
     beta_init: float = 0.3
     dropout: float = 0.1
-
-    # Classification
-    num_classes: int = 1000
-
-    def __post_init__(self):
-        assert self.feature_dim % self.num_experts == 0
+    num_classes: int = 100
 
 
 class ViTBeans(nn.Module):
     """
-    ViT-Beans: Vision Transformer with Cantor Expert Collective
+    ViT-Beans: Vision Transformer with Geometric Cantor Expert Collective.
 
-    FIXED:
-    - Removed false "dimensional" Cantor
-    - Proper geometric fingerprinting (position → Cantor coordinate)
-    - Experts OVERLAP (configurable redundancy)
-    - Collective fusion aggregates redundant expert votes
+    Combines:
+    - Cantor fingerprinting for spatial routing
+    - Pentachoron geometry for opinion formation
+    - Collective consensus through redundant expert coverage
     """
 
     def __init__(self, config: ViTBeansConfig):
@@ -591,10 +622,9 @@ class ViTBeans(nn.Module):
 
         self.config = config
 
-        # Patches
-        assert config.image_size % config.patch_size == 0
+        # Image dimensions
+        self.num_patches = (config.image_size // config.patch_size) ** 2
         self.grid_size = config.image_size // config.patch_size
-        self.num_patches = self.grid_size ** 2
 
         # Patch embedding
         self.patch_embed = nn.Conv2d(
@@ -614,14 +644,14 @@ class ViTBeans(nn.Module):
             torch.randn(1, 1, config.feature_dim) * 0.02
         )
 
-        # Cantor fingerprinter (FIXED)
+        # Cantor fingerprinter
         self.fingerprinter = GeometricCantorFingerprinter(depth=config.cantor_depth)
 
         # Cache fingerprints
         self.register_buffer('patch_fingerprints', torch.zeros(self.num_patches))
         self._fingerprints_computed = False
 
-        # Transformer layers
+        # Transformer layers with Cantor MoE
         self.layers = nn.ModuleList([
             nn.ModuleDict({
                 'cantor_moe': CantorMoELayer(CantorMoEConfig(
@@ -651,15 +681,12 @@ class ViTBeans(nn.Module):
         self.norm = nn.LayerNorm(config.feature_dim)
         self.head = nn.Linear(config.feature_dim, config.num_classes)
 
-        self._init_weights()
-
-    def _init_weights(self):
-        nn.init.xavier_uniform_(self.patch_embed.weight)
-        if self.patch_embed.bias is not None:
-            nn.init.zeros_(self.patch_embed.bias)
-
-        nn.init.xavier_uniform_(self.head.weight)
-        nn.init.zeros_(self.head.bias)
+        # Geometric loss
+        self.geometric_loss = PentachoronGeometricLoss(
+            volume_floor=0.1,
+            edge_uniformity_weight=0.1,
+            gram_weight=0.05
+        )
 
     def _compute_fingerprints(self, device: torch.device):
         """Compute and cache Cantor fingerprints."""
@@ -669,23 +696,40 @@ class ViTBeans(nn.Module):
                 self.grid_size,
                 device
             )
-            # CRITICAL: Must use copy_() to update registered buffer
             self.patch_fingerprints.copy_(fingerprints)
             self._fingerprints_computed = True
 
+    def get_geometric_loss(self) -> torch.Tensor:
+        """Compute geometric loss across all expert pentachora."""
+        all_pentachora = []
+        for layer in self.layers:
+            layer_pentachora = layer['cantor_moe'].get_all_pentachora()
+            all_pentachora.extend(layer_pentachora)
+
+        return self.geometric_loss(all_pentachora)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size = x.shape[0]
+        """
+        Forward pass.
+
+        Args:
+            x: [B, C, H, W] images
+
+        Returns:
+            logits: [B, num_classes]
+        """
+        B = x.shape[0]
         device = x.device
 
-        # Compute fingerprints
+        # Compute fingerprints if needed
         self._compute_fingerprints(device)
 
         # Patch embedding
-        x = self.patch_embed(x)
-        x = x.flatten(2).transpose(1, 2)
+        x = self.patch_embed(x)  # [B, D, H/P, W/P]
+        x = x.flatten(2).transpose(1, 2)  # [B, P, D]
 
         # Add CLS token
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat([cls_tokens, x], dim=1)
 
         # Add positional embedding
@@ -693,7 +737,7 @@ class ViTBeans(nn.Module):
 
         # Transformer layers
         for layer in self.layers:
-            # MoE (skip CLS)
+            # Cantor MoE (skip CLS)
             x_patches = x[:, 1:]
             x_patches = layer['cantor_moe'](x_patches, self.patch_fingerprints)
             x = torch.cat([x[:, :1], x_patches], dim=1)
@@ -706,7 +750,7 @@ class ViTBeans(nn.Module):
         return self.head(x)
 
     def diagnose_coverage(self) -> Dict:
-        """Diagnose expert coverage (including overlaps)."""
+        """Diagnose expert coverage."""
         stats = {
             'num_experts': self.config.num_experts,
             'num_patches': self.num_patches,
@@ -714,13 +758,12 @@ class ViTBeans(nn.Module):
             'fingerprints': self.patch_fingerprints.cpu().numpy().tolist()
         }
 
-        # Get first layer experts
         first_moe = self.layers[0]['cantor_moe']
 
+        # Per-expert stats
         for expert_id, expert in enumerate(first_moe.experts):
             fp_min, fp_max = expert.fp_min, expert.fp_max
 
-            # Use same boundary logic as forward pass
             if expert_id == self.config.num_experts - 1:
                 mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints <= fp_max)
             else:
@@ -738,7 +781,6 @@ class ViTBeans(nn.Module):
         for expert_id, expert in enumerate(first_moe.experts):
             fp_min, fp_max = expert.fp_min, expert.fp_max
 
-            # Use same boundary logic
             if expert_id == self.config.num_experts - 1:
                 mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints <= fp_max)
             else:
@@ -747,81 +789,58 @@ class ViTBeans(nn.Module):
             all_masks.append(mask)
 
         all_masks = torch.stack(all_masks)
+        patches_covered = all_masks.any(dim=0).sum().item()
+        experts_per_patch = all_masks.sum(dim=0)
 
-        # Total coverage
-        covered = all_masks.any(dim=0)
-        stats['total_covered'] = covered.sum().item()
-        stats['coverage_percent'] = 100.0 * covered.sum().item() / self.num_patches
-
-        # Redundancy
-        redundancy = all_masks.sum(dim=0)  # How many experts per patch
-        stats['avg_experts_per_patch'] = redundancy.float().mean().item()
-        stats['max_experts_per_patch'] = redundancy.max().item()
-        stats['min_experts_per_patch'] = redundancy.min().item()
+        stats['total_covered'] = patches_covered
+        stats['coverage_percent'] = 100.0 * patches_covered / self.num_patches
+        stats['avg_experts_per_patch'] = experts_per_patch.float().mean().item()
+        stats['min_experts_per_patch'] = experts_per_patch.min().item()
+        stats['max_experts_per_patch'] = experts_per_patch.max().item()
 
         return stats
 
 
 # ============================================================================
-# DEMO
+# USAGE EXAMPLE
 # ============================================================================
 
 if __name__ == "__main__":
     print("=" * 80)
-    print("ViT-Beans: Fixed Cantor Expert Collective")
+    print("ViT-Beans: Geometric Cantor Expert Collective")
     print("=" * 80)
 
     config = ViTBeansConfig(
-        image_size=224,
-        patch_size=16,
-        num_layers=12,
-        feature_dim=1024,
+        image_size=32,
+        patch_size=4,
+        num_layers=4,
+        feature_dim=512,
         num_experts=16,
-        expert_dim=128,
-        overlap_factor=0.5,  # 50% overlap
-        cantor_depth=8,
-        num_classes=1000
+        expert_dim=64,
+        overlap_factor=0.5,
+        num_classes=100
     )
 
-    print(f"\nConfiguration:")
-    print(f"  Patches: {config.image_size // config.patch_size}x{config.image_size // config.patch_size} = {(config.image_size // config.patch_size)**2}")
-    print(f"  Experts: {config.num_experts}")
-    print(f"  Overlap Factor: {config.overlap_factor} (redundancy for consensus)")
-    print(f"  Cantor Depth: {config.cantor_depth} (proper fractal recursion)")
+    model = ViTBeans(config)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = ViTBeans(config).to(device)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"\nTotal Parameters: {total_params:,}")
+    # Force fingerprint computation
+    model._compute_fingerprints(torch.device('cpu'))
 
     # Test forward
-    x = torch.randn(2, 3, 224, 224, device=device)
-    model.eval()
-    with torch.no_grad():
-        logits = model(x)
-    print(f"\nForward Pass:")
-    print(f"  Input: {x.shape}")
-    print(f"  Output: {logits.shape}")
-    print(f"  ✓ Success")
+    x = torch.randn(2, 3, 32, 32)
+    logits = model(x)
+    print(f"\nForward pass: {x.shape} → {logits.shape}")
 
-    # Diagnose coverage
+    # Geometric loss
+    geo_loss = model.get_geometric_loss()
+    print(f"Geometric loss: {geo_loss.item():.4f}")
+
+    # Coverage
     coverage = model.diagnose_coverage()
-    print(f"\nExpert Coverage Diagnostic:")
-    print(f"  Total covered: {coverage['total_covered']}/{coverage['num_patches']} ({coverage['coverage_percent']:.1f}%)")
-    print(f"  Avg experts per patch: {coverage['avg_experts_per_patch']:.2f}")
-    print(f"  Min/Max experts per patch: {coverage['min_experts_per_patch']}/{coverage['max_experts_per_patch']}")
-
-    print(f"\nPer-Expert Allocation:")
-    for i in range(config.num_experts):
-        info = coverage[f'expert_{i}']
-        print(f"  Expert {i:2d}: {info['patches']:3d} patches, range {info['range']}, α={info['alpha']:.3f}")
+    print(f"\nCoverage: {coverage['total_covered']}/{coverage['num_patches']} ({coverage['coverage_percent']:.1f}%)")
+    print(f"Avg experts/patch: {coverage['avg_experts_per_patch']:.2f}")
+    print(f"Pentachoron geometry maintained via Cayley-Menger constraints")
 
     print("\n" + "=" * 80)
-    print("KEY FIXES:")
-    print("  ✓ Removed false 'dimensional' Cantor")
-    print("  ✓ Proper geometric fingerprinting (position → Cantor)")
-    print("  ✓ Configurable expert overlap (redundancy)")
-    print("  ✓ Collective fusion of redundant expert votes")
-    print("  ✓ Measurable expert utility through voting")
+    print("🏴‍☠️⚓ Cantor routes WHERE, Pentachoron defines HOW")
     print("=" * 80)
