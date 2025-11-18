@@ -333,6 +333,9 @@ class CantorExpert(nn.Module):
         """
         Process tokens via pentachoron geometric opinion formation.
 
+        CRITICAL: Only processes patches assigned to this expert.
+        No wasted computation, no contamination.
+
         Args:
             tokens: [B, P, full_feature_dim] patch features
             fingerprints: [P] Cantor coordinates
@@ -344,7 +347,7 @@ class CantorExpert(nn.Module):
         device = tokens.device
 
         # ====================================================================
-        # CANTOR ROUTING: Which patches does this expert handle?
+        # EARLY SELECTION: Determine MY patches FIRST
         # ====================================================================
         if self.expert_id == self.num_experts - 1:
             # Last expert catches boundary
@@ -362,55 +365,56 @@ class CantorExpert(nn.Module):
                 'betas': self.betas
             }
 
-        # Extract feature slice for this expert
-        tokens_slice = tokens[:, :, self.slice_start:self.slice_end]
+        # ====================================================================
+        # SELECT ONLY MY PATCHES (prevent contamination)
+        # ====================================================================
+        my_patch_indices = mask.nonzero(as_tuple=False).squeeze(-1)  # [num_my_patches]
+        num_my_patches = my_patch_indices.shape[0]
+
+        # Extract only MY patches
+        my_tokens = tokens[:, my_patch_indices, :]  # [B, num_my_patches, D]
+        my_tokens_slice = my_tokens[:, :, self.slice_start:self.slice_end]  # [B, num_my_patches, slice_size]
 
         # ====================================================================
-        # QUERY: K-SIMPLEX NAVIGATION
+        # QUERY: K-SIMPLEX NAVIGATION (only over MY patches)
         # ====================================================================
-        # Query learns to navigate pentachoron structure
-        Q = self.q_proj(tokens_slice)  # [B, P, expert_dim]
+        Q = self.q_proj(my_tokens_slice)  # [B, num_my_patches, expert_dim]
 
-        # Refine query by attending to pentachoron vertices (learns geometric paths)
+        # Refine query by attending to pentachoron vertices
         vertices_expanded = self.pentachoron_vertices.unsqueeze(0).expand(B, -1, -1)
         Q_refined, _ = self.q_vertex_attention(
-            Q,  # query
+            Q,  # query from MY patches
             vertices_expanded,  # key = pentachoron vertices
             vertices_expanded   # value = pentachoron vertices
         )
         Q = Q + Q_refined  # Residual
 
         # ====================================================================
-        # KEY/VALUE: GEOMETRIC PROJECTIONS
+        # KEY/VALUE: GEOMETRIC PROJECTIONS (only MY patches)
         # ====================================================================
-        K = self.k_proj(tokens_slice)
-        V = self.v_proj(tokens_slice)
+        K = self.k_proj(my_tokens_slice)  # [B, num_my_patches, expert_dim]
+        V = self.v_proj(my_tokens_slice)  # [B, num_my_patches, expert_dim]
 
         # Project through pentachoron geometry
         K_geometric = self.project_through_pentachoron(K, use_role_weights=True)
         V_geometric = self.project_through_pentachoron(V, use_role_weights=True)
 
         # ====================================================================
-        # GEOMETRIC ATTENTION
+        # GEOMETRIC ATTENTION (ONLY over MY patches - no contamination)
         # ====================================================================
         # Attention scores modulated by geometric projections
         scores = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(K.shape[-1])
 
         # Modulate by K's geometric projection
-        geometric_modulation = K_geometric.squeeze(-1)  # [B, P]
+        geometric_modulation = K_geometric.squeeze(-1)  # [B, num_my_patches]
         scores = scores * geometric_modulation.unsqueeze(1)
 
-        # Apply expert mask
-        mask_float = mask.float().unsqueeze(0).unsqueeze(1)  # [1, 1, P]
-        scores = scores.masked_fill(mask_float == 0, float('-inf'))
-
-        # Softmax attention
+        # No masking needed - all patches are valid (we pre-selected)
         attn = F.softmax(scores, dim=-1)
-        attn = attn.masked_fill(torch.isnan(attn), 0)
         attn = self.dropout(attn)
 
         # Apply attention to values
-        output = torch.bmm(attn, V)
+        output = torch.bmm(attn, V)  # [B, num_my_patches, expert_dim]
 
         # Further modulate by V's geometric projection
         output = output * V_geometric
@@ -427,16 +431,26 @@ class CantorExpert(nn.Module):
         # ====================================================================
         # PROJECT BACK TO FEATURE SLICE
         # ====================================================================
-        output = self.out_proj(output)
+        output = self.out_proj(output)  # [B, num_my_patches, slice_size]
         output = self.dropout(output)
 
-        # Zero out non-assigned patches
-        output = output * mask_float.transpose(1, 2)
+        # ====================================================================
+        # SCATTER BACK to full patch dimension
+        # ====================================================================
+        output_full = torch.zeros(B, P, self.slice_size, device=device)
+
+        # Use advanced indexing to scatter
+        batch_indices = torch.arange(B, device=device).unsqueeze(1).expand(-1, num_my_patches)
+        output_full[batch_indices, my_patch_indices.unsqueeze(0).expand(B, -1), :] = output
+
+        # Prepare geometric scores (full dimension for consistency)
+        geometric_scores_full = torch.zeros(B, P, device=device)
+        geometric_scores_full[batch_indices, my_patch_indices.unsqueeze(0).expand(B, -1)] = geometric_modulation
 
         return {
-            'output': output,
+            'output': output_full,  # Only MY patches are non-zero
             'mask': mask,
-            'geometric_scores': geometric_modulation,  # [B, P]
+            'geometric_scores': geometric_scores_full,  # [B, P] with scores only for MY patches
             'expert_id': self.expert_id,
             'betas': self.betas
         }
