@@ -2,7 +2,13 @@
 ViT-Beans: Vision Transformer with Cantor Expert Attention Network System
 ==========================================================================
 
-FIXED: Dense fusion projection to eliminate information bottleneck.
+A sparse, geometric vision transformer using:
+- Multi-dimensional Cantor fingerprinting for token routing
+- Sparse expert QKV (each expert processes feature slice)
+- Pentachoron multi-directional projections (5-way cross-contamination)
+- Alpha (visibility) and Beta (binding) learning from VAE-Lyra
+- Cantor global attention with O(n) complexity
+- Geometric routing to fill Cantor dead space
 
 Author: AbstractPhil + Claude Sonnet 4.5
 License: Apache 2.0
@@ -129,7 +135,7 @@ class CantorExpert(nn.Module):
         self.slice_end = self.slice_start + slice_size
         self.slice_size = slice_size
 
-        # Alpha: Learned visibility
+        # Alpha: Learned visibility (VAE-Lyra mechanism)
         self.alpha = nn.Parameter(torch.tensor(config.alpha_init))
 
         # Alpha gating network
@@ -140,17 +146,19 @@ class CantorExpert(nn.Module):
             nn.Sigmoid()
         )
 
-        # Sparse QKV projections
+        # Sparse QKV projections (ONLY on feature slice)
         self.q_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
         self.k_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
         self.v_proj = nn.Linear(slice_size, config.expert_dim, bias=False)
 
-        # Pentachoron: 5 vertices = 5 projection directions for attention routing
+        # Pentachoron: 5 vertices = 5 projection directions
+        # This enables cross-contamination to fill Cantor dead space
         self.pentachoron = nn.Parameter(
             torch.randn(5, config.expert_dim) * 0.02
         )
 
         # Beta: Learned binding weights to neighbor experts
+        # Local binding (only to nearby experts in Cantor space)
         self.betas = nn.ParameterDict()
         for i in range(config.num_experts):
             if abs(i - config.expert_id) <= 2 and i != config.expert_id:
@@ -158,16 +166,13 @@ class CantorExpert(nn.Module):
                     torch.tensor(config.beta_init)
                 )
 
-        # Output projection (still needed for legacy compatibility)
-        self.out_proj = nn.Linear(config.expert_dim, slice_size, bias=False)
-
         self.dropout = nn.Dropout(config.dropout)
 
         self._init_weights()
 
     def _init_weights(self):
         """Initialize weights with Xavier uniform."""
-        for module in [self.q_proj, self.k_proj, self.v_proj, self.out_proj]:
+        for module in [self.q_proj, self.k_proj, self.v_proj]:
             nn.init.xavier_uniform_(module.weight, gain=0.5)
 
         # Normalize pentachoron vertices
@@ -177,13 +182,10 @@ class CantorExpert(nn.Module):
     def forward(
         self,
         tokens: torch.Tensor,           # [batch, num_patches, full_feature_dim]
-        fingerprints: torch.Tensor      # [num_patches]
+        fingerprints: torch.Tensor      # [num_patches] - Cantor coordinates
     ) -> Dict[str, torch.Tensor]:
         """
         Process tokens in my fingerprint region.
-
-        Pentachoron projections create attention affinities (scalars)
-        but V stays [batch, patches, expert_dim] to preserve information.
 
         Returns:
             Dict containing:
@@ -215,33 +217,32 @@ class CantorExpert(nn.Module):
         my_features = my_tokens[..., self.slice_start:self.slice_end]
         # [batch, my_patches, slice_size]
 
-        # 3. Alpha-gated visibility
+        # 3. Alpha-gated visibility (VAE-Lyra mechanism)
         alpha_gate = self.alpha_gate(my_features)  # [batch, my_patches, 1]
         alpha_weight = torch.sigmoid(self.alpha)
         my_features = my_features * (alpha_gate * alpha_weight + (1 - alpha_weight))
 
-        # 4. Sparse QKV computation
+        # 4. Sparse QKV computation (ONLY on my slice!)
         Q = self.q_proj(my_features)  # [batch, my_patches, expert_dim]
-        K = self.k_proj(my_features)  # [batch, my_patches, expert_dim]
-        V = self.v_proj(my_features)  # [batch, my_patches, expert_dim]
+        K = self.k_proj(my_features)
+        V = self.v_proj(my_features)
 
         # 5. Pentachoron multi-directional projection
-        # Project Q, K to scalars for attention affinity
-        # but keep V full-dimensional
+        # Each vertex projects into different latent region
+        # This creates 5-way cross-contamination to fill dead space
         projections = []
 
         for vertex_id, vertex in enumerate(self.pentachoron):
             direction = F.normalize(vertex, dim=-1)  # [expert_dim]
 
             # Project Q, K along this direction to get attention affinities (scalars)
-            K_affinity = torch.einsum('bpd,d->bp', K, direction)  # [batch, my_patches]
-            Q_affinity = torch.einsum('bpd,d->bp', Q, direction)  # [batch, my_patches]
+            K_affinity = torch.einsum('bpd,d->bp', K, direction)
+            Q_affinity = torch.einsum('bpd,d->bp', Q, direction)
 
-            # V stays FULL DIMENSIONAL
             projections.append({
-                'K_affinity': K_affinity,  # [batch, my_patches] - scalar affinity
-                'Q_affinity': Q_affinity,  # [batch, my_patches] - scalar affinity
-                'V': V,                     # [batch, my_patches, expert_dim] - FULL
+                'K_affinity': K_affinity,  # [batch, my_patches]
+                'Q_affinity': Q_affinity,  # [batch, my_patches]
+                'V': V,                     # [batch, my_patches, expert_dim]
                 'direction': vertex_id,
             })
 
@@ -249,15 +250,15 @@ class CantorExpert(nn.Module):
             'projections': projections,
             'mask': mask,
             'K': K,  # [batch, my_patches, expert_dim]
-            'Q': Q,  # [batch, my_patches, expert_dim]
-            'V': V,  # [batch, my_patches, expert_dim]
+            'Q': Q,
+            'V': V,
             'betas': self.betas,
             'attended_output': None
         }
 
 
 # ============================================================================
-# CANTOR GLOBAL ATTENTION (HANDLES VARIABLE PATCH COUNTS)
+# CANTOR GLOBAL ATTENTION
 # ============================================================================
 
 @dataclass
@@ -275,8 +276,6 @@ class CantorAttentionConfig:
 class CantorGlobalAttention(nn.Module):
     """
     Sparse O(n) attention using Cantor fingerprint routing.
-
-    Handles variable patch counts per expert correctly.
 
     Key features:
     - Pre-computed expert routing based on Cantor coordinates
@@ -359,9 +358,6 @@ class CantorGlobalAttention(nn.Module):
         """
         Fuse expert outputs through sparse geometric attention.
 
-        Handles variable patch counts per expert by flattening
-        neighbor and patch dimensions for attention.
-
         Args:
             expert_outputs: List of dicts from each expert
             num_patches: Total number of patches
@@ -390,9 +386,9 @@ class CantorGlobalAttention(nn.Module):
                     dir_id = proj['direction']
                     all_projections[dir_id].append({
                         'expert_id': expert_id,
-                        'K_affinity': proj['K_affinity'],  # [batch, patches_i] - scalar
-                        'Q_affinity': proj['Q_affinity'],  # [batch, patches_i] - scalar
-                        'V': proj['V'],                     # [batch, patches_i, expert_dim] - FULL
+                        'K_affinity': proj['K_affinity'],
+                        'Q_affinity': proj['Q_affinity'],
+                        'V': proj['V'],
                         'mask': output['mask']
                     })
 
@@ -404,7 +400,7 @@ class CantorGlobalAttention(nn.Module):
             if not dir_projs:
                 continue
 
-            # Initialize with full expert_dim
+            # Sparse attention within this direction
             attended_patches = torch.zeros(
                 batch_size, num_patches, self.expert_dim,
                 device=device, dtype=torch.float32
@@ -428,24 +424,24 @@ class CantorGlobalAttention(nn.Module):
                     continue
 
                 Q_affinity = my_proj['Q_affinity']  # [batch, my_patches]
-                mask_i = my_proj['mask']             # [num_patches]
+                mask_i = my_proj['mask']  # [num_patches]
 
                 # Gather neighbor projections
                 neighbor_projs = [p for p in dir_projs if p['expert_id'] in neighbors]
                 if not neighbor_projs:
                     continue
 
-                # Stack neighbor K affinities and V values
+                # Stack neighbor K and V
                 K_affinities = []
                 V_values = []
                 neighbor_indices = []
 
                 for n_proj in neighbor_projs:
-                    K_affinities.append(n_proj['K_affinity'])  # [batch, neighbor_patches]
-                    V_values.append(n_proj['V'])                # [batch, neighbor_patches, expert_dim]
+                    K_affinities.append(n_proj['K_affinity'])
+                    V_values.append(n_proj['V'])
                     neighbor_indices.append(n_proj['expert_id'])
 
-                # Pad to same length for stacking
+                # Pad to same length
                 max_neighbor_patches = max(k.shape[1] for k in K_affinities)
 
                 K_affinities_padded = []
@@ -454,26 +450,22 @@ class CantorGlobalAttention(nn.Module):
                     if k_aff.shape[1] < max_neighbor_patches:
                         pad_size = max_neighbor_patches - k_aff.shape[1]
                         k_aff = F.pad(k_aff, (0, pad_size))
-                        v_val = F.pad(v_val, (0, 0, 0, pad_size))  # Pad patches dimension only
+                        v_val = F.pad(v_val, (0, 0, 0, pad_size))
                     K_affinities_padded.append(k_aff)
                     V_values_padded.append(v_val)
 
-                # Stack: [batch, num_neighbors, patches] and [batch, num_neighbors, patches, expert_dim]
                 K_affinity_stack = torch.stack(K_affinities_padded, dim=1)
                 V_stack = torch.stack(V_values_padded, dim=1)
 
-                # Compute attention scores with variable patch counts
-                # Outer product: [batch, my_patches, 1, 1] * [batch, 1, num_neighbors, neighbor_patches]
+                # Compute attention scores
                 scores = Q_affinity.unsqueeze(-1).unsqueeze(-1) * K_affinity_stack.unsqueeze(1)
-
-                # Flatten neighbor and patch dimensions for attention
                 B, my_patches, num_neighbors, neighbor_patches = scores.shape
-                scores = scores.reshape(B, my_patches, -1)  # [batch, my_patches, num_neighbors * neighbor_patches]
+                scores = scores.reshape(B, my_patches, -1)
 
                 scores = scores / math.sqrt(self.expert_dim)
                 scores = scores / self.temperature.abs()
 
-                # Apply beta modulation to scores from specific neighbors
+                # Apply beta modulation
                 betas = output['betas']
                 patch_offset = 0
                 for neighbor_idx, neighbor_id in enumerate(neighbor_indices):
@@ -487,15 +479,12 @@ class CantorGlobalAttention(nn.Module):
 
                     patch_offset += actual_patches
 
-                # Softmax attention over all neighbor patches
-                attn = F.softmax(scores, dim=-1)  # [batch, my_patches, num_neighbors * neighbor_patches]
+                # Softmax attention
+                attn = F.softmax(scores, dim=-1)
                 attn = self.dropout(attn)
 
-                # Apply attention to FULL DIMENSIONAL V
-                # Flatten V: [batch, num_neighbors, neighbor_patches, expert_dim] -> [batch, num_neighbors * neighbor_patches, expert_dim]
+                # Apply to V
                 V_flat = V_stack.reshape(B, -1, self.expert_dim)
-
-                # Apply attention: [batch, my_patches, num_neighbors * neighbor_patches] @ [batch, num_neighbors * neighbor_patches, expert_dim]
                 attended_V = torch.bmm(attn, V_flat)
 
                 # Place in global tensor
@@ -503,18 +492,17 @@ class CantorGlobalAttention(nn.Module):
 
             direction_outputs.append(attended_patches)
 
-        # Fuse across 5 directions (cross-contamination fills dead space)
+        # Fuse across 5 directions
         if direction_outputs:
-            # [5, batch, num_patches, expert_dim] -> [batch, num_patches, expert_dim]
             fused = torch.stack(direction_outputs).mean(dim=0)
         else:
             fused = torch.zeros(batch_size, num_patches, self.expert_dim, device=device)
 
-        return fused  # [batch, num_patches, expert_dim]
+        return fused
 
 
 # ============================================================================
-# CANTOR MoE LAYER (FIXED WITH DENSE PROJECTION)
+# CANTOR MoE LAYER (FIXED)
 # ============================================================================
 
 @dataclass
@@ -533,11 +521,11 @@ class CantorMoEConfig:
 
 class CantorMoELayer(nn.Module):
     """
-    FIXED: Complete Cantor MoE layer with DENSE FUSION PROJECTION.
-
-    Key fix: Instead of sparse reconstruction to feature slices,
-             we project fused expert_dim output directly to full feature_dim.
-             This eliminates the information bottleneck.
+    Complete Cantor MoE layer combining:
+    - Multiple sparse experts
+    - Cantor global attention
+    - Geometric routing and fusion
+    - DENSE projection (eliminates bottleneck)
     """
 
     def __init__(self, config: CantorMoEConfig):
@@ -571,14 +559,8 @@ class CantorMoELayer(nn.Module):
             dropout=config.dropout
         ))
 
-        # CRITICAL FIX: Dense projection from expert_dim to full_feature_dim
-        # This replaces sparse reconstruction and eliminates the bottleneck
-        self.fusion_proj = nn.Sequential(
-            nn.Linear(config.expert_dim, config.full_feature_dim * 2),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.full_feature_dim * 2, config.full_feature_dim)
-        )
+        # DENSE PROJECTION: expert_dim -> full_feature_dim
+        self.fusion_proj = nn.Linear(config.expert_dim, config.full_feature_dim)
 
         # Layer norm
         self.norm = nn.LayerNorm(config.full_feature_dim)
@@ -589,21 +571,17 @@ class CantorMoELayer(nn.Module):
         fingerprints: torch.Tensor      # [num_patches]
     ) -> torch.Tensor:
         """
-        FIXED: Forward pass with dense fusion projection.
+        Forward pass through Cantor MoE.
 
-        Instead of scattering to sparse feature slices, we:
-        1. Get fused expert output: [batch, num_patches, expert_dim]
-        2. Project densely to full space: [batch, num_patches, full_feature_dim]
-        3. Add residual
-
-        This ensures ALL feature dimensions receive gradients.
+        Returns:
+            output: [batch, num_patches, full_feature_dim]
         """
         batch_size, num_patches, _ = x.shape
 
         # Normalize input
         x_norm = self.norm(x)
 
-        # Process through all experts
+        # Process through all experts (sparse, each handles its region)
         expert_outputs = []
         for expert in self.experts:
             output = expert(x_norm, fingerprints)
@@ -613,7 +591,7 @@ class CantorMoELayer(nn.Module):
         # Returns [batch, num_patches, expert_dim]
         fused = self.attention(expert_outputs, num_patches)
 
-        # CRITICAL FIX: Dense projection to full feature space
+        # DENSE projection to full feature space
         # [batch, num_patches, expert_dim] -> [batch, num_patches, full_feature_dim]
         output = self.fusion_proj(fused)
 
@@ -657,15 +635,12 @@ class ViTBeans(nn.Module):
     """
     ViT-Beans: Vision Transformer with Cantor Expert Attention Network System
 
-    FIXED with dense fusion projection for proper gradient flow.
-
     A sparse, geometric ViT using:
     - Multi-dimensional Cantor fingerprinting
     - Sparse expert QKV with feature slice allocation
     - Pentachoron multi-directional projections
     - Alpha/Beta learning from VAE-Lyra
     - O(n) Cantor global attention
-    - DENSE fusion projection (eliminates bottleneck)
     """
 
     def __init__(self, config: ViTBeansConfig):
@@ -685,7 +660,7 @@ class ViTBeans(nn.Module):
             stride=config.patch_size
         )
 
-        # Position embedding
+        # Position embedding (traditional, for baseline)
         self.pos_embed = nn.Parameter(
             torch.randn(1, self.num_patches + 1, config.feature_dim) * 0.02
         )
@@ -704,7 +679,7 @@ class ViTBeans(nn.Module):
         # Pre-compute fingerprints (cached)
         self.register_buffer(
             'patch_fingerprints',
-            torch.zeros(self.num_patches)
+            torch.zeros(self.num_patches)  # Will be computed on first forward
         )
         self._fingerprints_computed = False
 
@@ -742,10 +717,12 @@ class ViTBeans(nn.Module):
 
     def _init_weights(self):
         """Initialize weights."""
+        # Patch embedding
         nn.init.xavier_uniform_(self.patch_embed.weight)
         if self.patch_embed.bias is not None:
             nn.init.zeros_(self.patch_embed.bias)
 
+        # Classification head
         nn.init.xavier_uniform_(self.head.weight)
         nn.init.zeros_(self.head.bias)
 
@@ -755,6 +732,7 @@ class ViTBeans(nn.Module):
             fingerprints_dict = self.fingerprinter.compute_fingerprints(
                 self.num_patches, device
             )
+            # Use primary dimension (3D) for routing
             self.patch_fingerprints = fingerprints_dict[3]
             self._fingerprints_computed = True
 
@@ -775,8 +753,8 @@ class ViTBeans(nn.Module):
         self._compute_fingerprints(device)
 
         # Patch embedding
-        x = self.patch_embed(x)
-        x = x.flatten(2).transpose(1, 2)
+        x = self.patch_embed(x)  # [batch, feature_dim, H', W']
+        x = x.flatten(2).transpose(1, 2)  # [batch, num_patches, feature_dim]
 
         # Add CLS token
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
@@ -828,12 +806,15 @@ class ViTBeans(nn.Module):
             moe = layer['cantor_moe']
 
             for expert_idx, expert in enumerate(moe.experts):
+                # Count parameters
                 params = sum(p.numel() for p in expert.parameters())
                 stats['expert_params'].append(params)
 
+                # Get alpha
                 alpha = torch.sigmoid(expert.alpha).item()
                 stats['alpha_values'].append(alpha)
 
+                # Get betas
                 for key, beta in expert.betas.items():
                     beta_val = torch.sigmoid(beta).item()
                     stats['beta_values'].append(beta_val)
@@ -851,45 +832,66 @@ class ViTBeans(nn.Module):
 
 if __name__ == "__main__":
     print("=" * 80)
-    print("ViT-Beans: FIXED with Dense Fusion Projection")
+    print("ViT-Beans: Cantor Expert Attention Network System")
     print("=" * 80)
 
+    # Configuration
     config = ViTBeansConfig(
-        image_size=32,
-        patch_size=4,
-        num_layers=6,
+        image_size=224,
+        patch_size=16,
+        num_layers=12,
         feature_dim=1024,
-        num_experts=8,
-        expert_dim=256,
-        num_classes=100
+        num_experts=16,
+        expert_dim=128,
+        num_heads=8,
+        num_classes=1000
     )
 
     print(f"\nConfiguration:")
     print(f"  Image size: {config.image_size}x{config.image_size}")
+    print(f"  Patch size: {config.patch_size}x{config.patch_size}")
     print(f"  Patches: {(config.image_size // config.patch_size) ** 2}")
+    print(f"  Layers: {config.num_layers}")
     print(f"  Feature dim: {config.feature_dim}")
     print(f"  Experts: {config.num_experts}")
     print(f"  Expert dim: {config.expert_dim}")
+    print(f"  Classes: {config.num_classes}")
 
+    # Create model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\nDevice: {device}")
+
     model = ViTBeans(config).to(device)
 
+    # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"\nTotal parameters: {total_params:,}")
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+    print(f"\nModel Parameters:")
+    print(f"  Total: {total_params:,}")
+    print(f"  Trainable: {trainable_params:,}")
+
+    # Get expert stats
+    expert_stats = model.get_expert_stats()
+    print(f"\nExpert Statistics:")
+    print(f"  Total expert params: {expert_stats['total_expert_params']:,}")
+    print(f"  Params per expert: {expert_stats['expert_params'][0]:,}")
+    print(f"  Mean alpha: {expert_stats['mean_alpha']:.4f}")
+    print(f"  Mean beta: {expert_stats['mean_beta']:.4f}")
+
+    # Test forward pass
     print(f"\nTesting forward pass...")
-    x = torch.randn(2, 3, 32, 32, device=device)
+    batch_size = 2
+    x = torch.randn(batch_size, 3, 224, 224, device=device)
 
     model.eval()
     with torch.no_grad():
         logits = model(x)
 
-    print(f"  Input: {x.shape}")
-    print(f"  Output: {logits.shape}")
+    print(f"  Input shape: {x.shape}")
+    print(f"  Output shape: {logits.shape}")
     print(f"  ✓ Forward pass successful")
 
     print("\n" + "=" * 80)
-    print("CRITICAL FIX: Dense fusion projection expert_dim -> feature_dim")
-    print("              Eliminates sparse reconstruction bottleneck")
-    print("              Should train 5-10x faster and actually learn!")
+    print("FIXED: Dense projection eliminates sparse reconstruction bottleneck")
     print("=" * 80)
