@@ -2,8 +2,11 @@
 ViT-Beans: Multi-Mode Vision Transformer with Cantor Expert Attention
 ======================================================================
 
+Enhanced with DIRECT TOKEN CONTROL for dense mode.
+
 Supports 3 modes:
 - 'dense': Dense masked Cantor attention (FAST - recommended)
+  * NEW: Supports explicit token masks for manual routing
 - 'sparse': Original sparse Cantor attention (SLOW - for experiments)
 - 'standard': Standard multi-head attention (BASELINE)
 
@@ -14,7 +17,7 @@ License: Apache 2.0
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List, Tuple, Optional, Literal
+from typing import Dict, List, Tuple, Optional, Literal, Union
 from dataclasses import dataclass
 import math
 
@@ -59,7 +62,7 @@ class MultiDimensionalCantorFingerprinter:
 
 
 # ============================================================================
-# MODE 1: DENSE MASKED CANTOR ATTENTION (FAST)
+# MODE 1: DENSE MASKED CANTOR ATTENTION (FAST) - WITH MANUAL CONTROL
 # ============================================================================
 
 @dataclass
@@ -75,7 +78,10 @@ class DenseCantorExpertConfig:
 
 
 class DenseCantorExpert(nn.Module):
-    """Dense expert - processes ALL patches with masking."""
+    """Dense expert - processes ALL patches with masking.
+
+    NEW: Supports explicit token masks for manual control.
+    """
 
     def __init__(self, config: DenseCantorExpertConfig):
         super().__init__()
@@ -84,7 +90,7 @@ class DenseCantorExpert(nn.Module):
         self.num_experts = config.num_experts
         self.expert_dim = config.expert_dim
 
-        # Fingerprint range
+        # Fingerprint range (for automatic mode)
         self.fp_min = config.expert_id / config.num_experts
         self.fp_max = (config.expert_id + 1) / config.num_experts
         self.is_last_expert = (config.expert_id == config.num_experts - 1)
@@ -119,16 +125,41 @@ class DenseCantorExpert(nn.Module):
     def forward(
         self,
         tokens: torch.Tensor,
-        fingerprints: torch.Tensor
+        fingerprints: Optional[torch.Tensor] = None,
+        explicit_mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
-        """Process ALL patches, mask indicates expert's region."""
+        """Process ALL patches, mask indicates expert's region.
+
+        Args:
+            tokens: [B, N, D] input tokens
+            fingerprints: [N] fingerprint values (for automatic routing)
+            explicit_mask: [B, N] or [N] boolean mask (for manual control)
+                          If provided, overrides fingerprint-based routing
+
+        Returns:
+            Dict with Q, K, V, mask, and statistics
+        """
         batch_size, num_patches, _ = tokens.shape
 
-        # Compute mask
-        if self.is_last_expert:
-            mask = (fingerprints >= self.fp_min) & (fingerprints <= self.fp_max)
+        # Compute mask - EXPLICIT MASK TAKES PRIORITY
+        if explicit_mask is not None:
+            # Manual control mode
+            if explicit_mask.dim() == 1:
+                # [N] -> [B, N]
+                mask = explicit_mask.unsqueeze(0).expand(batch_size, -1)
+            else:
+                # Already [B, N]
+                mask = explicit_mask
+        elif fingerprints is not None:
+            # Automatic fingerprint mode
+            if self.is_last_expert:
+                mask = (fingerprints >= self.fp_min) & (fingerprints <= self.fp_max)
+            else:
+                mask = (fingerprints >= self.fp_min) & (fingerprints < self.fp_max)
+            mask = mask.unsqueeze(0).expand(batch_size, -1)
         else:
-            mask = (fingerprints >= self.fp_min) & (fingerprints < self.fp_max)
+            # No routing - process everything
+            mask = torch.ones(batch_size, num_patches, dtype=torch.bool, device=tokens.device)
 
         # Extract feature slice for ALL patches
         my_features = tokens[..., self.slice_start:self.slice_end]
@@ -196,7 +227,7 @@ class DenseCantorGlobalAttention(nn.Module):
         scores = scores / (math.sqrt(head_dim) * self.temperature.abs())
 
         # Mask attention to expert regions
-        attn_mask = masks.view(E, 1, 1, N, 1).float()
+        attn_mask = masks.view(E, B, 1, N, 1).float()
         scores = scores + (1.0 - attn_mask.transpose(-2, -1)) * -1e9
 
         # Softmax and apply
@@ -208,14 +239,11 @@ class DenseCantorGlobalAttention(nn.Module):
         out = out.transpose(2, 3).contiguous().view(E, B, N, D)
 
         # Weight by masks and average
-        # FIX: Reshape mask to [E, 1, N, 1] for proper broadcasting with [E, B, N, D]
-        expert_weights = masks.view(E, 1, N, 1).float()  # [E, 1, N, 1]
-        weighted_out = out * expert_weights  # [E, B, N, D] * [E, 1, N, 1] → [E, B, N, D]
-        fused = weighted_out.sum(dim=0)  # [B, N, D]
-
-        # Normalize by number of experts per patch (should be 1 with perfect partitioning)
-        norm_factor = expert_weights.sum(dim=0).clamp(min=1.0)  # [1, N, 1]
-        fused = fused / norm_factor  # [B, N, D] / [1, N, 1] → [B, N, D]
+        expert_weights = attn_mask.squeeze(2).squeeze(-1)  # [E, B, N]
+        weighted_out = out * expert_weights.unsqueeze(-1)
+        fused = weighted_out.sum(dim=0)
+        norm_factor = expert_weights.sum(dim=0).unsqueeze(-1).clamp(min=1.0)
+        fused = fused / norm_factor
 
         return fused
 
@@ -223,9 +251,6 @@ class DenseCantorGlobalAttention(nn.Module):
 # ============================================================================
 # MODE 2: SPARSE CANTOR ATTENTION (SLOW - original)
 # ============================================================================
-
-# Import your original sparse implementation here if you want to keep it
-# For now, we'll just have a placeholder that raises an error
 
 class SparseCantorMoELayer(nn.Module):
     """Placeholder for sparse mode - use original implementation."""
@@ -238,7 +263,7 @@ class SparseCantorMoELayer(nn.Module):
 
 
 # ============================================================================
-# UNIFIED MoE LAYER WITH MODES
+# UNIFIED MoE LAYER WITH MODES AND MANUAL CONTROL
 # ============================================================================
 
 @dataclass
@@ -256,10 +281,11 @@ class CantorMoEConfig:
 
 class MultiModeCantorMoELayer(nn.Module):
     """
-    Multi-mode Cantor MoE layer.
+    Multi-mode Cantor MoE layer with MANUAL TOKEN CONTROL.
 
     Modes:
     - 'dense': Fast dense masked attention (recommended)
+      * Supports explicit token masks via expert_masks parameter
     - 'sparse': Original sparse attention (slow)
     - 'standard': Standard multi-head attention (baseline)
     """
@@ -318,9 +344,23 @@ class MultiModeCantorMoELayer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        fingerprints: Optional[torch.Tensor] = None
+        fingerprints: Optional[torch.Tensor] = None,
+        expert_masks: Optional[Union[List[torch.Tensor], torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, Dict[str, int]]:
-        """Forward pass - mode-dependent."""
+        """Forward pass - mode-dependent with manual control support.
+
+        Args:
+            x: [B, N, D] input tokens
+            fingerprints: [N] fingerprints for automatic routing (dense mode)
+            expert_masks: Manual token routing (dense mode only):
+                - List[Tensor]: List of [B, N] or [N] masks, one per expert
+                - Tensor: [E, B, N] or [E, N] masks for all experts
+                If provided, overrides fingerprint-based routing
+
+        Returns:
+            output: [B, N, D] transformed tokens
+            stats: Dict with expert utilization statistics
+        """
 
         if self.mode == 'standard':
             # Standard attention (no fingerprints needed)
@@ -329,16 +369,31 @@ class MultiModeCantorMoELayer(nn.Module):
             return x + attn_out, {}
 
         elif self.mode == 'dense':
-            # Dense Cantor attention
+            # Dense Cantor attention with optional manual control
             batch_size, num_patches, _ = x.shape
             x_norm = self.norm(x)
+
+            # Parse expert masks if provided
+            parsed_masks = None
+            if expert_masks is not None:
+                if isinstance(expert_masks, list):
+                    parsed_masks = expert_masks
+                else:
+                    # Tensor: split into list
+                    if expert_masks.dim() == 2:
+                        # [E, N] -> List of [N]
+                        parsed_masks = [expert_masks[i] for i in range(expert_masks.shape[0])]
+                    else:
+                        # [E, B, N] -> List of [B, N]
+                        parsed_masks = [expert_masks[i] for i in range(expert_masks.shape[0])]
 
             # Process all experts
             expert_outputs = []
             expert_utilization = {}
 
-            for expert in self.experts:
-                output = expert(x_norm, fingerprints)
+            for i, expert in enumerate(self.experts):
+                mask = parsed_masks[i] if parsed_masks is not None else None
+                output = expert(x_norm, fingerprints, explicit_mask=mask)
                 expert_outputs.append(output)
                 expert_utilization[f'expert_{expert.expert_id}'] = output['num_patches_processed']
 
@@ -354,7 +409,7 @@ class MultiModeCantorMoELayer(nn.Module):
 
 
 # ============================================================================
-# ViT-BEANS WITH MODES
+# ViT-BEANS WITH MODES AND MANUAL CONTROL
 # ============================================================================
 
 @dataclass
@@ -396,7 +451,7 @@ class ViTBeansConfig:
 
 
 class ViTBeans(nn.Module):
-    """ViT-Beans with configurable attention modes."""
+    """ViT-Beans with configurable attention modes and MANUAL TOKEN CONTROL."""
 
     def __init__(self, config: ViTBeansConfig):
         super().__init__()
@@ -487,8 +542,19 @@ class ViTBeans(nn.Module):
             self.patch_fingerprints = fingerprints_dict[3]
             self._fingerprints_computed = True
 
-    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features through ViT-Beans layers."""
+    def forward_features(
+        self,
+        x: torch.Tensor,
+        expert_masks: Optional[Union[List[torch.Tensor], torch.Tensor]] = None
+    ) -> torch.Tensor:
+        """Extract features through ViT-Beans layers.
+
+        Args:
+            x: [B, C, H, W] input images
+            expert_masks: Optional manual token routing for dense mode
+                - Single mask for all layers: [E, B, N] or [E, N]
+                - Different masks per layer: List[[E, B, N] or [E, N]]
+        """
         batch_size = x.shape[0]
         device = x.device
 
@@ -507,15 +573,31 @@ class ViTBeans(nn.Module):
         # Add positional embedding
         x = x + self.pos_embed
 
+        # Handle expert_masks - can be single mask or per-layer masks
+        if expert_masks is not None and not isinstance(expert_masks, list):
+            # Single mask for all layers
+            expert_masks = [expert_masks] * len(self.layers)
+        elif expert_masks is not None:
+            # List of masks - must match number of layers
+            assert len(expert_masks) == len(self.layers), \
+                f"Number of expert_masks ({len(expert_masks)}) must match layers ({len(self.layers)})"
+
         # Process through layers
-        for layer in self.layers:
+        for layer_idx, layer in enumerate(self.layers):
+            # Get mask for this layer
+            layer_mask = expert_masks[layer_idx] if expert_masks is not None else None
+
             # Attention (skip CLS token for Cantor modes)
             if self.config.attention_mode == 'standard':
-                x_attn, _ = layer['attention'](x, None)
+                x_attn, _ = layer['attention'](x, None, None)
                 x = x_attn
             else:
                 x_patches = x[:, 1:]
-                x_patches, _ = layer['attention'](x_patches, self.patch_fingerprints)
+                x_patches, _ = layer['attention'](
+                    x_patches,
+                    self.patch_fingerprints,
+                    layer_mask
+                )
                 x = torch.cat([x[:, :1], x_patches], dim=1)
 
             # MLP
@@ -523,15 +605,63 @@ class ViTBeans(nn.Module):
 
         return x
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Full forward pass."""
-        x = self.forward_features(x)
+    def forward(
+        self,
+        x: torch.Tensor,
+        expert_masks: Optional[Union[List[torch.Tensor], torch.Tensor]] = None
+    ) -> torch.Tensor:
+        """Full forward pass with optional manual token control.
+
+        Args:
+            x: [B, C, H, W] input images
+            expert_masks: Optional manual expert routing (dense mode only)
+        """
+        x = self.forward_features(x, expert_masks)
 
         # Classification from CLS token
         x = self.norm(x[:, 0])
         logits = self.head(x)
 
         return logits
+
+    def create_manual_masks(
+        self,
+        patch_assignments: Dict[int, List[int]],
+        batch_size: int = 1
+    ) -> torch.Tensor:
+        """Helper to create manual expert masks from patch assignments.
+
+        Args:
+            patch_assignments: Dict mapping expert_id -> list of patch indices
+                              e.g., {0: [0, 1, 2], 1: [3, 4, 5], ...}
+            batch_size: Batch size for masks
+
+        Returns:
+            masks: [E, B, N] boolean tensor
+
+        Example:
+            # Expert 0 handles patches 0-9, Expert 1 handles patches 10-19, etc.
+            masks = model.create_manual_masks({
+                0: list(range(10)),
+                1: list(range(10, 20)),
+                2: list(range(20, 30)),
+            })
+            logits = model(images, expert_masks=masks)
+        """
+        device = next(self.parameters()).device
+        masks = torch.zeros(
+            self.config.num_experts,
+            batch_size,
+            self.num_patches,
+            dtype=torch.bool,
+            device=device
+        )
+
+        for expert_id, patch_indices in patch_assignments.items():
+            if expert_id < self.config.num_experts:
+                masks[expert_id, :, patch_indices] = True
+
+        return masks
 
     def diagnose_expert_coverage(self) -> Dict:
         """Diagnose expert coverage (only for Cantor modes)."""
@@ -574,76 +704,100 @@ class ViTBeans(nn.Module):
 
 if __name__ == "__main__":
     print("=" * 80)
-    print("ViT-Beans Multi-Mode Test")
+    print("ViT-Beans Multi-Mode Test with Manual Token Control")
     print("=" * 80)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Test all three modes
-    modes = ['dense', 'standard']
-
-    for mode in modes:
-        print(f"\nTesting mode: {mode.upper()}")
-        print("-" * 80)
-
-        config = ViTBeansConfig(
-            image_size=32,
-            patch_size=4,
-            num_layers=2,
-            feature_dim=256,
-            num_experts=4,
-            expert_dim=64,
-            num_classes=100,
-            attention_mode=mode
-        )
-
-        model = ViTBeans(config).to(device)
-
-        # Count parameters
-        params = sum(p.numel() for p in model.parameters())
-        print(f"Parameters: {params:,}")
-
-        # Test forward pass
-        x = torch.randn(2, 3, 32, 32, device=device)
-
-        import time
-        start = time.time()
-
-        model.eval()
-        with torch.no_grad():
-            for _ in range(10):
-                logits = model(x)
-
-        if device.type == 'cuda':
-            torch.cuda.synchronize()
-
-        elapsed = time.time() - start
-
-        print(f"10 forward passes: {elapsed:.3f}s ({elapsed*100:.1f}ms per pass)")
-        print(f"Output shape: {logits.shape}")
-        print(f"✅ {mode.upper()} mode working!")
-
-    # Test coverage diagnostic
-    print("\n" + "=" * 80)
-    print("Coverage Diagnostic (Dense Mode)")
-    print("=" * 80)
-
-    config_dense = ViTBeansConfig(
+    # Test configuration
+    config = ViTBeansConfig(
         image_size=32,
         patch_size=4,
-        num_experts=8,
-        feature_dim=512,
+        num_layers=2,
+        feature_dim=256,
+        num_experts=4,
+        expert_dim=64,
+        num_classes=100,
         attention_mode='dense'
     )
 
-    model_dense = ViTBeans(config_dense).to(device)
-    coverage = model_dense.diagnose_expert_coverage()
+    model = ViTBeans(config).to(device)
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Patches: {model.num_patches}")
 
-    print(f"Total patches: {coverage['total_patches']}")
-    print(f"Total covered: {coverage['total_covered']}")
+    # Test 1: Automatic routing (fingerprint-based)
+    print("\n" + "=" * 80)
+    print("Test 1: AUTOMATIC ROUTING (fingerprint-based)")
+    print("=" * 80)
 
-    for i in range(8):
-        info = coverage[f'expert_{i}']
-        print(f"  Expert {i}: {info['patches']} patches")
+    x = torch.randn(2, 3, 32, 32, device=device)
+    model.eval()
+    with torch.no_grad():
+        logits_auto = model(x)
+    print(f"✅ Automatic routing output shape: {logits_auto.shape}")
 
-    print("\n✅ All modes tested successfully!")
+    # Test 2: Manual routing - specific expert assignments
+    print("\n" + "=" * 80)
+    print("Test 2: MANUAL ROUTING (explicit patch assignment)")
+    print("=" * 80)
+
+    # Create manual masks: divide patches equally among experts
+    patches_per_expert = model.num_patches // 4
+    manual_assignments = {
+        0: list(range(0, patches_per_expert)),
+        1: list(range(patches_per_expert, 2 * patches_per_expert)),
+        2: list(range(2 * patches_per_expert, 3 * patches_per_expert)),
+        3: list(range(3 * patches_per_expert, model.num_patches)),
+    }
+
+    print("Expert assignments:")
+    for expert_id, patches in manual_assignments.items():
+        print(f"  Expert {expert_id}: {len(patches)} patches ({patches[0]}-{patches[-1]})")
+
+    masks = model.create_manual_masks(manual_assignments, batch_size=2)
+    print(f"Mask shape: {masks.shape}")
+
+    with torch.no_grad():
+        logits_manual = model(x, expert_masks=masks)
+    print(f"✅ Manual routing output shape: {logits_manual.shape}")
+
+    # Test 3: Custom selective routing
+    print("\n" + "=" * 80)
+    print("Test 3: SELECTIVE ROUTING (only some patches per expert)")
+    print("=" * 80)
+
+    # Expert 0: corners only
+    # Expert 1: edges only
+    # Expert 2: center only
+    # Expert 3: everything else
+    selective_assignments = {
+        0: [0, 7, 56, 63],  # corners of 8x8 grid
+        1: list(range(1, 7)) + list(range(57, 63)),  # top and bottom edges
+        2: [27, 28, 35, 36],  # center 2x2
+        3: list(range(8, 56)),  # everything else
+    }
+
+    print("Selective assignments:")
+    for expert_id, patches in selective_assignments.items():
+        print(f"  Expert {expert_id}: {len(patches)} patches")
+
+    masks_selective = model.create_manual_masks(selective_assignments, batch_size=2)
+    with torch.no_grad():
+        logits_selective = model(x, expert_masks=masks_selective)
+    print(f"✅ Selective routing output shape: {logits_selective.shape}")
+
+    # Test 4: Compare outputs
+    print("\n" + "=" * 80)
+    print("Test 4: OUTPUT COMPARISON")
+    print("=" * 80)
+
+    print(f"Automatic routing mean: {logits_auto.mean().item():.4f}")
+    print(f"Manual routing mean: {logits_manual.mean().item():.4f}")
+    print(f"Selective routing mean: {logits_selective.mean().item():.4f}")
+
+    print("\n✅ All manual control tests passed!")
+    print("\nUSAGE SUMMARY:")
+    print("-" * 80)
+    print("1. Automatic: model(images)")
+    print("2. Manual: model(images, expert_masks=masks)")
+    print("3. Create masks: model.create_manual_masks({expert_id: [patch_ids]})")
