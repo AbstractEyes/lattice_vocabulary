@@ -2,9 +2,6 @@
 ViT-Beans: Multi-Mode Vision Transformer with Cantor Expert Attention
 ======================================================================
 
-The other one didn't work at all, so I'm refactoring the core.
-
-
 Supports 3 modes:
 - 'dense': Dense masked Cantor attention (FAST - recommended)
 - 'sparse': Original sparse Cantor attention (SLOW - for experiments)
@@ -211,11 +208,14 @@ class DenseCantorGlobalAttention(nn.Module):
         out = out.transpose(2, 3).contiguous().view(E, B, N, D)
 
         # Weight by masks and average
-        expert_weights = attn_mask.squeeze(-1)
-        weighted_out = out * expert_weights
-        fused = weighted_out.sum(dim=0)
-        norm_factor = expert_weights.sum(dim=0).clamp(min=1.0)
-        fused = fused / norm_factor.transpose(-2, -1)
+        # FIX: Reshape mask to [E, 1, N, 1] for proper broadcasting with [E, B, N, D]
+        expert_weights = masks.view(E, 1, N, 1).float()  # [E, 1, N, 1]
+        weighted_out = out * expert_weights  # [E, B, N, D] * [E, 1, N, 1] → [E, B, N, D]
+        fused = weighted_out.sum(dim=0)  # [B, N, D]
+
+        # Normalize by number of experts per patch (should be 1 with perfect partitioning)
+        norm_factor = expert_weights.sum(dim=0).clamp(min=1.0)  # [1, N, 1]
+        fused = fused / norm_factor  # [B, N, D] / [1, N, 1] → [B, N, D]
 
         return fused
 
