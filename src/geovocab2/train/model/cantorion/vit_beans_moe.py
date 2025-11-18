@@ -662,13 +662,15 @@ class ViTBeans(nn.Module):
         nn.init.zeros_(self.head.bias)
 
     def _compute_fingerprints(self, device: torch.device):
-        """Compute geometric Cantor fingerprints."""
+        """Compute and cache Cantor fingerprints."""
         if not self._fingerprints_computed:
-            self.patch_fingerprints = self.fingerprinter.compute_fingerprints(
+            fingerprints = self.fingerprinter.compute_fingerprints(
                 self.num_patches,
                 self.grid_size,
                 device
             )
+            # CRITICAL: Must use copy_() to update registered buffer
+            self.patch_fingerprints.copy_(fingerprints)
             self._fingerprints_computed = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
