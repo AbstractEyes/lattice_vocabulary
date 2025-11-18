@@ -719,7 +719,12 @@ class ViTBeans(nn.Module):
 
         for expert_id, expert in enumerate(first_moe.experts):
             fp_min, fp_max = expert.fp_min, expert.fp_max
-            mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints < fp_max)
+
+            # Use same boundary logic as forward pass
+            if expert_id == self.config.num_experts - 1:
+                mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints <= fp_max)
+            else:
+                mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints < fp_max)
 
             stats[f'expert_{expert_id}'] = {
                 'range': f'[{fp_min:.4f}, {fp_max:.4f}]',
@@ -730,9 +735,15 @@ class ViTBeans(nn.Module):
 
         # Coverage analysis
         all_masks = []
-        for expert in first_moe.experts:
+        for expert_id, expert in enumerate(first_moe.experts):
             fp_min, fp_max = expert.fp_min, expert.fp_max
-            mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints < fp_max)
+
+            # Use same boundary logic
+            if expert_id == self.config.num_experts - 1:
+                mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints <= fp_max)
+            else:
+                mask = (self.patch_fingerprints >= fp_min) & (self.patch_fingerprints < fp_max)
+
             all_masks.append(mask)
 
         all_masks = torch.stack(all_masks)
