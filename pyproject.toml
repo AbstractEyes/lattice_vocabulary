@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "geometricvocab"
 version = "0.2.1"
-description = "Deterministic geometric vocabulary: pentachora crystals, Unicode cobbling, and rose-aware utilities."
+description = "Deterministic geometric vocabulary and model dump for geometric models."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "AbstractPhil", email = "you@example.com" }]
+authors = [{ name = "AbstractPhil", email = "abstractpowered@outlook.com" }]
 keywords = ["vocabulary", "geometry", "nlp", "symbolic", "embeddings", "pentachoron", "deterministic"]
 classifiers = [
   "Programming Language :: Python :: 3",
