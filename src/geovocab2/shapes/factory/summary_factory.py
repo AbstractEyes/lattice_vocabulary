@@ -75,15 +75,15 @@ class ModelSpec:
 
 # Model registry with specs
 MODEL_REGISTRY: Dict[str, ModelSpec] = {
-    # Qwen family
+    # Qwen family - stricter prompts to reduce hallucination
     "qwen2.5-1.5b": ModelSpec(
         model_id="Qwen/Qwen2.5-1.5B-Instruct",
         model_type=ModelType.CAUSAL_LM,
         vram_fp16_gb=3.0,
         vram_int8_gb=1.5,
         max_context=32768,
-        prompt_template="Convert these image tags into a brief, natural English caption.\n\nTags: {tags}\nCaption:",
-        default_max_new_tokens=60,
+        prompt_template="<|im_start|>system\nYou convert image tags to brief captions. Output ONLY the caption, nothing else.<|im_end|>\n<|im_start|>user\nTags: {tags}<|im_end|>\n<|im_start|>assistant\n",
+        default_max_new_tokens=50,
         supports_system_prompt=True
     ),
 
@@ -94,8 +94,8 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
         vram_fp16_gb=2.5,
         vram_int8_gb=1.2,
         max_context=131072,
-        prompt_template="Convert these image tags into a brief, natural English caption.\n\nTags: {tags}\nCaption:",
-        default_max_new_tokens=60,
+        prompt_template="<|begin_of_text|><|start_header_id|>system<|end_header_id|>\nConvert tags to a brief image caption. Output only the caption.<|eot_id|><|start_header_id|>user<|end_header_id|>\nTags: {tags}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
+        default_max_new_tokens=50,
         supports_system_prompt=True
     ),
     "llama-8b": ModelSpec(
@@ -104,19 +104,19 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
         vram_fp16_gb=16.0,
         vram_int8_gb=8.0,
         max_context=131072,
-        prompt_template="Convert these image tags into a brief, natural English caption.\n\nTags: {tags}\nCaption:",
-        default_max_new_tokens=60,
+        prompt_template="<|begin_of_text|><|start_header_id|>system<|end_header_id|>\nConvert tags to a brief image caption. Output only the caption.<|eot_id|><|start_header_id|>user<|end_header_id|>\nTags: {tags}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
+        default_max_new_tokens=50,
         supports_system_prompt=True
     ),
 
-    # Flan-T5 family (seq2seq)
+    # Flan-T5 family (seq2seq) - these work well with simple prompts
     "flan-t5-small": ModelSpec(
         model_id="google/flan-t5-small",
         model_type=ModelType.SEQ2SEQ,
         vram_fp16_gb=0.3,
         vram_int8_gb=0.15,
         max_context=512,
-        prompt_template="Describe this image: {tags}",
+        prompt_template="Write a short caption for an image with these tags: {tags}",
         default_max_new_tokens=48
     ),
     "flan-t5-base": ModelSpec(
@@ -125,7 +125,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
         vram_fp16_gb=0.9,
         vram_int8_gb=0.45,
         max_context=512,
-        prompt_template="Describe this image: {tags}",
+        prompt_template="Write a short caption for an image with these tags: {tags}",
         default_max_new_tokens=48
     ),
     "flan-t5-large": ModelSpec(
@@ -134,7 +134,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
         vram_fp16_gb=3.0,
         vram_int8_gb=1.5,
         max_context=512,
-        prompt_template="Describe this image: {tags}",
+        prompt_template="Write a short caption for an image with these tags: {tags}",
         default_max_new_tokens=48
     ),
     "flan-t5-xl": ModelSpec(
@@ -143,7 +143,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
         vram_fp16_gb=11.0,
         vram_int8_gb=5.5,
         max_context=512,
-        prompt_template="Describe this image: {tags}",
+        prompt_template="Write a short caption for an image with these tags: {tags}",
         default_max_new_tokens=48
     ),
     "flan-t5-xxl": ModelSpec(
@@ -152,7 +152,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
         vram_fp16_gb=42.0,
         vram_int8_gb=21.0,
         max_context=512,
-        prompt_template="Describe this image: {tags}",
+        prompt_template="Write a short caption for an image with these tags: {tags}",
         default_max_new_tokens=48
     ),
 }
@@ -273,6 +273,9 @@ class CaptionFactory(FactoryBase):
             )
             self._tokenizer = AutoTokenizer.from_pretrained(self.spec.model_id)
 
+            # Causal LMs need left padding for batched generation
+            self._tokenizer.padding_side = "left"
+
             if self._tokenizer.pad_token is None:
                 self._tokenizer.pad_token = self._tokenizer.eos_token
 
@@ -327,6 +330,15 @@ class CaptionFactory(FactoryBase):
 
         max_new = self.config.max_new_tokens or self.spec.default_max_new_tokens
 
+        # Build stop token list
+        stop_token_ids = [self._tokenizer.eos_token_id]
+
+        # Add model-specific stop tokens
+        for stop_str in ["<|im_end|>", "<|eot_id|>", "<|end|>", "\n\n"]:
+            token_ids = self._tokenizer.encode(stop_str, add_special_tokens=False)
+            if token_ids:
+                stop_token_ids.extend(token_ids)
+
         with torch.no_grad():
             outputs = self._model.generate(
                 **inputs,
@@ -335,21 +347,33 @@ class CaptionFactory(FactoryBase):
                 top_p=self.config.top_p if self.config.do_sample else None,
                 do_sample=self.config.do_sample,
                 pad_token_id=self._tokenizer.pad_token_id,
-                eos_token_id=self._tokenizer.eos_token_id
+                eos_token_id=stop_token_ids
             )
 
         captions = []
         for i, output in enumerate(outputs):
             new_tokens = output[inputs.input_ids.shape[1]:]
             text = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+            # Clean up common artifacts
             text = text.strip()
 
-            if text and text[-1] not in ".!?":
-                last_period = text.rfind(".")
-                if last_period > 0:
+            # Remove chat template artifacts
+            for marker in ["<|im_end|>", "<|eot_id|>", "<|end|>", "</s>"]:
+                text = text.replace(marker, "")
+
+            # Truncate at double newline (paragraph break)
+            if "\n\n" in text:
+                text = text.split("\n\n")[0]
+
+            # Clean trailing incomplete sentence
+            text = text.strip()
+            if text and text[-1] not in ".!?\"'":
+                last_period = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
+                if last_period > len(text) // 2:  # Only truncate if we keep most of it
                     text = text[:last_period + 1]
 
-            captions.append(text)
+            captions.append(text.strip())
 
         return captions
 
@@ -827,7 +851,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Caption Factory")
-    parser.add_argument("--demo", type=str, default="generate",
+    parser.add_argument("--demo", type=str, default="basic",
                         choices=["basic", "generate", "tensors", "context", "compare", "benchmark"],
                         help="Demo to run")
     parser.add_argument("--model", type=str, default="flan-t5-small",
