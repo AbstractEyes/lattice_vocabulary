@@ -1,14 +1,14 @@
 import abc
 
 
-class CaptionSynthBase(abc.ABC):
+class CaptionBase(abc.ABC):
     """
     Base class for caption synthesis prompts.
     """
 
     def __init__(self,
-                 name: str = "caption_synth_base",
-                 uid: str = "prompt.caption_synth_base"):
+                 name: str = "caption_base",
+                 uid: str = "prompt.caption_base"):
         self.name = name
         self.uid = uid
 
@@ -20,6 +20,17 @@ class CaptionSynthBase(abc.ABC):
 
         Returns:
             Generated caption as a string.
+        """
+        pass
+
+    def generate_batch(self, *args, **kwargs) -> list[str]:
+        """
+        Generate a batch of captions based on provided arguments.
+
+        Must be implemented by subclasses.
+
+        Returns:
+            List of generated captions.
         """
         pass
 
