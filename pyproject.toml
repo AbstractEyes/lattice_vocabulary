@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geometricvocab"
-version = "0.2.1"
+version = "0.1.2"
 description = "Deterministic geometric vocabulary and model dump for geometric models."
 readme = "README.md"
 requires-python = ">=3.9"
