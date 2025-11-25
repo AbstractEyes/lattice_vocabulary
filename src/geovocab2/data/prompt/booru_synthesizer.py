@@ -71,15 +71,25 @@ TAG_AESTHETIC_TYPES = [
     "normal aesthetic", "good aesthetic", "beautiful", "gorgeous",
     "stunning", "ugly", "unattractive", "unpleasant", "unappealing",
     "very ugly", "disgusting", "best quality",
-    "score_9", "score_8", "score_7", "score_6", "score_5",
-    "score_4", "score_3", "score_2", "score_1",
-    "score_8_up", "score_7_up", "score_6_up", "score_5_up",
-    "score_4_up", "score_3_up", "score_2_up", "score_1_up", "very awa",
+    #"score_9", "score_8", "score_7", "score_6", "score_5",
+    #"score_4", "score_3", "score_2", "score_1",
+    #"score_8_up", "score_7_up", "score_6_up", "score_5_up",
+    #"score_4_up", "score_3_up", "score_2_up", "score_1_up", "very awa",
 ]
 
 TAG_GENDER = [
-    "1boy", "2boys", "3boys", "4boys", "5boys", "6+boys",
-    "1girl", "2girls", "3girls", "4girls", "5girls", "6+girls",
+    "1boy", "1boy", "1boy", "1boy", "1boy", "1boy", "1boy", "1boy", "1boy", "1boy",
+    "2boys", "2boys", "2boys",
+    "3boys",
+    "4boys",
+    "5boys",
+    "6+boys",
+    "1girl", "1girl", "1girl", "1girl", "1girl", "1girl", "1girl", "1girl", "1girl", "1girl",
+    "2girls", "2girls", "2girls",
+    "3girls",
+    "4girls",
+    "5girls",
+    "6+girls",
     "ambiguous", "intersex", "herm", "futanari", "femboy", "trap",
     "girly", "otoko no ko", "transgender", "shemale", "trans",
     "boy", "man", "male", "mature male",
@@ -87,6 +97,7 @@ TAG_GENDER = [
     "1futa", "2futas", "3futas", "4futas", "5futas", "6+futas",
     "1ambiguous", "2ambiguous", "3ambiguous", "4ambiguous",
     "5ambiguous", "6+ambiguous",
+    "1other", "2other", "3other", "4other", "5other", "6+other",
 ]
 
 BOORU_TEMPLATES = {
