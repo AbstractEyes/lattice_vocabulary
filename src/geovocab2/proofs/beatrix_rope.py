@@ -27,9 +27,6 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Literal
 
 
-from geovocab2.shapes.factory.cantor_route_factory import (
-    CantorRouteFactory, RouteMode, SimplexConfig
-)
 print("✓ Imported CantorRouteFactory from geovocab2")
 
 
