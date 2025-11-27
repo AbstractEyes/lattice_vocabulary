@@ -319,6 +319,7 @@ def run_proof():
                 print(f"   Distance is an illusion.")
                 break
 
+
 if __name__ == "__main__":
     if torch.cuda.is_available():
         run_proof()
