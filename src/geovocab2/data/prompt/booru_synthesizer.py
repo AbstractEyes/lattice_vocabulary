@@ -7,6 +7,11 @@ Booru Tag Synthesizer
 Generates captions in booru tag style for training image models.
 Supports loading from Danbooru, Gelbooru, e621, Rule34xxx CSVs.
 
+Features:
+- Template-based generation
+- Conduit system: injects random top-N tags for generalization
+- Multi-threaded batch generation
+
 Author: AbstractPhil
 """
 
@@ -18,31 +23,44 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Optional, Dict, List, Set, Union, Iterator
+from typing import Optional, Dict, List, Set, Union, Iterator, Tuple
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
-from geovocab2.data.prompt.caption_base import CaptionBase
+try:
+    from geovocab2.data.prompt.caption_base import CaptionBase
+
+    HAS_CAPTION_BASE = True
+except ImportError:
+    HAS_CAPTION_BASE = False
+
+
+    class CaptionBase:
+        def __init__(self, name: str = "", uid: str = ""):
+            self.name = name
+            self.uid = uid
 
 try:
     from rapidfuzz import process
+
     HAS_RAPIDFUZZ = True
 except ImportError:
     HAS_RAPIDFUZZ = False
 
 try:
     from langdetect import detect
+
     HAS_LANGDETECT = True
 except ImportError:
     HAS_LANGDETECT = False
 
 try:
     from tqdm.auto import tqdm
+
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
-
 
 # ============================================================================
 # CONSTANTS
@@ -71,10 +89,6 @@ TAG_AESTHETIC_TYPES = [
     "normal aesthetic", "good aesthetic", "beautiful", "gorgeous",
     "stunning", "ugly", "unattractive", "unpleasant", "unappealing",
     "very ugly", "disgusting", "best quality",
-    #"score_9", "score_8", "score_7", "score_6", "score_5",
-    #"score_4", "score_3", "score_2", "score_1",
-    #"score_8_up", "score_7_up", "score_6_up", "score_5_up",
-    #"score_4_up", "score_3_up", "score_2_up", "score_1_up", "very awa",
 ]
 
 TAG_GENDER = [
@@ -99,6 +113,248 @@ TAG_GENDER = [
     "5ambiguous", "6+ambiguous",
     "1other", "2other", "3other", "4other", "5other", "6+other",
 ]
+
+# ============================================================================
+# PEOPLE COUNT SYSTEM
+# ============================================================================
+
+# Structured gender tags with counts
+GENDER_COUNT_TAGS = {
+    # (tag, count, category)
+    "boys": [
+        ("1boy", 1), ("2boys", 2), ("3boys", 3), ("4boys", 4), ("5boys", 5), ("6+boys", 6),
+    ],
+    "girls": [
+        ("1girl", 1), ("2girls", 2), ("3girls", 3), ("4girls", 4), ("5girls", 5), ("6+girls", 6),
+    ],
+    "futas": [
+        ("1futa", 1), ("2futas", 2), ("3futas", 3), ("4futas", 4), ("5futas", 5), ("6+futas", 6),
+    ],
+    "others": [
+        ("1other", 1), ("2others", 2), ("3others", 3), ("4others", 4), ("5others", 5), ("6+others", 6),
+    ],
+    "ambiguous": [
+        ("1ambiguous", 1), ("2ambiguous", 2), ("3ambiguous", 3), ("4ambiguous", 4), ("5ambiguous", 5),
+        ("6+ambiguous", 6),
+    ],
+}
+
+# Weights for solo vs group (heavily biased toward solo/duo)
+GENDER_SCENARIO_WEIGHTS = {
+    "solo_girl": 30,
+    "solo_boy": 20,
+    "duo_girls": 10,
+    "duo_boys": 5,
+    "mixed_duo": 8,
+    "trio": 5,
+    "quad": 3,
+    "group": 2,
+    "solo_other": 3,
+}
+
+# Number words for T5
+NUMBER_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+    11: "eleven", 12: "twelve",
+}
+
+# T5 people count prefix templates
+PEOPLE_COUNT_TEMPLATES = [
+    "{n}people",
+    "{n} people",
+    "{word} people",
+    "{n}persons",
+    "{n} persons",
+    "{word} persons",
+    "there are {word} people",
+    "there is {word} person" if 1 else "there are {word} people",
+    "{word} characters",
+    "{n} characters",
+    "scene with {word} people",
+    "group of {word}",
+    "{word} figures",
+    "{n} figures",
+]
+
+SOLO_TEMPLATES = [
+    "1person",
+    "1 person",
+    "one person",
+    "solo",
+    "single person",
+    "single character",
+    "one character",
+    "alone",
+    "single figure",
+]
+
+
+def sample_coherent_gender() -> Tuple[List[str], int]:
+    """
+    Sample a coherent set of gender tags (no conflicting counts).
+
+    Returns:
+        Tuple of (gender_tags, total_people_count)
+    """
+    # Weighted scenario selection
+    scenarios = list(GENDER_SCENARIO_WEIGHTS.keys())
+    weights = list(GENDER_SCENARIO_WEIGHTS.values())
+    scenario = random.choices(scenarios, weights=weights, k=1)[0]
+
+    tags = []
+    total = 0
+
+    if scenario == "solo_girl":
+        tags = ["1girl"]
+        total = 1
+    elif scenario == "solo_boy":
+        tags = ["1boy"]
+        total = 1
+    elif scenario == "solo_other":
+        # Pick one from other categories
+        other_tags = ["1futa", "1other", "1ambiguous"]
+        tags = [random.choice(other_tags)]
+        total = 1
+    elif scenario == "duo_girls":
+        tags = ["2girls"]
+        total = 2
+    elif scenario == "duo_boys":
+        tags = ["2boys"]
+        total = 2
+    elif scenario == "mixed_duo":
+        tags = ["1girl", "1boy"]
+        total = 2
+    elif scenario == "trio":
+        # Various trio combinations
+        trio_options = [
+            (["3girls"], 3),
+            (["3boys"], 3),
+            (["2girls", "1boy"], 3),
+            (["1girl", "2boys"], 3),
+        ]
+        tags, total = random.choice(trio_options)
+    elif scenario == "quad":
+        quad_options = [
+            (["4girls"], 4),
+            (["4boys"], 4),
+            (["2girls", "2boys"], 4),
+            (["3girls", "1boy"], 4),
+            (["1girl", "3boys"], 4),
+        ]
+        tags, total = random.choice(quad_options)
+    elif scenario == "group":
+        # 5+ people
+        group_options = [
+            (["5girls"], 5),
+            (["5boys"], 5),
+            (["6+girls"], 6),
+            (["6+boys"], 6),
+            (["3girls", "2boys"], 5),
+            (["2girls", "3boys"], 5),
+            (["3girls", "3boys"], 6),
+            (["4girls", "2boys"], 6),
+            (["2girls", "4boys"], 6),
+        ]
+        tags, total = random.choice(group_options)
+
+    return tags, total
+
+
+def generate_people_count_prefix(count: int) -> str:
+    """
+    Generate a T5-friendly people count prefix.
+
+    Args:
+        count: Number of people
+
+    Returns:
+        String like "3people", "three people", "there are three people", etc.
+    """
+    if count == 1:
+        return random.choice(SOLO_TEMPLATES)
+
+    word = NUMBER_WORDS.get(count, str(count))
+
+    # Pick a random template
+    template = random.choice(PEOPLE_COUNT_TEMPLATES)
+
+    # Handle singular/plural edge case
+    if count == 1 and "are" in template:
+        template = template.replace("are", "is").replace("people", "person")
+
+    return template.format(n=count, word=word)
+
+
+def parse_gender_tags_count(tags: List[str]) -> int:
+    """
+    Parse gender tags and return total people count.
+
+    Args:
+        tags: List of tags that may include gender tags
+
+    Returns:
+        Total count of people
+    """
+    total = 0
+
+    for tag in tags:
+        tag_lower = tag.lower().strip()
+
+        # Check numbered tags
+        for category, entries in GENDER_COUNT_TAGS.items():
+            for tag_name, count in entries:
+                if tag_lower == tag_name.lower():
+                    total += count
+                    break
+
+        # Check singular non-numbered tags
+        if tag_lower in ["boy", "man", "male", "mature male"]:
+            total += 1
+        elif tag_lower in ["girl", "woman", "female", "mature female"]:
+            total += 1
+        elif tag_lower in ["futanari", "futa", "herm", "intersex"]:
+            total += 1
+        elif tag_lower in ["femboy", "trap", "otoko no ko", "girly"]:
+            total += 1
+
+    return total
+
+
+class CoherentGenderSampler:
+    """
+    Samples coherent gender tag combinations without conflicts.
+    Tracks people count for T5 prefix generation.
+    """
+
+    def __init__(self, include_count_prefix: bool = True):
+        self.include_count_prefix = include_count_prefix
+        self.last_count = 0
+        self.last_tags = []
+
+    def sample(self) -> Tuple[List[str], int, Optional[str]]:
+        """
+        Sample gender tags coherently.
+
+        Returns:
+            Tuple of (gender_tags, people_count, count_prefix_for_t5)
+        """
+        tags, count = sample_coherent_gender()
+        self.last_tags = tags
+        self.last_count = count
+
+        prefix = None
+        if self.include_count_prefix:
+            prefix = generate_people_count_prefix(count)
+
+        return tags, count, prefix
+
+    def get_t5_prefix(self, count: Optional[int] = None) -> str:
+        """Get a T5-friendly count prefix."""
+        if count is None:
+            count = self.last_count
+        return generate_people_count_prefix(count)
+
 
 BOORU_TEMPLATES = {
     "solo_male": "{quality:1} {gender:1} {character:0,1} {general:6,8}",
@@ -221,6 +477,20 @@ BOORU_TEMPLATES = {
 # ============================================================================
 
 @dataclass
+class ConduitConfig:
+    """Configuration for the conduit tag injection system."""
+    enabled: bool = False
+    top_n: int = 1000  # Pull from top N tags by post count
+    sample_k: int = 10  # Sample K random tags per prompt
+    sample_k_min: int = 5  # Minimum tags to sample (for variance)
+    sample_k_max: int = 15  # Maximum tags to sample
+    position: str = "prepend"  # "prepend", "append", or "random"
+    category_filter: Optional[List[str]] = None  # Only include these categories (None = all)
+    exclude_categories: Optional[List[str]] = None  # Exclude these categories
+    weight_by_rank: bool = False  # Weight sampling by rank (higher rank = more likely)
+
+
+@dataclass
 class BooruConfig:
     """Configuration for BooruSynthesizer."""
     # CSV paths (None = skip loading)
@@ -246,6 +516,15 @@ class BooruConfig:
     # Weights for biasing tag selection
     weight_by_post_count: bool = False
 
+    # Coherent gender sampling (prevents 2girls + 3girls conflicts)
+    use_coherent_gender: bool = True
+
+    # Generate T5 people count prefix ("3people", "there are three people", etc.)
+    generate_t5_prefix: bool = True
+
+    # Conduit system
+    conduit: Optional[ConduitConfig] = None
+
     seed: Optional[int] = None
 
 
@@ -262,6 +541,9 @@ class TagIndex:
         self.category_dict: Dict[str, Set[str]] = {}
         self.source_tags: Dict[str, Set[str]] = {}
 
+        # Sorted cache for conduit
+        self._sorted_by_count: Optional[List[Tuple[str, int, str]]] = None
+
     def add_tag(self, tag_name: str, post_count: int, category: str,
                 aliases: List[str], source: str):
         """Add or update a tag entry."""
@@ -277,6 +559,9 @@ class TagIndex:
 
         self.category_dict.setdefault(category, set()).add(tag_name)
         self.source_tags.setdefault(source, set()).add(tag_name)
+
+        # Invalidate sorted cache
+        self._sorted_by_count = None
 
     def rebuild_alias_dict(self):
         """Rebuild alias->tag mapping, removing overlaps with real tags."""
@@ -303,6 +588,37 @@ class TagIndex:
             weighted.extend([tag] * weight)
         return weighted
 
+    def get_top_tags(
+            self,
+            n: int = 1000,
+            category_filter: Optional[List[str]] = None,
+            exclude_categories: Optional[List[str]] = None
+    ) -> List[Tuple[str, int, str]]:
+        """
+        Get top N tags sorted by post count.
+
+        Returns:
+            List of (tag_name, post_count, category) tuples
+        """
+        # Build sorted list if not cached
+        if self._sorted_by_count is None:
+            self._sorted_by_count = [
+                (tag, data["post_count"], data["category"])
+                for tag, data in self.tag_dict.items()
+            ]
+            self._sorted_by_count.sort(key=lambda x: -x[1])  # Descending by count
+
+        # Filter by category
+        result = self._sorted_by_count
+
+        if category_filter:
+            result = [t for t in result if t[2] in category_filter]
+
+        if exclude_categories:
+            result = [t for t in result if t[2] not in exclude_categories]
+
+        return result[:n]
+
     def __len__(self):
         return len(self.tag_dict)
 
@@ -315,7 +631,11 @@ class TagIndex:
 # ============================================================================
 
 def load_danbooru_csv(path: str, index: TagIndex) -> int:
-    """Load Danbooru-format CSV. Returns count of loaded tags."""
+    """
+    Load Danbooru-format CSV.
+    Format: tag, category, count, aliases
+    Returns count of loaded tags.
+    """
     count = 0
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
@@ -431,6 +751,124 @@ class TagFuzzyMatcher:
 
 
 # ============================================================================
+# CONDUIT SYSTEM
+# ============================================================================
+
+class TagConduit:
+    """
+    Conduit system for injecting random top-N tags into prompts.
+
+    This helps with generalization by exposing the model to common tags
+    in random combinations during training.
+    """
+
+    def __init__(self, tag_index: TagIndex, config: ConduitConfig):
+        self.config = config
+        self.tag_index = tag_index
+
+        # Build conduit pool from top N tags
+        top_tags = tag_index.get_top_tags(
+            n=config.top_n,
+            category_filter=config.category_filter,
+            exclude_categories=config.exclude_categories
+        )
+
+        self.pool: List[str] = [t[0] for t in top_tags]  # Just tag names
+        self.pool_with_counts: List[Tuple[str, int]] = [(t[0], t[1]) for t in top_tags]
+
+        # Build weighted pool if needed
+        if config.weight_by_rank:
+            # Higher rank (lower index) = more weight
+            self.weighted_pool: List[str] = []
+            for i, (tag, count) in enumerate(self.pool_with_counts):
+                # Inverse rank weighting: rank 1 gets N weight, rank N gets 1 weight
+                weight = max(1, len(self.pool) - i)
+                self.weighted_pool.extend([tag] * int(weight ** 0.5))  # sqrt to reduce skew
+        else:
+            self.weighted_pool = self.pool
+
+        print(f"[Conduit] Initialized with {len(self.pool)} tags from top {config.top_n}")
+        if config.category_filter:
+            print(f"[Conduit] Category filter: {config.category_filter}")
+        if config.exclude_categories:
+            print(f"[Conduit] Excluding: {config.exclude_categories}")
+
+    def sample(self) -> List[str]:
+        """Sample K random tags from the conduit pool."""
+        if not self.pool:
+            return []
+
+        # Variable K for more variance
+        if self.config.sample_k_min != self.config.sample_k_max:
+            k = random.randint(self.config.sample_k_min, self.config.sample_k_max)
+        else:
+            k = self.config.sample_k
+
+        k = min(k, len(self.weighted_pool))
+
+        if self.config.weight_by_rank:
+            # Sample from weighted pool (allows duplicates from weighting, then dedupe)
+            sampled = random.sample(self.weighted_pool, min(k * 2, len(self.weighted_pool)))
+            seen = set()
+            result = []
+            for tag in sampled:
+                if tag not in seen:
+                    seen.add(tag)
+                    result.append(tag)
+                    if len(result) >= k:
+                        break
+            return result
+        else:
+            return random.sample(self.pool, k)
+
+    def inject(self, prompt: str, replace_underscores: bool = True) -> str:
+        """Inject sampled tags into a prompt."""
+        tags = self.sample()
+
+        if replace_underscores:
+            tags = [t.replace("_", " ") for t in tags]
+
+        tag_str = ", ".join(tags)
+
+        if self.config.position == "prepend":
+            return f"{tag_str}, {prompt}"
+        elif self.config.position == "append":
+            return f"{prompt}, {tag_str}"
+        elif self.config.position == "random":
+            # Insert at random position
+            parts = prompt.split(", ")
+            insert_pos = random.randint(0, len(parts))
+            parts.insert(insert_pos, tag_str)
+            return ", ".join(parts)
+        else:
+            return f"{tag_str}, {prompt}"
+
+    def get_pool_stats(self) -> Dict:
+        """Get statistics about the conduit pool."""
+        if not self.pool_with_counts:
+            return {"size": 0}
+
+        counts = [c for _, c in self.pool_with_counts]
+
+        # Category breakdown
+        categories = {}
+        for tag in self.pool:
+            data = self.tag_index.tag_dict.get(tag, {})
+            cat = data.get("category", "unknown")
+            categories[cat] = categories.get(cat, 0) + 1
+
+        return {
+            "size": len(self.pool),
+            "top_tag": self.pool[0] if self.pool else None,
+            "top_count": counts[0] if counts else 0,
+            "bottom_tag": self.pool[-1] if self.pool else None,
+            "bottom_count": counts[-1] if counts else 0,
+            "median_count": counts[len(counts) // 2] if counts else 0,
+            "categories": categories,
+        }
+
+
+# ============================================================================
 # TEMPLATE RENDERER
 # ============================================================================
 
@@ -441,17 +879,24 @@ class TemplateRenderer:
 
     def __init__(self, tag_index: TagIndex, templates: Dict[str, str],
                  preserve_tags: Optional[Set[str]] = None,
-                 weight_by_post_count: bool = False):
+                 weight_by_post_count: bool = False,
+                 use_coherent_gender: bool = True,
+                 generate_t5_prefix: bool = True):
         self.tag_index = tag_index
         self.templates = templates
         self.template_names = list(templates.keys())
         self.preserve_tags = preserve_tags or (set(TAG_AESTHETIC_TYPES) | set(TAG_GENDER))
         self.weight_by_post_count = weight_by_post_count
+        self.use_coherent_gender = use_coherent_gender
+        self.generate_t5_prefix = generate_t5_prefix
+
+        # Gender sampler
+        self.gender_sampler = CoherentGenderSampler(include_count_prefix=generate_t5_prefix)
 
         # Pre-build tag pools
         self.pools: Dict[str, List[str]] = {
             "quality": TAG_AESTHETIC_TYPES.copy(),
-            "gender": TAG_GENDER.copy(),
+            "gender": TAG_GENDER.copy(),  # Fallback pool
         }
         for category, tags in tag_index.category_dict.items():
             if weight_by_post_count:
@@ -460,8 +905,13 @@ class TemplateRenderer:
                 self.pools[category] = list(tags)
 
     def render(self, template_name: Optional[str] = None,
-               dedupe: bool = True, replace_underscores: bool = True) -> str:
-        """Render a single template."""
+               dedupe: bool = True, replace_underscores: bool = True) -> Tuple[str, Optional[str], int]:
+        """
+        Render a single template.
+
+        Returns:
+            Tuple of (prompt, t5_prefix, people_count)
+        """
         if template_name is None:
             template_name = random.choice(self.template_names)
 
@@ -470,11 +920,21 @@ class TemplateRenderer:
             raise ValueError(f"Unknown template: {template_name}")
 
         final_tags = []
+        people_count = 0
+        t5_prefix = None
+        gender_already_sampled = False
 
         for match in self.PATTERN.finditer(template):
             cat, min_ct, max_ct = match.groups()
             min_ct = int(min_ct)
             max_ct = int(max_ct or min_ct)
+
+            # Handle gender specially for coherent sampling
+            if cat == "gender" and self.use_coherent_gender and not gender_already_sampled:
+                gender_tags, people_count, t5_prefix = self.gender_sampler.sample()
+                final_tags.extend(gender_tags)
+                gender_already_sampled = True
+                continue
 
             pool = self.pools.get(cat, [])
             if not pool:
@@ -501,7 +961,7 @@ class TemplateRenderer:
                     deduped.append(tag)
             processed = deduped
 
-        return ", ".join(processed)
+        return ", ".join(processed), t5_prefix, people_count
 
 
 # ============================================================================
@@ -514,6 +974,11 @@ class BooruSynthesizer(CaptionBase):
 
     Supports loading tags from CSV files (Danbooru, Gelbooru, e621, Rule34xxx)
     or from custom files (JSONL, TXT).
+
+    Features:
+    - Template-based generation
+    - Conduit system for random top-N tag injection
+    - Multi-threaded batch generation
     """
 
     def __init__(self, config: Optional[BooruConfig] = None):
@@ -521,6 +986,7 @@ class BooruSynthesizer(CaptionBase):
         self.config = config or BooruConfig()
         self.tag_index = TagIndex()
         self.renderer: Optional[TemplateRenderer] = None
+        self.conduit: Optional[TagConduit] = None
         self.hash_cache: Set[str] = set()
 
         if self.config.seed is not None:
@@ -528,6 +994,7 @@ class BooruSynthesizer(CaptionBase):
 
         self._load_csvs()
         self._init_renderer()
+        self._init_conduit()
 
     def _load_csvs(self):
         """Load tag CSVs based on config."""
@@ -553,8 +1020,59 @@ class BooruSynthesizer(CaptionBase):
 
         self.renderer = TemplateRenderer(
             self.tag_index, templates,
-            weight_by_post_count=self.config.weight_by_post_count
+            weight_by_post_count=self.config.weight_by_post_count,
+            use_coherent_gender=self.config.use_coherent_gender,
+            generate_t5_prefix=self.config.generate_t5_prefix,
         )
+
+    def _init_conduit(self):
+        """Initialize conduit system if configured."""
+        if self.config.conduit and self.config.conduit.enabled:
+            self.conduit = TagConduit(self.tag_index, self.config.conduit)
+            print(f"[Conduit] Stats: {self.conduit.get_pool_stats()}")
+
+    def enable_conduit(
+            self,
+            top_n: int = 1000,
+            sample_k: int = 10,
+            sample_k_min: int = 5,
+            sample_k_max: int = 15,
+            position: str = "prepend",
+            category_filter: Optional[List[str]] = None,
+            exclude_categories: Optional[List[str]] = None,
+            weight_by_rank: bool = False
+    ):
+        """
+        Enable or reconfigure the conduit system.
+
+        Args:
+            top_n: Pull from top N tags by post count
+            sample_k: Sample K random tags per prompt (fixed)
+            sample_k_min: Minimum K when using variable sampling
+            sample_k_max: Maximum K when using variable sampling
+            position: Where to inject tags ("prepend", "append", "random")
+            category_filter: Only include these categories (None = all)
+            exclude_categories: Exclude these categories
+            weight_by_rank: Weight sampling by rank (top tags more likely)
+        """
+        self.config.conduit = ConduitConfig(
+            enabled=True,
+            top_n=top_n,
+            sample_k=sample_k,
+            sample_k_min=sample_k_min,
+            sample_k_max=sample_k_max,
+            position=position,
+            category_filter=category_filter,
+            exclude_categories=exclude_categories,
+            weight_by_rank=weight_by_rank
+        )
+        self._init_conduit()
+
+    def disable_conduit(self):
+        """Disable the conduit system."""
+        self.conduit = None
+        if self.config.conduit:
+            self.config.conduit.enabled = False
 
     def load_from_file(self, path: str, format: str = "auto"):
         """
@@ -580,6 +1098,10 @@ class BooruSynthesizer(CaptionBase):
 
         self.tag_index.rebuild_alias_dict()
         self._init_renderer()
+
+        # Rebuild conduit if enabled
+        if self.conduit:
+            self._init_conduit()
 
     def _load_jsonl(self, path: Path):
         """Load from JSONL file."""
@@ -623,24 +1145,96 @@ class BooruSynthesizer(CaptionBase):
 
         return tags
 
-    def generate(self, template_name: Optional[str] = None) -> str:
-        """Generate a single booru-style caption."""
+    def generate(self, template_name: Optional[str] = None,
+                 apply_conduit: bool = True,
+                 include_t5_prefix: bool = False) -> Union[str, Tuple[str, str, int]]:
+        """
+        Generate a single booru-style caption.
+
+        Args:
+            template_name: Specific template to use (None = random)
+            apply_conduit: Whether to apply conduit injection (if enabled)
+            include_t5_prefix: If True, returns (prompt, t5_prefix, people_count)
+
+        Returns:
+            If include_t5_prefix=False: prompt string
+            If include_t5_prefix=True: (prompt, t5_prefix, people_count)
+        """
         if self.renderer is None:
             raise RuntimeError("Renderer not initialized. Load tags first.")
 
-        return self.renderer.render(
+        prompt, t5_prefix, people_count = self.renderer.render(
             template_name=template_name,
             dedupe=self.config.deduplicate,
             replace_underscores=self.config.replace_underscores
         )
 
+        # Apply conduit if enabled
+        if apply_conduit and self.conduit:
+            prompt = self.conduit.inject(prompt, self.config.replace_underscores)
+
+        if include_t5_prefix:
+            return prompt, t5_prefix, people_count
+        return prompt
+
+    def generate_with_t5(self, template_name: Optional[str] = None,
+                         apply_conduit: bool = True) -> Dict[str, any]:
+        """
+        Generate a caption with T5 prefix for training.
+
+        Returns:
+            Dict with keys:
+                - 'clip': The prompt for CLIP (tags only)
+                - 't5': The prompt for T5 (count prefix + tags)
+                - 't5_prefix': Just the count prefix
+                - 'people_count': Integer count
+        """
+        prompt, t5_prefix, people_count = self.generate(
+            template_name=template_name,
+            apply_conduit=apply_conduit,
+            include_t5_prefix=True
+        )
+
+        # Build T5 prompt with count prefix
+        t5_prompt = f"{t5_prefix}, {prompt}" if t5_prefix else prompt
+
+        return {
+            'clip': prompt,
+            't5': t5_prompt,
+            't5_prefix': t5_prefix,
+            'people_count': people_count,
+        }
+
     def generate_batch(self, count: int, deduplicate: bool = True,
-                       template_name: Optional[str] = None) -> List[str]:
-        """Generate a batch of captions."""
+                       template_name: Optional[str] = None,
+                       apply_conduit: bool = True,
+                       include_t5: bool = False) -> Union[List[str], List[Dict]]:
+        """
+        Generate a batch of captions.
+
+        Args:
+            count: Number of captions to generate
+            deduplicate: Skip duplicate captions
+            template_name: Specific template (None = random)
+            apply_conduit: Apply conduit injection
+            include_t5: Return dicts with CLIP/T5 versions
+
+        Returns:
+            List of strings (if include_t5=False) or List of dicts (if include_t5=True)
+        """
         results = []
 
         while len(results) < count:
-            caption = self.generate(template_name=template_name)
+            if include_t5:
+                result = self.generate_with_t5(
+                    template_name=template_name,
+                    apply_conduit=apply_conduit
+                )
+                caption = result['clip']  # Use CLIP prompt for deduplication
+            else:
+                caption = self.generate(template_name=template_name,
+                                        apply_conduit=apply_conduit)
+                result = caption
 
             if deduplicate:
                 h = hashlib.md5(caption.encode()).hexdigest()
@@ -648,15 +1242,16 @@ class BooruSynthesizer(CaptionBase):
                     continue
                 self.hash_cache.add(h)
 
-            results.append(caption)
+            results.append(result)
 
         return results
 
-    def generate_iterator(self, count: int, deduplicate: bool = True) -> Iterator[str]:
+    def generate_iterator(self, count: int, deduplicate: bool = True,
+                          apply_conduit: bool = True) -> Iterator[str]:
         """Generate captions as an iterator (memory efficient)."""
         generated = 0
         while generated < count:
-            caption = self.generate()
+            caption = self.generate(apply_conduit=apply_conduit)
 
             if deduplicate:
                 h = hashlib.md5(caption.encode()).hexdigest()
@@ -669,7 +1264,8 @@ class BooruSynthesizer(CaptionBase):
 
     def generate_to_file(self, path: str, count: int, format: str = "jsonl",
                          num_threads: int = 1, batch_size: int = 1000,
-                         show_progress: bool = True):
+                         show_progress: bool = True, apply_conduit: bool = True,
+                         include_t5: bool = False):
         """
         Generate captions and save to file.
 
@@ -680,16 +1276,21 @@ class BooruSynthesizer(CaptionBase):
             num_threads: Number of threads for generation
             batch_size: Batch size for threaded generation
             show_progress: Show progress bar
+            apply_conduit: Whether to apply conduit injection
+            include_t5: Include T5 prefix in output (JSONL: separate fields)
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         if num_threads > 1:
-            self._generate_threaded(path, count, format, num_threads, batch_size, show_progress)
+            self._generate_threaded(path, count, format, num_threads,
+                                    batch_size, show_progress, apply_conduit, include_t5)
         else:
-            self._generate_single(path, count, format, show_progress)
+            self._generate_single(path, count, format, show_progress, apply_conduit, include_t5)
 
-    def _generate_single(self, path: Path, count: int, format: str, show_progress: bool):
+    def _generate_single(self, path: Path, count: int, format: str,
+                         show_progress: bool, apply_conduit: bool,
+                         include_t5: bool = False):
         """Single-threaded generation."""
         iterator = range(count)
         if show_progress and HAS_TQDM:
@@ -697,23 +1298,43 @@ class BooruSynthesizer(CaptionBase):
 
         with open(path, "w", encoding="utf-8") as f:
             for i in iterator:
-                caption = self.generate()
-
-                if format == "jsonl":
-                    f.write(json.dumps({"text": caption, "index": i}) + "\n")
-                elif format == "txt":
-                    f.write(caption + "\n")
-                elif format == "csv":
-                    f.write(caption.replace(",", ";") + "\n")
+                if include_t5:
+                    result = self.generate_with_t5(apply_conduit=apply_conduit)
+                    if format == "jsonl":
+                        f.write(json.dumps({
+                            "clip": result['clip'],
+                            "t5": result['t5'],
+                            "t5_prefix": result['t5_prefix'],
+                            "people_count": result['people_count'],
+                            "index": i
+                        }) + "\n")
+                    elif format == "txt":
+                        # Write T5 version for txt
+                        f.write(result['t5'] + "\n")
+                    elif format == "csv":
+                        f.write(f"{result['clip'].replace(',', ';')}\t{result['t5'].replace(',', ';')}\n")
+                else:
+                    caption = self.generate(apply_conduit=apply_conduit)
+                    if format == "jsonl":
+                        f.write(json.dumps({"text": caption, "index": i}) + "\n")
+                    elif format == "txt":
+                        f.write(caption + "\n")
+                    elif format == "csv":
+                        f.write(caption.replace(",", ";") + "\n")
 
     def _generate_threaded(self, path: Path, count: int, format: str,
-                           num_threads: int, batch_size: int, show_progress: bool):
+                           num_threads: int, batch_size: int,
+                           show_progress: bool, apply_conduit: bool,
+                           include_t5: bool = False):
         """Multi-threaded generation."""
         lock = threading.Lock()
         sample_index = [0]
 
-        def generate_batch_worker(size: int) -> List[str]:
-            return [self.generate() for _ in range(size)]
+        def generate_batch_worker(size: int) -> List:
+            if include_t5:
+                return [self.generate_with_t5(apply_conduit=apply_conduit) for _ in range(size)]
+            else:
+                return [self.generate(apply_conduit=apply_conduit) for _ in range(size)]
 
         num_batches = (count + batch_size - 1) // batch_size
 
@@ -735,13 +1356,27 @@ class BooruSynthesizer(CaptionBase):
                     for future in futures:
                         batch = future.result()
                         with lock:
-                            for caption in batch:
-                                if format == "jsonl":
-                                    f.write(json.dumps({"text": caption, "index": sample_index[0]}) + "\n")
-                                elif format == "txt":
-                                    f.write(caption + "\n")
-                                elif format == "csv":
-                                    f.write(caption.replace(",", ";") + "\n")
+                            for item in batch:
+                                if include_t5:
+                                    if format == "jsonl":
+                                        f.write(json.dumps({
+                                            "clip": item['clip'],
+                                            "t5": item['t5'],
+                                            "t5_prefix": item['t5_prefix'],
+                                            "people_count": item['people_count'],
+                                            "index": sample_index[0]
+                                        }) + "\n")
+                                    elif format == "txt":
+                                        f.write(item['t5'] + "\n")
+                                    elif format == "csv":
+                                        f.write(f"{item['clip'].replace(',', ';')}\t{item['t5'].replace(',', ';')}\n")
+                                else:
+                                    if format == "jsonl":
+                                        f.write(json.dumps({"text": item, "index": sample_index[0]}) + "\n")
+                                    elif format == "txt":
+                                        f.write(item + "\n")
+                                    elif format == "csv":
+                                        f.write(item.replace(",", ";") + "\n")
                                 sample_index[0] += 1
 
     def clear_cache(self):
@@ -760,15 +1395,35 @@ class BooruSynthesizer(CaptionBase):
         """Get number of tags in a category."""
         return len(self.tag_index.category_dict.get(category, []))
 
+    def get_top_tags(self, n: int = 100, category: Optional[str] = None) -> List[Tuple[str, int]]:
+        """
+        Get top N tags by post count.
+
+        Args:
+            n: Number of tags to return
+            category: Filter by category (None = all)
+
+        Returns:
+            List of (tag_name, post_count) tuples
+        """
+        cat_filter = [category] if category else None
+        top = self.tag_index.get_top_tags(n=n, category_filter=cat_filter)
+        return [(t[0], t[1]) for t in top]
+
     def stats(self) -> Dict:
         """Get synthesizer statistics."""
-        return {
+        result = {
             "total_tags": len(self.tag_index),
             "categories": {cat: len(tags) for cat, tags in self.tag_index.category_dict.items()},
             "sources": {src: len(tags) for src, tags in self.tag_index.source_tags.items()},
             "templates": len(self.get_template_names()),
             "cache_size": len(self.hash_cache),
         }
+
+        if self.conduit:
+            result["conduit"] = self.conduit.get_pool_stats()
+
+        return result
 
     def __getitem__(self, key: str) -> str:
         """Generate using specific template."""
@@ -779,9 +1434,10 @@ class BooruSynthesizer(CaptionBase):
         return len(self.tag_index)
 
     def __repr__(self):
+        conduit_str = f", conduit={len(self.conduit.pool)}" if self.conduit else ""
         return (f"BooruSynthesizer(tags={len(self.tag_index)}, "
                 f"categories={len(self.tag_index.category_dict)}, "
-                f"templates={len(self.get_template_names())})")
+                f"templates={len(self.get_template_names())}{conduit_str})")
 
 
 # ============================================================================
@@ -805,6 +1461,84 @@ def demo_no_csvs():
     print("\n--- Using Specific Templates ---")
     for template in ["solo_girl", "duo_male", "template_001"]:
         print(f"  [{template}] {synth[template]}")
+
+    return synth
+
+
+def demo_with_conduit(danbooru_path: str):
+    """Demo with conduit system enabled."""
+    print("=" * 60)
+    print("Demo: BooruSynthesizer with Conduit")
+    print("=" * 60)
+
+    config = BooruConfig(
+        danbooru_csv=danbooru_path,
+        conduit=ConduitConfig(
+            enabled=True,
+            top_n=1000,
+            sample_k=10,
+            sample_k_min=5,
+            sample_k_max=15,
+            position="prepend",
+            exclude_categories=["artist", "copyright", "character", "metadata"],
+        ),
+        seed=42
+    )
+
+    print("\nLoading tags...")
+    synth = BooruSynthesizer(config)
+    print(f"\n{synth}")
+
+    print("\n--- Top 20 Tags in Conduit Pool ---")
+    if synth.conduit:
+        for i, (tag, count) in enumerate(synth.conduit.pool_with_counts[:20]):
+            print(f"  {i + 1:2d}. {tag}: {count:,}")
+
+    print("\n--- Sample Generations (with conduit) ---")
+    for i in range(10):
+        print(f"  {i + 1}. {synth.generate()}")
+
+    print("\n--- Sample Generations (without conduit) ---")
+    for i in range(5):
+        print(f"  {i + 1}. {synth.generate(apply_conduit=False)}")
+
+    return synth
+
+
+def demo_t5_output(danbooru_path: str = None):
+    """Demo T5 prefix generation with coherent gender sampling."""
+    print("=" * 60)
+    print("Demo: T5 People Count Prefixes")
+    print("=" * 60)
+
+    config = BooruConfig(
+        danbooru_csv=danbooru_path,
+        use_coherent_gender=True,
+        generate_t5_prefix=True,
+        seed=42
+    )
+
+    synth = BooruSynthesizer(config)
+    print(f"\n{synth}")
+
+    print("\n--- Sample Generations with T5 Prefixes ---")
+    for i in range(15):
+        result = synth.generate_with_t5()
+        print(f"\n  {i + 1}.")
+        print(f"     CLIP: {result['clip']}")
+        print(f"     T5:   {result['t5']}")
+        print(f"     Count: {result['people_count']} ({result['t5_prefix']})")
+
+    print("\n--- Gender Scenario Distribution (100 samples) ---")
+    counts = {}
+    for _ in range(100):
+        result = synth.generate_with_t5()
+        n = result['people_count']
+        counts[n] = counts.get(n, 0) + 1
+
+    for n in sorted(counts.keys()):
+        bar = "█" * (counts[n] // 2)
+        print(f"  {n} people: {counts[n]:3d} {bar}")
 
     return synth
 
@@ -833,6 +1567,10 @@ def demo_with_csvs(danbooru_path: str = None, gelbooru_path: str = None,
     print("Categories:")
     for cat, count in sorted(stats['categories'].items(), key=lambda x: -x[1]):
         print(f"  {cat}: {count:,}")
+
+    print("\n--- Top 20 Tags ---")
+    for i, (tag, count) in enumerate(synth.get_top_tags(20)):
+        print(f"  {i + 1:2d}. {tag}: {count:,}")
 
     print("\n--- Sample Generations ---")
     for i in range(10):
@@ -866,14 +1604,35 @@ def benchmark(iterations: int = 10000):
 
 def generate_dataset(output_path: str, count: int = 100000,
                      num_threads: int = 4, format: str = "jsonl",
-                     danbooru_csv: str = None):
+                     danbooru_csv: str = None,
+                     enable_conduit: bool = False,
+                     conduit_top_n: int = 1000,
+                     conduit_sample_k: int = 10,
+                     include_t5: bool = False):
     """Generate a dataset file."""
     print("=" * 60)
     print(f"Generate Dataset: {count:,} samples -> {output_path}")
+    if include_t5:
+        print("  T5 prefixes: ENABLED")
     print("=" * 60)
+
+    conduit_config = None
+    if enable_conduit:
+        conduit_config = ConduitConfig(
+            enabled=True,
+            top_n=conduit_top_n,
+            sample_k=conduit_sample_k,
+            sample_k_min=5,
+            sample_k_max=15,
+            position="prepend",
+            exclude_categories=["artist", "copyright", "character", "metadata"],
+        )
 
     config = BooruConfig(
         danbooru_csv=danbooru_csv,
+        conduit=conduit_config,
+        use_coherent_gender=True,
+        generate_t5_prefix=include_t5,
         seed=42
     )
 
@@ -889,7 +1648,9 @@ def generate_dataset(output_path: str, count: int = 100000,
         format=format,
         num_threads=num_threads,
         batch_size=1000,
-        show_progress=True
+        show_progress=True,
+        apply_conduit=enable_conduit,
+        include_t5=include_t5
     )
 
     elapsed = time.time() - start
@@ -903,6 +1664,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Booru Tag Synthesizer")
     parser.add_argument("--demo", action="store_true", help="Run demo")
+    parser.add_argument("--demo-t5", action="store_true", help="Run T5 prefix demo")
     parser.add_argument("--benchmark", type=int, default=0, help="Run benchmark with N iterations")
     parser.add_argument("--generate", type=str, help="Generate dataset to path")
     parser.add_argument("--count", type=int, default=100000, help="Number of samples to generate")
@@ -913,10 +1675,23 @@ if __name__ == "__main__":
     parser.add_argument("--e621", type=str, help="Path to e621.csv")
     parser.add_argument("--rule34x", type=str, help="Path to rule34_xxx.csv")
 
+    # Conduit options
+    parser.add_argument("--conduit", action="store_true", help="Enable conduit system")
+    parser.add_argument("--conduit-top-n", type=int, default=1000, help="Conduit: top N tags")
+    parser.add_argument("--conduit-sample-k", type=int, default=10, help="Conduit: sample K tags")
+
+    # T5 options
+    parser.add_argument("--t5", action="store_true", help="Include T5 people count prefixes")
+
     args = parser.parse_args()
 
-    if args.demo:
-        if any([args.danbooru, args.gelbooru, args.e621, args.rule34x]):
+    if args.demo_t5:
+        demo_t5_output(args.danbooru)
+
+    elif args.demo:
+        if args.conduit and args.danbooru:
+            demo_with_conduit(args.danbooru)
+        elif any([args.danbooru, args.gelbooru, args.e621, args.rule34x]):
             demo_with_csvs(args.danbooru, args.gelbooru, args.e621, args.rule34x)
         else:
             demo_no_csvs()
@@ -930,7 +1705,11 @@ if __name__ == "__main__":
             count=args.count,
             num_threads=args.threads,
             format=args.format,
-            danbooru_csv=args.danbooru
+            danbooru_csv=args.danbooru,
+            enable_conduit=args.conduit,
+            conduit_top_n=args.conduit_top_n,
+            conduit_sample_k=args.conduit_sample_k,
+            include_t5=args.t5
         )
 
     else:
