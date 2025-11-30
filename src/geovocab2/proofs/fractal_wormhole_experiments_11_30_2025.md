@@ -1,8 +1,3 @@
-"""
-Creating comprehensive research document for wormhole routing experiments.
-"""
-
-document_content = '''
 # Wormhole Routing: Discovery of the Learned JMP Primitive
 
 **Date:** November 29, 2025  
