@@ -180,9 +180,9 @@ class SpatialTopologicalDropout(nn.Module):
         scale: Whether to scale surviving patches (default: True)
 
     Example:
-        >>> dropout = SpatialTopologicalDropout(drop_prob=0.2, patch_size=4)
-        >>> x = torch.randn(32, 64, 28, 28)  # [B, C, H, W]
-        >>> out = dropout(x)  # Drops ~20% of 4x4 patches
+        #>>> dropout = SpatialTopologicalDropout(drop_prob=0.2, patch_size=4)
+        #>>> x = torch.randn(32, 64, 28, 28)  # [B, C, H, W]
+        #>>> out = dropout(x)  # Drops ~20% of 4x4 patches
     """
 
     def __init__(

@@ -1187,6 +1187,31 @@ class TemplateComposer:
             if self.rule_engine.is_valid_selection("human.attire.accessory", selected + paths):
                 paths.append("human.attire.accessory")
 
+        # Footwear - higher complexity
+        if complexity >= 4 and self.sg.random() < 0.35:
+            if self.rule_engine.is_valid_selection("human.attire.footwear", selected + paths):
+                paths.append("human.attire.footwear")
+
+        # Jewelry - high complexity detail
+        if complexity >= 4 and self.sg.random() < 0.20:
+            if self.rule_engine.is_valid_selection("human.attire.jewelry", selected + paths):
+                paths.append("human.attire.jewelry")
+
+        # Headwear - high complexity, mutually exclusive with hair_style
+        if complexity >= 4 and self.sg.random() < 0.25:
+            if self.rule_engine.is_valid_selection("human.attire.headwear", selected + paths):
+                paths.append("human.attire.headwear")
+
+        # Human expression - higher complexity emotional detail
+        if complexity >= 4 and self.sg.random() < 0.30:
+            if self.rule_engine.is_valid_selection("human.expression.human_expression", selected + paths):
+                paths.append("human.expression.human_expression")
+
+        # Human interaction - very high complexity
+        if complexity >= 5 and self.sg.random() < 0.20:
+            if self.rule_engine.is_valid_selection("human.expression.human_interaction", selected + paths):
+                paths.append("human.expression.human_interaction")
+
         return paths
 
     def _select_context_valid(self, complexity: int, selected: List[str], noise: float) -> List[str]:
@@ -1208,6 +1233,63 @@ class TemplateComposer:
             if self.rule_engine.is_valid_selection("context.depiction.composition.style", selected + paths):
                 paths.append("context.depiction.composition.style")
 
+        # Decoration - higher complexity environmental detail
+        if complexity >= 4 and self.sg.random() < 0.30:
+            if self.rule_engine.is_valid_selection("context.environment.decoration", selected + paths):
+                paths.append("context.environment.decoration")
+
+        # Chair - higher complexity, requires pose
+        if complexity >= 4 and self.sg.random() < 0.25:
+            if self.rule_engine.is_valid_selection("context.environment.chair", selected + paths):
+                paths.append("context.environment.chair")
+
+        # Pattern - materiality detail at higher complexity
+        if complexity >= 4 and self.sg.random() < 0.25:
+            if self.rule_engine.is_valid_selection("context.materiality.pattern", selected + paths):
+                paths.append("context.materiality.pattern")
+
+        # Liquid - specialized materiality
+        if complexity >= 4 and self.sg.random() < 0.15:
+            if self.rule_engine.is_valid_selection("context.materiality.liquid", selected + paths):
+                paths.append("context.materiality.liquid")
+
+        # Viewer perspective - high complexity compositional control
+        if complexity >= 5 and self.sg.random() < 0.40:
+            # Choose one from viewer subcategories
+            viewer_candidates = ["context.depiction.viewer.subject_angle",
+                                "context.depiction.viewer.grid",
+                                "context.depiction.viewer.focal_region"]
+            for candidate in viewer_candidates:
+                if self.rule_engine.is_valid_selection(candidate, selected + paths):
+                    if self.sg.random() < 0.5:  # 50% to pick this one
+                        paths.append(candidate)
+                        break
+
+        # Object view - very high complexity spatial relationships
+        if complexity >= 5 and self.sg.random() < 0.30:
+            # Choose one from object_view subcategories
+            view_candidates = ["context.depiction.object_view.zone",
+                              "context.depiction.object_view.object_left",
+                              "context.depiction.object_view.object_right"]
+            for candidate in view_candidates:
+                if self.rule_engine.is_valid_selection(candidate, selected + paths):
+                    if self.sg.random() < 0.5:  # 50% to pick this one
+                        paths.append(candidate)
+                        break
+
+        # Composition details - very high complexity
+        if complexity >= 5 and self.sg.random() < 0.20:
+            if self.rule_engine.is_valid_selection("context.depiction.composition.offset", selected + paths):
+                paths.append("context.depiction.composition.offset")
+
+        if complexity >= 5 and self.sg.random() < 0.15:
+            if self.rule_engine.is_valid_selection("context.depiction.composition.shape", selected + paths):
+                paths.append("context.depiction.composition.shape")
+
+        if complexity >= 5 and self.sg.random() < 0.25:
+            if self.rule_engine.is_valid_selection("context.depiction.composition.emotion", selected + paths):
+                paths.append("context.depiction.composition.emotion")
+
         return paths
 
     def _select_descriptors_valid(self, complexity: int, selected: List[str]) -> List[str]:
@@ -1223,6 +1305,31 @@ class TemplateComposer:
         if complexity >= 2 and self.sg.random() < 0.5:
             if self.rule_engine.is_valid_selection("shared.descriptors.color", selected + paths):
                 paths.append("shared.descriptors.color")
+
+        # Size - higher complexity descriptor
+        if complexity >= 3 and self.sg.random() < 0.30:
+            if self.rule_engine.is_valid_selection("shared.descriptors.size", selected + paths):
+                paths.append("shared.descriptors.size")
+
+        # Prefix - high complexity modifier
+        if complexity >= 4 and self.sg.random() < 0.20:
+            if self.rule_engine.is_valid_selection("shared.descriptors.prefix", selected + paths):
+                paths.append("shared.descriptors.prefix")
+
+        # Suffix - high complexity modifier
+        if complexity >= 4 and self.sg.random() < 0.15:
+            if self.rule_engine.is_valid_selection("shared.descriptors.suffix", selected + paths):
+                paths.append("shared.descriptors.suffix")
+
+        # Scope - very high complexity determiner
+        if complexity >= 5 and self.sg.random() < 0.20:
+            if self.rule_engine.is_valid_selection("shared.descriptors.scope", selected + paths):
+                paths.append("shared.descriptors.scope")
+
+        # Degradation - very high complexity (mutually exclusive with quality)
+        if complexity >= 5 and self.sg.random() < 0.05:
+            if self.rule_engine.is_valid_selection("shared.descriptors.degradation", selected + paths):
+                paths.append("shared.descriptors.degradation")
 
         return paths
 
