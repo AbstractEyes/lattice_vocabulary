@@ -1,0 +1,1011 @@
+n01440764, tench, tench|テンチ|丁鱥|tinca tinca|doctor fish, animal, fish
+n01443537, goldfish, goldfish|金魚|金鱼|carassius auratus|fancy goldfish|koi, animal, fish
+n01484850, great_white_shark, great white shark|ホホジロザメ|大白鲨|white shark|carcharodon, animal, fish
+n01491361, tiger_shark, tiger shark|イタチザメ|虎鲨|galeocerdo cuvier|sea tiger, animal, fish
+n01494475, hammerhead, hammerhead shark|シュモクザメ|双髻鲨|sphyrna|hammer shark, animal, fish
+n01496331, electric_ray, electric ray|シビレエイ|电鳐|torpedo ray|numbfish, animal, fish
+n01498041, stingray, stingray|アカエイ|黄貂鱼|sting ray|dasyatis, animal, fish
+n01514668, cock, rooster|雄鶏|公鸡|cockerel|chanticleer, animal, bird
+n01514859, hen, hen|雌鶏|母鸡|chicken|pullet, animal, bird
+n01518878, ostrich, ostrich|ダチョウ|鸵鸟|struthio camelus, animal, bird
+n01530575, brambling, brambling|アトリ|燕雀|bramble finch, animal, bird
+n01531178, goldfinch, goldfinch|ゴシキヒワ|金翅雀|european goldfinch, animal, bird
+n01532829, house_finch, house finch|メキシコマシコ|家朱雀|carpodacus mexicanus, animal, bird
+n01534433, junco, junco|ユキヒメドリ|灯草鹀|snowbird|dark-eyed junco, animal, bird
+n01537544, indigo_bunting, indigo bunting|ルリノジコ|靛蓝鹀|indigo bird, animal, bird
+n01558993, robin, american robin|コマツグミ|旅鸫|robin redbreast, animal, bird
+n01560419, bulbul, bulbul|ヒヨドリ|鹎|nightingale of the east, animal, bird
+n01580077, jay, jay|カケス|松鸦|blue jay, animal, bird
+n01582220, magpie, magpie|カササギ|喜鹊|pica pica|eurasian magpie, animal, bird
+n01592084, chickadee, chickadee|アメリカコガラ|山雀|black-capped chickadee, animal, bird
+n01601694, water_ouzel, dipper|カワガラス|河乌|water ouzel|aquatic songbird, animal, bird
+n01608432, kite, kite|トビ|鸢|milvus|bird of prey, animal, bird
+n01614925, bald_eagle, bald eagle|ハクトウワシ|白头鹰|american eagle|haliaeetus, animal, bird
+n01616318, vulture, vulture|ハゲワシ|秃鹫|condor|buzzard, animal, bird
+n01622779, great_grey_owl, great grey owl|カラフトフクロウ|乌林鸮|great gray owl|lapland owl, animal, bird
+n01629819, European_fire_salamander, fire salamander|ファイアサラマンダー|火蝾螈|salamandra salamandra, animal, amphibian
+n01630670, common_newt, smooth newt|イモリ|蝾螈|common newt|lissotriton vulgaris, animal, amphibian
+n01631663, eft, eft|イモリの幼生|蝾螈幼体|newt juvenile|red eft, animal, amphibian
+n01632458, spotted_salamander, spotted salamander|トラフサンショウウオ|斑点蝾螈|ambystoma maculatum, animal, amphibian
+n01632777, axolotl, axolotl|アホロートル|美西螈|mexican walking fish|mud puppy, animal, amphibian
+n01641577, bullfrog, bullfrog|ウシガエル|牛蛙|american bullfrog|rana catesbeiana, animal, amphibian
+n01644373, tree_frog, tree frog|アマガエル|树蛙|tree toad|hyla, animal, amphibian
+n01644900, tailed_frog, tailed frog|オガエル|尾蛙|ascaphus truei|coastal tailed frog, animal, amphibian
+n01664065, loggerhead, loggerhead turtle|アカウミガメ|红海龟|loggerhead sea turtle, animal, reptile
+n01665541, leatherback_turtle, leatherback turtle|オサガメ|棱皮龟|leatherback sea turtle|luth, animal, reptile
+n01667114, mud_turtle, mud turtle|ドロガメ|泥龟|kinosternon, animal, reptile
+n01667778, terrapin, terrapin|テラピン|龟|diamondback terrapin, animal, reptile
+n01669191, box_turtle, box turtle|ハコガメ|箱龟|box tortoise|terrapene, animal, reptile
+n01675722, banded_gecko, banded gecko|ヒョウモントカゲモドキ|豹纹守宫|leopard gecko|eublepharis, animal, reptile
+n01677366, common_iguana, green iguana|イグアナ|绿鬣蜥|common iguana|iguana iguana, animal, reptile
+n01682714, American_chameleon, green anole|グリーンアノール|变色蜥|american chameleon|anolis carolinensis, animal, reptile
+n01685808, whiptail, whiptail lizard|ムチオトカゲ|鞭尾蜥|cnemidophorus|racerunner, animal, reptile
+n01687978, agama, agama|アガマ|鬣蜥|agama lizard|rainbow lizard, animal, reptile
+n01688243, frilled_lizard, frilled lizard|エリマキトカゲ|伞蜥|frilled dragon|chlamydosaurus, animal, reptile
+n01689811, alligator_lizard, alligator lizard|ワニトカゲ|鳄蜥|elgaria|gerrhonotus, animal, reptile
+n01692333, Gila_monster, gila monster|アメリカドクトカゲ|吉拉毒蜥|heloderma suspectum, animal, reptile
+n01693334, green_lizard, green lizard|ミドリカナヘビ|绿蜥蜴|lacerta viridis|european green lizard, animal, reptile
+n01694178, African_chameleon, african chameleon|アフリカカメレオン|非洲变色龙|chamaeleo africanus, animal, reptile
+n01695060, Komodo_dragon, komodo dragon|コモドオオトカゲ|科莫多龙|komodo monitor|ora, animal, reptile
+n01697457, African_crocodile, nile crocodile|ナイルワニ|尼罗鳄|crocodylus niloticus, animal, reptile
+n01698640, American_alligator, american alligator|アメリカアリゲーター|美洲鳄|alligator mississippiensis|gator, animal, reptile
+n01704323, triceratops, triceratops|トリケラトプス|三角龙|three-horned dinosaur, animal, reptile
+n01728572, thunder_snake, thunder snake|サンダースネーク|雷蛇|worm snake|carphophis, animal, reptile
+n01728920, ringneck_snake, ringneck snake|クビワヘビ|环颈蛇|ring-necked snake|diadophis, animal, reptile
+n01729322, hognose_snake, hognose snake|シシバナヘビ|猪鼻蛇|heterodon|puff adder, animal, reptile
+n01729977, green_snake, green snake|ミドリヘビ|绿蛇|grass snake|opheodrys, animal, reptile
+n01734418, king_snake, king snake|キングスネーク|王蛇|lampropeltis, animal, reptile
+n01735189, garter_snake, garter snake|ガーターヘビ|束带蛇|garden snake|thamnophis, animal, reptile
+n01737021, water_snake, water snake|ミズヘビ|水蛇|nerodia|banded water snake, animal, reptile
+n01739381, vine_snake, vine snake|ツルヘビ|藤蛇|oxybelis|whip snake, animal, reptile
+n01740131, night_snake, night snake|ナイトスネーク|夜蛇|hypsiglena|cat-eyed snake, animal, reptile
+n01742172, boa_constrictor, boa constrictor|ボアコンストリクター|蚺蛇|red-tailed boa, animal, reptile
+n01744401, rock_python, rock python|アフリカニシキヘビ|岩蟒|african rock python|python sebae, animal, reptile
+n01748264, Indian_cobra, indian cobra|インドコブラ|印度眼镜蛇|spectacled cobra|naja naja, animal, reptile
+n01749939, green_mamba, green mamba|グリーンマンバ|绿曼巴|dendroaspis|eastern green mamba, animal, reptile
+n01751748, sea_snake, sea snake|ウミヘビ|海蛇|hydrophiinae|sea serpent, animal, reptile
+n01753488, horned_viper, horned viper|ツノクサリヘビ|角蝰|cerastes|saharan horned viper, animal, reptile
+n01755581, diamondback, diamondback rattlesnake|ダイヤガラガラヘビ|菱斑响尾蛇|crotalus adamanteus, animal, reptile
+n01756291, sidewinder, sidewinder|ヨコバイガラガラヘビ|角响尾蛇|horned rattlesnake|crotalus cerastes, animal, reptile
+n01768244, trilobite, trilobite|三葉虫|三叶虫|fossil arthropod, animal, arachnid
+n01770081, harvestman, harvestman|ザトウムシ|盲蛛|daddy longlegs|opiliones, animal, arachnid
+n01770393, scorpion, scorpion|サソリ|蝎子|scorpiones|desert scorpion, animal, arachnid
+n01773157, black_and_gold_garden_spider, garden spider|コガネグモ|花园蜘蛛|argiope aurantia|writing spider, animal, arachnid
+n01773549, barn_spider, barn spider|バーンスパイダー|谷仓蜘蛛|araneus cavaticus|charlotte's spider, animal, arachnid
+n01773797, garden_spider, european garden spider|ニワオニグモ|十字园蛛|cross spider|araneus diadematus, animal, arachnid
+n01774384, black_widow, black widow|クロゴケグモ|黑寡妇|latrodectus mactans, animal, arachnid
+n01774750, tarantula, tarantula|タランチュラ|狼蛛|theraphosidae|bird spider, animal, arachnid
+n01775062, wolf_spider, wolf spider|コモリグモ|狼蛛|lycosidae|ground spider, animal, arachnid
+n01776313, tick, tick|ダニ|蜱虫|ixodida|blood tick, animal, arachnid
+n01784675, centipede, centipede|ムカデ|蜈蚣|chilopoda|hundred-legger, animal, insect
+n01795545, black_grouse, ruffed grouse|エリマキライチョウ|披肩榛鸡|bonasa umbellus|partridge, animal, bird
+n01796340, ptarmigan, prairie chicken|ソウゲンライチョウ|草原榛鸡|prairie grouse|tympanuchus, animal, bird
+n01797886, ruffed_grouse, peacock|クジャク|孔雀|peafowl|pavo cristatus, animal, bird
+n01798484, prairie_chicken, quail|ウズラ|鹌鹑|coturnix|common quail, animal, bird
+n01806143, peacock, partridge|ヤマウズラ|山鹑|perdix|grey partridge, animal, bird
+n01806567, quail, african grey parrot|ヨウム|非洲灰鹦鹉|grey parrot|psittacus erithacus, animal, bird
+n01807496, partridge, macaw|コンゴウインコ|金刚鹦鹉|ara|blue and gold macaw, animal, bird
+n01817953, African_grey, sulphur-crested cockatoo|キバタン|葵花凤头鹦鹉|cacatua galerita, animal, bird
+n01818515, macaw, lorikeet|ヒインコ|吸蜜鹦鹉|lory|rainbow lorikeet, animal, bird
+n01819313, sulphur-crested_cockatoo, coucal|バンケン|鸦鹃|crow pheasant|centropus, animal, bird
+n01820546, lorikeet, bee-eater|ハチクイ|蜂虎|merops|rainbow bee-eater, animal, bird
+n01824575, coucal, hornbill|サイチョウ|犀鸟|bucerotidae|great hornbill, animal, bird
+n01828970, bee_eater, hummingbird|ハチドリ|蜂鸟|trochilidae|colibri, animal, bird
+n01829413, hornbill, jacamar|キリハシ|鹟鴷|galbulidae|rufous-tailed jacamar, animal, bird
+n01833805, hummingbird, toucan|オオハシ|巨嘴鸟|ramphastidae|toco toucan, animal, bird
+n01843065, jacamar, drake|アヒル|公鸭|male duck|mallard drake, animal, bird
+n01843383, toucan, red-breasted merganser|ウミアイサ|红胸秋沙鸭|mergus serrator, animal, bird
+n01847000, drake, goose|ガチョウ|鹅|anser|domestic goose|gander, animal, bird
+n01855032, red-breasted_merganser, black swan|コクチョウ|黑天鹅|cygnus atratus, animal, bird
+n01855672, goose, white stork|コウノトリ|白鹳|ciconia ciconia|european stork, animal, bird
+n01860187, black_swan, black stork|ナベコウ|黑鹳|ciconia nigra, animal, bird
+n01871265, tusker, tusker|牙のある象|长牙象|tusked elephant|big tusker, animal, marsupial
+n01872401, echidna, echidna|ハリモグラ|针鼹|spiny anteater|tachyglossus, animal, marsupial
+n01873310, platypus, platypus|カモノハシ|鸭嘴兽|duck-billed platypus|ornithorhynchus, animal, marsupial
+n01877812, wallaby, wallaby|ワラビー|沙袋鼠|small kangaroo|brush kangaroo, animal, marsupial
+n01882714, koala, koala|コアラ|树袋熊|koala bear|phascolarctos, animal, marsupial
+n01883070, wombat, wombat|ウォンバット|袋熊|vombatidae|common wombat, animal, marsupial
+n01910747, jellyfish, jellyfish|クラゲ|水母|medusa|sea jelly, animal, invertebrate
+n01914609, sea_anemone, sea anemone|イソギンチャク|海葵|actiniaria|anemone, animal, invertebrate
+n01917289, brain_coral, brain coral|ノウサンゴ|脑珊瑚|diploria|grooved brain coral, animal, invertebrate
+n01924916, flatworm, flatworm|扁形動物|扁虫|platyhelminthes|planarian, animal, invertebrate
+n01930112, nematode, nematode|線虫|线虫|roundworm|ascaris, animal, invertebrate
+n01943899, conch, conch|ホラガイ|海螺|queen conch|strombus, animal, invertebrate
+n01944390, snail, snail|カタツムリ|蜗牛|escargot|garden snail, animal, invertebrate
+n01945685, slug, slug|ナメクジ|蛞蝓|shell-less snail|limax, animal, invertebrate
+n01950731, sea_slug, sea slug|ウミウシ|海蛞蝓|nudibranch|sea butterfly, animal, invertebrate
+n01955084, chiton, chiton|ヒザラガイ|石鳖|coat-of-mail shell|polyplacophora, animal, invertebrate
+n01968897, chambered_nautilus, nautilus|オウムガイ|鹦鹉螺|chambered nautilus|nautilus pompilius, animal, invertebrate
+n01978287, Dungeness_crab, dungeness crab|アメリカイチョウガニ|珍宝蟹|metacarcinus magister, animal, invertebrate
+n01978455, rock_crab, rock crab|イシガニ|岩蟹|cancer irroratus|atlantic rock crab, animal, invertebrate
+n01980166, fiddler_crab, fiddler crab|シオマネキ|招潮蟹|calling crab|uca, animal, invertebrate
+n01981276, king_crab, king crab|タラバガニ|帝王蟹|alaskan king crab|paralithodes, animal, invertebrate
+n01983481, American_lobster, american lobster|アメリカンロブスター|美洲龙虾|maine lobster|homarus americanus, animal, invertebrate
+n01984695, spiny_lobster, spiny lobster|イセエビ|龙虾|rock lobster|langouste, animal, invertebrate
+n01985128, crayfish, crayfish|ザリガニ|小龙虾|crawfish|crawdad|freshwater lobster, animal, invertebrate
+n01986214, hermit_crab, hermit crab|ヤドカリ|寄居蟹|paguroidea|soldier crab, animal, invertebrate
+n01990800, isopod, isopod|等脚類|等足目|pill bug|woodlouse|roly-poly, animal, invertebrate
+n02002556, white_stork, white pelican|モモイロペリカン|白鹈鹕|pelecanus onocrotalus|great white pelican, animal, bird
+n02002724, black_stork, brown pelican|カッショクペリカン|褐鹈鹕|pelecanus occidentalis, animal, bird
+n02006656, spoonbill, spoonbill|ヘラサギ|琵鹭|platalea|roseate spoonbill, animal, bird
+n02007558, flamingo, flamingo|フラミンゴ|火烈鸟|phoenicopterus|greater flamingo, animal, bird
+n02009229, little_blue_heron, little blue heron|ヒメアカクロサギ|小蓝鹭|egretta caerulea, animal, bird
+n02009912, American_egret, great egret|ダイサギ|大白鹭|ardea alba|common egret, animal, bird
+n02011460, bittern, bittern|サンカノゴイ|麻鳽|botaurus|american bittern, animal, bird
+n02012849, crane, crane bird|ツル|鹤|grus|sandhill crane|whooping crane, animal, bird
+n02013706, limpkin, limpkin|ツルモドキ|秧鹤|aramus guarauna|crying bird, animal, bird
+n02017213, European_gallinule, common moorhen|バン|黑水鸡|gallinula chloropus|moorhen, animal, bird
+n02018207, American_coot, american coot|アメリカオオバン|美洲骨顶|fulica americana|mud hen, animal, bird
+n02018795, bustard, bustard|ノガン|鸨|otididae|great bustard, animal, bird
+n02025239, ruddy_turnstone, ruddy turnstone|キョウジョシギ|翻石鹬|arenaria interpres, animal, bird
+n02027492, red-backed_sandpiper, dunlin|ハマシギ|黑腹滨鹬|calidris alpina|red-backed sandpiper, animal, bird
+n02028035, redshank, redshank|アカアシシギ|红脚鹬|tringa totanus|common redshank, animal, bird
+n02033041, dowitcher, dowitcher|オオハシシギ|长嘴鹬|limnodromus|long-billed dowitcher, animal, bird
+n02037110, oystercatcher, oystercatcher|ミヤコドリ|蛎鹬|haematopus|american oystercatcher, animal, bird
+n02051845, pelican, pelican|ペリカン|鹈鹕|pelecanus|pelican bird, animal, bird
+n02056570, king_penguin, king penguin|オウサマペンギン|国王企鹅|aptenodytes patagonicus, animal, bird
+n02058221, albatross, albatross|アホウドリ|信天翁|diomedeidae|wandering albatross, animal, bird
+n02066245, grey_whale, gray whale|コククジラ|灰鲸|eschrichtius robustus|california gray whale, animal, marine_mammal
+n02071294, killer_whale, sea lion|アシカ|海狮|otariidae|california sea lion, animal, marine_mammal
+n02074367, dugong, sea otter|ラッコ|海獭|enhydra lutris, animal, marine_mammal
+n02077923, sea_lion, sea cucumber|ナマコ|海参|holothuroidea|bêche-de-mer, animal, marine_mammal
+n02085620, Chihuahua, chihuahua|チワワ|吉娃娃|chi|teacup dog, animal, dog
+n02085782, Japanese_spaniel, japanese chin|狆|日本狆|chin spaniel, animal, dog
+n02085936, Maltese_dog, maltese|マルチーズ|马尔济斯|maltese terrier, animal, dog
+n02086079, Pekinese, pekingese|ペキニーズ|北京犬|peke|lion dog, animal, dog
+n02086240, Shih-Tzu, shih tzu|シーズー|西施犬|chrysanthemum dog, animal, dog
+n02086646, Blenheim_spaniel, blenheim spaniel|ブレナムスパニエル|布伦海姆, animal, dog
+n02086910, papillon, papillon|パピヨン|蝴蝶犬|butterfly dog|epagneul nain, animal, dog
+n02087046, toy_terrier, toy terrier|トイテリア|玩具㹴|english toy terrier, animal, dog
+n02087394, Rhodesian_ridgeback, rhodesian ridgeback|ローデシアンリッジバック|猎狮犬|african lion hound, animal, dog
+n02088094, Afghan_hound, afghan hound|アフガンハウンド|阿富汗猎犬|tazi|baluchi hound, animal, dog
+n02088238, basset, basset hound|バセットハウンド|巴吉度猎犬|basset, animal, dog
+n02088364, beagle, beagle|ビーグル|比格犬|english beagle, animal, dog
+n02088466, bloodhound, bloodhound|ブラッドハウンド|寻血猎犬|sleuth hound|st hubert hound, animal, dog
+n02088632, bluetick, bluetick coonhound|ブルーティック|蓝色猎浣熊犬, animal, dog
+n02089078, black-and-tan_coonhound, black and tan coonhound|ブラックアンドタン|黑褐猎浣熊犬, animal, dog
+n02089867, Walker_hound, walker hound|ウォーカーハウンド|沃克猎犬|treeing walker, animal, dog
+n02089973, English_foxhound, english foxhound|イングリッシュフォックスハウンド|英国猎狐犬, animal, dog
+n02090379, redbone, redbone coonhound|レッドボーン|红骨猎浣熊犬, animal, dog
+n02090622, borzoi, borzoi|ボルゾイ|俄罗斯猎狼犬|russian wolfhound, animal, dog
+n02090721, Irish_wolfhound, irish wolfhound|アイリッシュウルフハウンド|爱尔兰猎狼犬, animal, dog
+n02091032, Italian_greyhound, italian greyhound|イタリアングレーハウンド|意大利灵缇|iggy, animal, dog
+n02091134, whippet, whippet|ウィペット|惠比特犬|snap dog, animal, dog
+n02091244, Ibizan_hound, ibizan hound|イビザンハウンド|伊比赞猎犬|podenco ibicenco, animal, dog
+n02091467, Norwegian_elkhound, norwegian elkhound|ノルウェジアンエルクハウンド|挪威猎麋犬, animal, dog
+n02091635, otterhound, otterhound|オッターハウンド|水獭猎犬, animal, dog
+n02091831, Saluki, saluki|サルーキ|萨路基猎犬|gazelle hound|persian greyhound, animal, dog
+n02092002, Scottish_deerhound, scottish deerhound|スコティッシュディアハウンド|苏格兰猎鹿犬, animal, dog
+n02092339, Weimaraner, weimaraner|ワイマラナー|威玛猎犬|grey ghost, animal, dog
+n02093256, Staffordshire_bullterrier, staffordshire bull terrier|スタッフォードシャーブルテリア|斯塔福郡斗牛㹴|staffie, animal, dog
+n02093428, American_Staffordshire_terrier, american staffordshire terrier|アメリカンスタッフォードシャーテリア|美国斯塔福郡㹴|amstaff, animal, dog
+n02093647, Bedlington_terrier, bedlington terrier|ベドリントンテリア|贝灵顿㹴|rothbury terrier, animal, dog
+n02093754, Border_terrier, border terrier|ボーダーテリア|边境㹴, animal, dog
+n02093859, Kerry_blue_terrier, kerry blue terrier|ケリーブルーテリア|凯利蓝㹴|irish blue, animal, dog
+n02093991, Irish_terrier, irish terrier|アイリッシュテリア|爱尔兰㹴|red devil, animal, dog
+n02094114, Norfolk_terrier, norfolk terrier|ノーフォークテリア|诺福克㹴, animal, dog
+n02094258, Norwich_terrier, norwich terrier|ノーリッチテリア|诺里奇㹴, animal, dog
+n02094433, Yorkshire_terrier, yorkshire terrier|ヨークシャーテリア|约克夏㹴|yorkie, animal, dog
+n02095314, wire-haired_fox_terrier, wire fox terrier|ワイヤーフォックステリア|刚毛猎狐㹴, animal, dog
+n02095570, Lakeland_terrier, lakeland terrier|レークランドテリア|湖畔㹴, animal, dog
+n02095889, Sealyham_terrier, sealyham terrier|シーリハムテリア|锡利哈姆㹴, animal, dog
+n02096051, Airedale, airedale terrier|エアデールテリア|万能㹴|king of terriers, animal, dog
+n02096177, cairn, cairn terrier|ケアーンテリア|凯恩㹴|toto dog, animal, dog
+n02096294, Australian_terrier, australian terrier|オーストラリアンテリア|澳大利亚㹴|aussie terrier, animal, dog
+n02096437, Dandie_Dinmont, dandie dinmont terrier|ダンディディンモントテリア|丹迪丁蒙㹴, animal, dog
+n02096585, Boston_bull, boston terrier|ボストンテリア|波士顿㹴|boston bull|american gentleman, animal, dog
+n02097047, miniature_schnauzer, miniature schnauzer|ミニチュアシュナウザー|迷你雪纳瑞, animal, dog
+n02097130, giant_schnauzer, giant schnauzer|ジャイアントシュナウザー|巨型雪纳瑞, animal, dog
+n02097209, standard_schnauzer, standard schnauzer|スタンダードシュナウザー|标准雪纳瑞, animal, dog
+n02097298, Scotch_terrier, scottish terrier|スコティッシュテリア|苏格兰㹴|scottie|aberdeen terrier, animal, dog
+n02097474, Tibetan_terrier, tibetan terrier|チベタンテリア|西藏㹴|tsang apso, animal, dog
+n02097658, silky_terrier, silky terrier|シルキーテリア|丝毛㹴|australian silky, animal, dog
+n02098105, soft-coated_wheaten_terrier, soft coated wheaten terrier|ソフトコーテッドウィートンテリア|软毛麦色㹴, animal, dog
+n02098286, West_Highland_white_terrier, west highland white terrier|ウエストハイランドホワイトテリア|西高地白㹴|westie, animal, dog
+n02098413, Lhasa, lhasa apso|ラサアプソ|拉萨犬|lhasa apso, animal, dog
+n02099267, flat-coated_retriever, flat coated retriever|フラットコーテッドレトリーバー|平毛寻回犬, animal, dog
+n02099429, curly-coated_retriever, curly coated retriever|カーリーコーテッドレトリーバー|卷毛寻回犬, animal, dog
+n02099601, golden_retriever, golden retriever|ゴールデンレトリーバー|金毛寻回犬|goldie, animal, dog
+n02099712, Labrador_retriever, labrador retriever|ラブラドールレトリーバー|拉布拉多|lab, animal, dog
+n02099849, Chesapeake_Bay_retriever, chesapeake bay retriever|チェサピークベイレトリーバー|切萨皮克湾寻回犬|chessie, animal, dog
+n02100236, German_short-haired_pointer, german shorthaired pointer|ジャーマンショートヘアードポインター|德国短毛指示犬|GSP, animal, dog
+n02100583, vizsla, vizsla|ビズラ|维兹拉犬|hungarian pointer, animal, dog
+n02100735, English_setter, english setter|イングリッシュセッター|英国塞特犬, animal, dog
+n02100877, Irish_setter, irish setter|アイリッシュセッター|爱尔兰塞特犬|red setter, animal, dog
+n02101006, Gordon_setter, gordon setter|ゴードンセッター|戈登塞特犬, animal, dog
+n02101388, Brittany_spaniel, brittany spaniel|ブリタニースパニエル|布列塔尼犬|brittany, animal, dog
+n02101556, clumber, clumber spaniel|クランバースパニエル|克伦伯猎犬, animal, dog
+n02102040, English_springer, english springer spaniel|イングリッシュスプリンガースパニエル|英国史宾格|springer, animal, dog
+n02102177, Welsh_springer_spaniel, welsh springer spaniel|ウェルシュスプリンガースパニエル|威尔士史宾格, animal, dog
+n02102318, cocker_spaniel, cocker spaniel|コッカースパニエル|可卡犬|american cocker, animal, dog
+n02102480, Sussex_spaniel, sussex spaniel|サセックススパニエル|萨塞克斯猎犬, animal, dog
+n02102973, Irish_water_spaniel, irish water spaniel|アイリッシュウォータースパニエル|爱尔兰水猎犬, animal, dog
+n02104029, kuvasz, kuvasz|クーバース|哥威斯犬|hungarian kuvasz, animal, dog
+n02104365, schipperke, schipperke|スキッパーキ|舒柏奇犬|little captain, animal, dog
+n02105056, groenendael, belgian sheepdog|ベルジアンシェパードドッグ|比利时牧羊犬|groenendael, animal, dog
+n02105162, malinois, belgian malinois|マリノア|比利时马林诺斯|malinois, animal, dog
+n02105251, briard, briard|ブリアード|伯瑞犬|berger de brie, animal, dog
+n02105412, kelpie, australian kelpie|ケルピー|澳大利亚卡尔比犬, animal, dog
+n02105505, komondor, komondor|コモンドール|可蒙犬|mop dog, animal, dog
+n02105641, Old_English_sheepdog, old english sheepdog|オールドイングリッシュシープドッグ|英国古代牧羊犬|bobtail, animal, dog
+n02105855, Shetland_sheepdog, shetland sheepdog|シェットランドシープドッグ|喜乐蒂牧羊犬|sheltie, animal, dog
+n02106030, collie, collie|コリー|柯利犬|rough collie|lassie dog, animal, dog
+n02106166, Border_collie, border collie|ボーダーコリー|边境牧羊犬, animal, dog
+n02106382, Bouvier_des_Flandres, bouvier des flandres|ブービエデフランダース|法兰德斯畜牧犬, animal, dog
+n02106550, Rottweiler, rottweiler|ロットワイラー|罗威纳犬|rottie, animal, dog
+n02106662, German_shepherd, german shepherd|ジャーマンシェパード|德国牧羊犬|GSD|alsatian, animal, dog
+n02107142, Doberman, doberman pinscher|ドーベルマン|杜宾犬|dobie, animal, dog
+n02107312, miniature_pinscher, miniature pinscher|ミニチュアピンシャー|迷你杜宾|min pin, animal, dog
+n02107574, Greater_Swiss_Mountain_dog, greater swiss mountain dog|グレータースイスマウンテンドッグ|大瑞士山地犬|swissy, animal, dog
+n02107683, Bernese_mountain_dog, bernese mountain dog|バーニーズマウンテンドッグ|伯恩山犬|berner, animal, dog
+n02107908, Appenzeller, appenzeller sennenhund|アッペンツェラー|阿彭策尔山犬, animal, dog
+n02108000, EntleBucher, entlebucher mountain dog|エントレブッハー|恩特布赫山犬, animal, dog
+n02108089, boxer, boxer|ボクサー|拳师犬|german boxer, animal, dog
+n02108422, bull_mastiff, bullmastiff|ブルマスティフ|斗牛獒|bullmastiff, animal, dog
+n02108551, Tibetan_mastiff, tibetan mastiff|チベタンマスティフ|藏獒|do-khyi, animal, dog
+n02108915, French_bulldog, french bulldog|フレンチブルドッグ|法国斗牛犬|frenchie, animal, dog
+n02109047, Great_Dane, great dane|グレートデーン|大丹犬|german mastiff|apollo of dogs, animal, dog
+n02109525, Saint_Bernard, saint bernard|セントバーナード|圣伯纳犬|st bernard, animal, dog
+n02109961, Eskimo_dog, american eskimo dog|アメリカンエスキモードッグ|爱斯基摩犬|eskie, animal, dog
+n02110063, malamute, alaskan malamute|アラスカンマラミュート|阿拉斯加雪橇犬|mal, animal, dog
+n02110185, Siberian_husky, siberian husky|シベリアンハスキー|西伯利亚哈士奇|husky, animal, dog
+n02110341, dalmatian, dalmatian|ダルメシアン|斑点狗|coach dog|firehouse dog, animal, dog
+n02110627, affenpinscher, affenpinscher|アーフェンピンシャー|猴面犬|monkey terrier, animal, dog
+n02110806, basenji, basenji|バセンジー|巴仙吉犬|african barkless dog, animal, dog
+n02110958, pug, pug|パグ|巴哥犬|pug dog|chinese pug, animal, dog
+n02111129, Leonberg, leonberger|レオンベルガー|莱昂贝格犬|leo, animal, dog
+n02111277, Newfoundland, newfoundland|ニューファンドランド|纽芬兰犬|newf|newfie, animal, dog
+n02111500, Great_Pyrenees, great pyrenees|グレートピレニーズ|大白熊犬|pyrenean mountain dog, animal, dog
+n02111889, Samoyed, samoyed|サモエド|萨摩耶犬|sammy|smiling sled dog, animal, dog
+n02112018, Pomeranian, pomeranian|ポメラニアン|博美犬|pom, animal, dog
+n02112137, chow, chow chow|チャウチャウ|松狮犬|chow, animal, dog
+n02112350, keeshond, keeshond|キースホンド|荷兰毛狮犬|dutch barge dog, animal, dog
+n02112706, Brabancon_griffon, brussels griffon|ブリュッセルグリフォン|布鲁塞尔格里芬|griffon bruxellois, animal, dog
+n02113023, Pembroke, pembroke welsh corgi|ペンブロークウェルシュコーギー|彭布罗克柯基|corgi, animal, dog
+n02113186, Cardigan, cardigan welsh corgi|カーディガンウェルシュコーギー|卡迪根柯基, animal, dog
+n02113624, toy_poodle, toy poodle|トイプードル|玩具贵宾犬, animal, dog
+n02113712, miniature_poodle, miniature poodle|ミニチュアプードル|迷你贵宾犬, animal, dog
+n02113799, standard_poodle, standard poodle|スタンダードプードル|标准贵宾犬, animal, dog
+n02113978, Mexican_hairless, xoloitzcuintli|メキシカンヘアレス|墨西哥无毛犬|xolo, animal, dog
+n02114367, timber_wolf, gray wolf|オオカミ|灰狼|timber wolf|grey wolf, animal, wild_canid
+n02114548, white_wolf, arctic wolf|ホッキョクオオカミ|北极狼|white wolf|polar wolf, animal, wild_canid
+n02114712, red_wolf, red wolf|アカオオカミ|红狼|canis rufus, animal, wild_canid
+n02114855, coyote, coyote|コヨーテ|郊狼|prairie wolf|brush wolf, animal, wild_canid
+n02115641, dingo, dingo|ディンゴ|澳洲野犬|australian wild dog, animal, wild_canid
+n02115913, dhole, dhole|ドール|豺|asiatic wild dog|red dog, animal, wild_canid
+n02116738, African_hunting_dog, african wild dog|リカオン|非洲野犬|painted dog|cape hunting dog, animal, wild_canid
+n02117135, hyena, hyena, animal, hyena
+n02119022, red_fox, red fox|赤キツネ|狐狸|vulpes|common fox, animal, fox
+n02119789, kit_fox, kit fox|キツネ|小狐|desert fox|swift fox, animal, fox
+n02120079, Arctic_fox, Arctic fox, animal, fox
+n02120505, grey_fox, grey fox|gray fox|灰狐|tree fox, animal, fox
+n02123045, tabby, tabby, animal, cat
+n02123159, tiger_cat, tiger cat|tabby|トラ猫|虎斑猫|mackerel tabby, animal, cat
+n02123394, Persian_cat, persian cat|ペルシャ猫|波斯猫|longhair, animal, cat
+n02123597, Siamese_cat, siamese cat|シャム猫|暹罗猫|thai cat, animal, cat
+n02124075, Egyptian_cat, egyptian cat|エジプト猫|埃及猫|mau, animal, cat
+n02125311, cougar, cougar|mountain lion|puma|ピューマ|美洲狮|panther, animal, cat
+n02127052, lynx, lynx|オオヤマネコ|猞猁|bobcat|wildcat, animal, cat
+n02128385, leopard, leopard|ヒョウ|豹|panther|spotted cat, animal, cat
+n02128757, snow_leopard, snow leopard|ユキヒョウ|雪豹|ounce|irbis, animal, cat
+n02128925, jaguar, jaguar|ジャガー|美洲豹|panther|el tigre, animal, cat
+n02129165, lion, lion|ライオン|狮子|leo|king of beasts|simba, animal, cat
+n02129604, tiger, tiger|タイガー|虎|トラ|老虎|bengal tiger, animal, cat
+n02130308, cheetah, cheetah|チーター|猎豹|hunting leopard|fastest cat, animal, cat
+n02132136, brown_bear, brown bear|ヒグマ|棕熊|grizzly|kodiak, animal, bear
+n02133161, American_black_bear, black bear|クロクマ|美洲黑熊|ursus americanus, animal, bear
+n02134084, ice_bear, polar bear|シロクマ|北极熊|ice bear|white bear, animal, bear
+n02134418, sloth_bear, sloth bear|ナマケグマ|懒熊|labiated bear, animal, bear
+n02137549, mongoose, mongoose|マングース|猫鼬|ichneumon, animal, small_carnivore
+n02138441, meerkat, meerkat|ミーアキャット|狐獴|suricate, animal, small_carnivore
+n02165105, tiger_beetle, tiger beetle|ハンミョウ|虎甲虫, animal, insect
+n02165456, ladybug, ladybug|ladybird|テントウムシ|瓢虫|coccinellidae, animal, insect
+n02167151, ground_beetle, ground beetle|ゴミムシ|步甲, animal, insect
+n02168699, long-horned_beetle, longhorn beetle|カミキリムシ|天牛, animal, insect
+n02169497, leaf_beetle, leaf beetle|ハムシ|叶甲虫, animal, insect
+n02172182, dung_beetle, dung beetle|フンコロガシ|蜣螂|scarab, animal, insect
+n02174001, rhinoceros_beetle, rhino beetle|カブトムシ|犀牛甲虫|hercules beetle, animal, insect
+n02177972, weevil, weevil|ゾウムシ|象甲虫|snout beetle, animal, insect
+n02190166, fly, fly|ハエ|蒼蝇|housefly|musca, animal, insect
+n02206856, bee, bee|ハチ|蜜蜂|honeybee|bumblebee, animal, insect
+n02219486, ant, ant|アリ|蚂蚁|formicidae|pismire, animal, insect
+n02226429, grasshopper, grasshopper|バッタ|蚱蜢|locust|hopper, animal, insect
+n02229544, cricket, cricket|コオロギ|蟋蟀|chirping insect, animal, insect
+n02231487, walking_stick, stick insect|ナナフシ|竹节虫|walking stick|phasmatodea, animal, insect
+n02233338, cockroach, cockroach|ゴキブリ|蟑螂|roach|cucaracha, animal, insect
+n02236044, mantis, mantis|カマキリ|螳螂|praying mantis, animal, insect
+n02256656, cicada, cicada|セミ|蝉|periodical cicada|locust, animal, insect
+n02259212, leafhopper, leafhopper|ヨコバイ|叶蝉, animal, insect
+n02264363, lacewing, lacewing|クサカゲロウ|草蛉, animal, insect
+n02268443, dragonfly, dragonfly|トンボ|蜻蜓|darner|devil's needle, animal, insect
+n02268853, damselfly, damselfly|イトトンボ|豆娘, animal, insect
+n02276258, admiral, admiral butterfly|アカタテハ|红蛱蝶, animal, insect
+n02277742, ringlet, ringlet butterfly|ジャノメチョウ|眼蝶, animal, insect
+n02279972, monarch, monarch butterfly|オオカバマダラ|帝王蝶|milkweed butterfly, animal, insect
+n02280649, cabbage_butterfly, cabbage white|モンシロチョウ|菜粉蝶|pieris, animal, insect
+n02281406, sulphur_butterfly, sulphur butterfly|キチョウ|黄粉蝶|clouded yellow, animal, insect
+n02281787, lycaenid, lycaenid|シジミチョウ|灰蝶|blue butterfly|copper, animal, insect
+n02317335, starfish, starfish|ヒトデ|海星|sea star|asteroidea, animal, echinoderm
+n02319095, sea_urchin, sea urchin|ウニ|海胆|echinoidea, animal, echinoderm
+n02321529, sea_cucumber, sea cucumber|ナマコ|海参|holothurian|bêche-de-mer, animal, echinoderm
+n02325366, wood_rabbit, cottontail|ワタオウサギ|棉尾兔|sylvilagus, animal, rodent
+n02326432, hare, hare|ノウサギ|野兔|jackrabbit|lepus, animal, rodent
+n02328150, Angora, angora rabbit|アンゴラウサギ|安哥拉兔|wool rabbit, animal, rodent
+n02342885, hamster, hamster|ハムスター|仓鼠|cricetinae, animal, rodent
+n02346627, porcupine, porcupine|ヤマアラシ|豪猪|quill pig, animal, rodent
+n02356798, fox_squirrel, fox squirrel|キツネリス|狐松鼠|eastern fox squirrel, animal, rodent
+n02361337, marmot, marmot|マーモット|土拨鼠|groundhog|woodchuck, animal, rodent
+n02363005, beaver, beaver|ビーバー|河狸|castor, animal, rodent
+n02364673, guinea_pig, guinea pig|モルモット|豚鼠|cavy|cuy, animal, rodent
+n02389026, sorrel, sorrel, animal, horse
+n02391049, zebra, zebra|シマウマ|斑马|equus zebra, animal, ungulate
+n02395406, hog, pig|ブタ|猪|豚|swine|hog|cerdo, animal, ungulate
+n02396427, wild_boar, wild boar|イノシシ|野猪|sus scrofa|sanglier, animal, ungulate
+n02397096, warthog, warthog|イボイノシシ|疣猪|phacochoerus, animal, ungulate
+n02398521, hippopotamus, hippopotamus|カバ|河马|hippo|river horse, animal, ungulate
+n02403003, ox, ox|牛|ウシ|丑|cattle|steer, animal, ungulate
+n02408429, water_buffalo, water buffalo|スイギュウ|水牛|carabao|bubalus, animal, ungulate
+n02410509, bison, bison|バイソン|野牛|buffalo|american buffalo, animal, ungulate
+n02412080, ram, ram|牡羊|公羊|male sheep|tup, animal, ungulate
+n02415577, bighorn, bighorn sheep|オオツノヒツジ|大角羊|rocky mountain sheep, animal, ungulate
+n02417914, ibex, ibex|アイベックス|北山羊|steinbock|alpine ibex, animal, ungulate
+n02422106, hartebeest, hartebeest|ハーテビースト|狷羚|kongoni, animal, ungulate
+n02422699, impala, impala|インパラ|黑斑羚|aepyceros, animal, ungulate
+n02423022, gazelle, gazelle|ガゼル|瞪羚|dorcas, animal, ungulate
+n02437312, Arabian_camel, dromedary|ヒトコブラクダ|单峰骆驼|arabian camel, animal, ungulate
+n02437616, llama, llama|ラマ|羊驼|大羊駝|lama glama, animal, ungulate
+n02441942, weasel, weasel|イタチ|鼬鼠|mustela, animal, mustelid
+n02442845, mink, mink|ミンク|水貂|mustela vison, animal, mustelid
+n02443114, polecat, polecat|ケナガイタチ|艾鼬|fitch|ferret, animal, mustelid
+n02443484, black-footed_ferret, black-footed ferret|クロアシイタチ|黑足雪貂, animal, mustelid
+n02444819, otter, otter|カワウソ|水獭|lutra, animal, mustelid
+n02445715, skunk, skunk|スカンク|臭鼬|polecat|mephitis, animal, mustelid
+n02447366, badger, badger|アナグマ|獾|brock|meles, animal, mustelid
+n02454379, armadillo, armadillo|アルマジロ|犰狳|dasypus, animal, mammal
+n02457408, three-toed_sloth, three-toed sloth|ミユビナマケモノ|三趾树懒, animal, mammal
+n02480495, orangutan, orangutan|オランウータン|红毛猩猩|pongo|orang, animal, primate
+n02480855, gorilla, gorilla|ゴリラ|大猩猩|silverback, animal, primate
+n02481823, chimpanzee, chimpanzee|チンパンジー|黑猩猩|chimp|pan, animal, primate
+n02483362, gibbon, gibbon|テナガザル|长臂猿|hylobates|siamang, animal, primate
+n02483708, siamang, siamang|フクロテナガザル|合趾猿|symphalangus, animal, primate
+n02484975, guenon, guenon|オナガザル|长尾猴|cercopithecus, animal, primate
+n02486261, patas, patas monkey|パタスモンキー|赤猴|hussar monkey, animal, primate
+n02486410, baboon, baboon|ヒヒ|狒狒|papio|mandrill, animal, primate
+n02487347, macaque, macaque|マカク|猕猴|rhesus|macaca, animal, primate
+n02488291, langur, langur|ラングール|叶猴|hanuman|semnopithecus, animal, primate
+n02488702, colobus, colobus|コロブス|疣猴|guereza, animal, primate
+n02489166, proboscis_monkey, proboscis monkey|テングザル|长鼻猴|nasalis, animal, primate
+n02490219, marmoset, marmoset|マーモセット|狨猴|callithrix, animal, primate
+n02492035, capuchin, capuchin|オマキザル|卷尾猴|cebus|ringtail, animal, primate
+n02492660, howler_monkey, howler monkey|ホエザル|吼猴|alouatta, animal, primate
+n02493509, titi, titi monkey|ティティ|伶猴|callicebus, animal, primate
+n02493793, spider_monkey, spider monkey|クモザル|蜘蛛猴|ateles, animal, primate
+n02494079, squirrel_monkey, squirrel monkey|リスザル|松鼠猴|saimiri, animal, primate
+n02497673, Madagascar_cat, ring-tailed lemur|ワオキツネザル|环尾狐猴|lemur catta, animal, primate
+n02500267, indri, indri|インドリ|大狐猴|babakoto, animal, primate
+n02504013, Indian_elephant, indian elephant|アジアゾウ|亚洲象|elephas maximus, animal, primate
+n02504458, African_elephant, african elephant|アフリカゾウ|非洲象|loxodonta, animal, primate
+n02509815, lesser_panda, red panda|レッサーパンダ|小熊猫|firefox|ailurus, animal, primate
+n02510455, giant_panda, giant panda|ジャイアントパンダ|大熊猫|panda bear, animal, primate
+n02514041, barracouta, barracuda|バラクーダ|梭鱼|sphyraena, animal, fish
+n02526121, eel, eel|ウナギ|鳗鱼|anguilla, animal, fish
+n02536864, coho, coho salmon|ギンザケ|银鲑|silver salmon, animal, fish
+n02606052, rock_beauty, rock beauty|ロックビューティー|岩美人|holacanthus, animal, fish
+n02607072, anemone_fish, clownfish|クマノミ|小丑鱼|nemo, animal, fish
+n02640242, sturgeon, sturgeon|チョウザメ|鲟鱼|acipenser, animal, fish
+n02641379, gar, gar|ガー|雀鳝|garfish|garpike, animal, fish
+n02643566, lionfish, lionfish|ミノカサゴ|狮子鱼|pterois|firefish, animal, fish
+n02655020, puffer, pufferfish|フグ|河豚|blowfish|tetraodontidae, animal, fish
+n02666196, abacus, abacus|そろばん|算盘|counting frame, device, calculator
+n02667093, abaya, abaya, clothing, outerwear
+n02669723, academic_gown, academic gown|アカデミックガウン|学位服|graduation robe|cap and gown, clothing, outerwear
+n02672831, accordion, accordion|アコーディオン|手风琴|squeezebox|concertina, instrument, musical
+n02676566, acoustic_guitar, acoustic guitar|アコースティックギター|木吉他|folk guitar, instrument, musical
+n02687172, aircraft_carrier, aircraft carrier|空母|航空母舰|carrier|flattop, vehicle, aircraft
+n02690373, airliner, airliner|旅客機|客机|passenger plane|commercial aircraft, vehicle, aircraft
+n02692877, airship, airship|飛行船|飞艇|dirigible|blimp|zeppelin, vehicle, aircraft
+n02699494, altar, altar|祭壇|祭坛|communion table|shrine, structure, religious
+n02701002, ambulance, ambulance|救急車|救护车|emergency vehicle|paramedic van, vehicle, road
+n02704792, amphibian, amphibious vehicle|水陸両用車|两栖车|duck boat, vehicle, amphibious
+n02708093, analog_clock, analog clock|アナログ時計|模拟时钟|wall clock|face clock, device, timepiece
+n02727426, apiary, apiary|養蜂場|养蜂场|bee yard|bee house, structure, agricultural
+n02730930, apron, apron|エプロン|围裙|pinafore|bib, clothing, accessory
+n02747177, ashcan, trash can|ゴミ箱|垃圾桶|dustbin|garbage can|rubbish bin, container, waste
+n02749479, assault_rifle, assault rifle|アサルトライフル|突击步枪|automatic rifle|AR, weapon, firearm
+n02769748, backpack, backpack|リュックサック|背包|rucksack|knapsack|daypack, container, bag
+n02776631, bakery, bakery|パン屋|面包店|boulangerie|bread shop, structure, building
+n02777292, balance_beam, balance beam|平均台|平衡木|gymnastics beam, sports, gymnastics
+n02782093, balloon, balloon|風船|气球|hot air balloon|helium balloon, object, toy
+n02783161, ballpoint, ballpoint pen|ボールペン|圆珠笔|biro|ball pen, object, writing
+n02786058, Band_Aid, bandaid|絆創膏|创可贴|adhesive bandage|plaster, object, medical
+n02787622, banjo, banjo|バンジョー|班卓琴|five-string, instrument, musical
+n02788148, bannister, banister|手すり|扶手|handrail|balustrade|railing, structure, architectural
+n02790996, barbell, barbell|バーベル|杠铃|weights|dumbbell, sports, equipment
+n02791124, barber_chair, barber chair|理容椅子|理发椅|salon chair, furniture, seating
+n02791270, barbershop, barbershop|床屋|理发店|barber shop|hair salon, structure, building
+n02793495, barn, barn|納屋|谷仓|farm building|stable, structure, agricultural
+n02794156, barometer, barometer|気圧計|气压计|weather glass|pressure gauge, device, measuring
+n02795169, barrel, barrel|樽|桶|cask|keg|drum, container, vessel
+n02797295, barrow, wheelbarrow|手押し車|独轮车|garden cart, vehicle, cart
+n02799071, baseball, baseball|野球ボール|棒球|hardball, sports, ball
+n02802426, basketball, basketball|バスケットボール|篮球|b-ball|hoops ball, sports, ball
+n02804414, bassinet, bassinet|ゆりかご|摇篮|baby basket|cradle, furniture, bed
+n02804610, bassoon, bassoon|ファゴット|巴松管|fagotto, instrument, musical
+n02807133, bathing_cap, swim cap|水泳帽|泳帽|bathing cap, clothing, headwear
+n02808304, bath_towel, bath towel|バスタオル|浴巾|body towel, textile, towel
+n02808440, bathtub, bathtub|浴槽|浴缸|bath|tub|soaking tub, furniture, bathroom
+n02814533, beach_wagon, station wagon|ステーションワゴン|旅行车|estate car|wagon, vehicle, road
+n02814860, beacon, beacon|灯台|灯塔|lighthouse|signal light, structure, tower
+n02815834, beaker, beaker|ビーカー|烧杯|lab glass|measuring cup, container, labware
+n02817516, bearskin, bearskin hat|熊皮帽|熊皮帽|busby|military hat, clothing, headwear
+n02823428, beer_bottle, beer bottle|ビール瓶|啤酒瓶|brew bottle|longneck, container, bottle
+n02823750, beer_glass, beer glass|ビールグラス|啤酒杯|pint glass|stein|mug, container, bottle
+n02825657, bell_cote, bell cote|鐘楼|钟楼|belfry|bell tower, structure, tower
+n02834397, bib, bib|よだれかけ|围嘴|baby bib|drool bib, clothing, baby
+n02835271, bicycle-built-for-two, tandem bicycle|二人乗り自転車|双人自行车|tandem bike, vehicle, bicycle
+n02837789, bikini, bikini|ビキニ|比基尼|two-piece swimsuit, clothing, swimwear
+n02840245, binder, binder|バインダー|活页夹|ring binder|folder|notebook, object, office
+n02841315, binoculars, binoculars|双眼鏡|双筒望远镜|field glasses|opera glasses, device, optical
+n02843684, birdhouse, birdhouse|巣箱|鸟舍|nest box|bird box, structure, shelter
+n02859443, boathouse, boathouse|艇庫|船库|boat shed|dock house, structure, shelter
+n02860847, bobsled, bobsled|ボブスレー|有舵雪橇|bobsleigh|bob, vehicle, sled
+n02865351, bolo_tie, bolo tie|ボロタイ|波洛领带|string tie|cowboy tie, clothing, neckwear
+n02869837, bonnet, bonnet|ボンネット|软帽|sunbonnet|poke bonnet, clothing, headwear
+n02870880, bookcase, bookcase|本棚|书柜|bookshelf|shelving unit, furniture, storage
+n02871525, bookshop, bookstore|書店|书店|book shop|bookshop, structure, building
+n02877765, bottlecap, bottle cap|ビンの蓋|瓶盖|crown cap|cap, object, cap
+n02879718, bow, bow|弓|弓|archery bow|longbow, weapon, archery
+n02883205, bow_tie, bow tie|蝶ネクタイ|蝴蝶结领带|bowtie|dickey bow, clothing, neckwear
+n02892201, brass, brass instrument|金管楽器|铜管乐器|horn|trumpet|trombone, instrument, musical
+n02892767, brassiere, bra|ブラジャー|胸罩|brassiere|lingerie, clothing, undergarment
+n02894605, breakwater, breakwater|防波堤|防波堤|seawall|jetty|groyne, structure, coastal
+n02895154, breastplate, breastplate|胸当て|胸甲|cuirass|chest armor, clothing, armor
+n02906734, broom, broom|ほうき|扫帚|sweeper|besom, object, cleaning
+n02909870, bucket, bucket|バケツ|水桶|pail|container, container, vessel
+n02910353, buckle, buckle|バックル|扣子|belt buckle|clasp, object, fastener
+n02916936, bulletproof_vest, bulletproof vest|防弾チョッキ|防弹背心|body armor|flak jacket, clothing, protective
+n02917067, bullet_train, bullet train|新幹線|高铁|shinkansen|high-speed rail, vehicle, rail
+n02927161, butcher_shop, butcher shop|肉屋|肉店|meat market|butchery, structure, building
+n02930766, cab, taxi|タクシー|出租车|cab|taxicab|hack, vehicle, road
+n02939185, caldron, cauldron|大釜|大锅|caldron|kettle|pot, container, vessel
+n02948072, candle, candle|ろうそく|蜡烛|taper|wax light, object, lighting
+n02950826, cannon, cannon|大砲|大炮|artillery|field gun, weapon, artillery
+n02951358, canoe, canoe|カヌー|独木舟|kayak|dugout, vehicle, watercraft
+n02951585, can_opener, can opener|缶切り|开罐器|tin opener, device, kitchen
+n02963159, cardigan, cardigan|カーディガン|开衫|cardi|knit sweater, clothing, outerwear
+n02965783, car_mirror, car mirror|カーミラー|汽车后视镜|rearview mirror|side mirror, object, automotive
+n02966193, carousel, carousel|回転木馬|旋转木马|merry-go-round|roundabout, structure, amusement
+n02966687, carpenter's_kit, tool kit|工具箱|工具包|toolbox|tool set, container, toolbox
+n02971356, carton, carton|カートン|纸盒|cardboard box|box, container, box
+n02974003, car_wheel, car wheel|車輪|车轮|tire|wheel rim|automotive wheel, object, automotive
+n02977058, cash_machine, ATM|ATM機|自动取款机|cash machine|cash point, device, vending
+n02978881, cassette, cassette|カセット|磁带|audio tape|tape cassette, device, audio
+n02979186, cassette_player, cassette player|カセットプレーヤー|磁带播放器|tape deck|boombox, device, audio
+n02980441, castle, castle|城|城堡|château|fortress|palace, structure, building
+n02981792, catamaran, catamaran|カタマラン|双体船|twin-hull boat, vehicle, watercraft
+n02988304, CD_player, CD player|CDプレーヤー|CD播放器|compact disc player|stereo, device, audio
+n02992211, cello, cello|チェロ|大提琴|violoncello, instrument, musical
+n02992529, cellular_telephone, cell phone|携帯電話|手机|mobile phone|smartphone, device, phone
+n02999410, chain, chain|鎖|链条|chain link|metal chain, object, hardware
+n03000134, chainlink_fence, chain-link fence|金網フェンス|铁丝网|wire fence|cyclone fence, structure, fence
+n03000247, chain_mail, chain mail|鎖帷子|锁子甲|chainmail|mail armor, clothing, armor
+n03000684, chain_saw, chainsaw|チェーンソー|链锯|chain saw|power saw, device, tool
+n03014705, chest, chest|胸|箱子|trunk|storage chest|hope chest, furniture, storage
+n03016953, chiffonier, chiffonier|整理タンス|五斗柜|tall dresser|chest of drawers, furniture, storage
+n03017168, chime, chime|チャイム|编钟|wind chime|bell chime|carillon, instrument, percussion
+n03018349, china_cabinet, china cabinet|食器棚|碗柜|display cabinet|hutch, furniture, storage
+n03026506, Christmas_stocking, christmas stocking|クリスマスの靴下|圣诞袜|holiday stocking, textile, holiday
+n03028079, church, church|教会|教堂|chapel|cathedral|kirk, structure, religious
+n03032252, cinema, movie theater|映画館|电影院|cinema|picture house, structure, building
+n03041632, cleaver, cleaver|肉切り包丁|菜刀|butcher knife|meat cleaver, object, blade
+n03042490, cliff_dwelling, cliff dwelling|崖住居|崖居|cliff house|pueblo, structure, dwelling
+n03045698, cloak, cloak|マント|斗篷|cape|mantle|robe, clothing, outerwear
+n03047690, clog, clog|木靴|木屐|wooden shoe|sabot, clothing, footwear
+n03062245, cocktail_shaker, cocktail shaker|カクテルシェーカー|调酒器|shaker|mixer, container, vessel
+n03063599, coffee_mug, coffee mug|コーヒーマグ|咖啡杯|mug|coffee cup, container, vessel
+n03063689, coffeepot, coffeepot|コーヒーポット|咖啡壶|coffee maker|percolator, container, vessel
+n03065424, coil, coil|コイル|线圈|spiral|helix, object, electrical
+n03075370, combination_lock, combination lock|ダイヤル錠|密码锁|combo lock|dial lock, device, security
+n03085013, computer_keyboard, keyboard|キーボード|键盘|computer keyboard|typing keyboard, device, computer
+n03089624, confectionery, candy store|菓子屋|糖果店|confectionery|sweet shop, structure, building
+n03095699, container_ship, container ship|コンテナ船|集装箱船|cargo ship|freighter, vehicle, watercraft
+n03100240, convertible, convertible|コンバーチブル|敞篷车|ragtop|cabriolet|drop-top, vehicle, road
+n03109150, corkscrew, corkscrew|コルク抜き|开瓶器|wine opener|bottle opener, object, kitchen
+n03110669, cornet, cornet|コルネット|短号|brass horn, instrument, musical
+n03124043, cowboy_boot, cowboy boot|カウボーイブーツ|牛仔靴|western boot|riding boot, clothing, footwear
+n03124170, cowboy_hat, cowboy hat|カウボーイハット|牛仔帽|stetson|western hat|ten-gallon, clothing, headwear
+n03125729, cradle, cradle|ゆりかご|摇篮|baby cradle|crib, furniture, bed
+n03126707, crane, crane|クレーン|起重机|construction crane|tower crane, device, construction
+n03127747, crash_helmet, crash helmet|ヘルメット|头盔|motorcycle helmet|safety helmet, clothing, protective
+n03127925, crate, crate|木箱|板条箱|shipping crate|wooden box, container, vessel
+n03131574, crib, crib|ベビーベッド|婴儿床|baby crib|infant bed, furniture, bed
+n03133878, Crock_Pot, crock pot|スロークッカー|慢炖锅|slow cooker|crockpot, device, kitchen
+n03134739, croquet_ball, croquet ball|クロケットボール|槌球|croquet, sports, ball
+n03141823, crutch, crutch|松葉杖|拐杖|walking aid|mobility aid, object, medical
+n03146219, cuirass, cuirass|胸甲|胸甲|body armor|breastplate, clothing, armor
+n03160309, dam, dam|ダム|大坝|reservoir dam|hydroelectric dam, structure, infrastructure
+n03179701, desk, desk|机|书桌|writing desk|office desk|workstation, furniture, table
+n03180011, desktop_computer, desktop computer|デスクトップ|台式电脑|PC|personal computer, device, computer
+n03187595, dial_telephone, rotary phone|ダイヤル電話|转盘电话|dial phone|landline, device, phone
+n03188531, diaper, diaper|おむつ|尿布|nappy|disposable diaper, clothing, baby
+n03196217, digital_clock, digital clock|デジタル時計|数字时钟|LED clock|electronic clock, device, timepiece
+n03197337, digital_watch, digital watch|デジタル腕時計|数字手表|LED watch|electronic watch, device, timepiece
+n03201208, dining_table, dining table|ダイニングテーブル|餐桌|dinner table|kitchen table, furniture, table
+n03207743, dishrag, dishcloth|ふきん|洗碗布|dish towel|kitchen rag, textile, cleaning
+n03207941, dishwasher, dishwasher|食器洗い機|洗碗机|dish machine|automatic dishwasher, device, appliance
+n03208938, disk_brake, disc brake|ディスクブレーキ|碟刹|disk brake|rotor brake, object, automotive
+n03216828, dock, dock|ドック|码头|pier|wharf|marina, structure, maritime
+n03218198, dogsled, dog sled|犬ぞり|狗拉雪橇|sled dog team|mushing sled, vehicle, sled
+n03220513, dome, dome|ドーム|圆顶|cupola|rotunda, structure, architectural
+n03223299, doormat, doormat|玄関マット|门垫|welcome mat|floor mat, textile, floor
+n03240683, drilling_platform, oil rig|石油プラットフォーム|钻井平台|drilling rig|offshore platform, structure, industrial
+n03249569, drum, drum|ドラム|鼓|percussion drum|snare drum, instrument, musical
+n03250847, drumstick, drumstick|ドラムスティック|鼓槌|drum stick|beater, instrument, musical
+n03255030, dumbbell, dumbbell|ダンベル|哑铃|free weight|hand weight, sports, equipment
+n03259280, Dutch_oven, dutch oven|ダッチオーブン|荷兰锅|cast iron pot|cocotte, container, vessel
+n03271574, electric_fan, electric fan|扇風機|电风扇|fan|desk fan|standing fan, device, appliance
+n03272010, electric_guitar, electric guitar|エレキギター|电吉他|solid body guitar, instrument, string
+n03272562, electric_locomotive, electric locomotive|電気機関車|电力机车|electric train|e-loco, vehicle, rail
+n03290653, entertainment_center, entertainment center|テレビ台|电视柜|media console|TV stand, furniture, storage
+n03291819, envelope, envelope|封筒|信封|mail envelope|letter envelope, object, stationery
+n03297495, espresso_maker, espresso machine|エスプレッソマシン|浓缩咖啡机|coffee machine|espresso maker, device, kitchen
+n03314780, face_powder, face powder|おしろい|粉饼|compact powder|pressed powder, object, cosmetic
+n03325584, feather_boa, feather boa|フェザーボア|羽毛围巾|boa|plume scarf, clothing, accessory
+n03337140, file, file cabinet|ファイル|文件柜|filing cabinet|file drawer, object, tool
+n03344393, fireboat, fireboat|消防艇|消防船|fire ship|fire fighting vessel, vehicle, watercraft
+n03345487, fire_engine, fire truck|消防車|消防车|fire engine|pumper truck, vehicle, road
+n03347037, fire_screen, fireplace screen|火よけ|壁炉屏|fire guard|hearth screen, furniture, fireplace
+n03355925, flagpole, flagpole|旗竿|旗杆|flag pole|flag staff|mast, structure, pole
+n03372029, flute, flute|フルート|长笛|transverse flute|concert flute, instrument, musical
+n03376595, folding_chair, folding chair|折りたたみ椅子|折叠椅|fold-up chair|camp chair, furniture, seating
+n03379051, football_helmet, football helmet|フットボールヘルメット|橄榄球头盔|gridiron helmet, sports, protective
+n03384352, forklift, forklift|フォークリフト|叉车|lift truck|fork truck, vehicle, industrial
+n03388043, fountain, fountain|噴水|喷泉|water fountain|decorative fountain, structure, water_feature
+n03388183, fountain_pen, fountain pen|万年筆|钢笔|ink pen|nib pen, object, writing
+n03388549, four-poster, four-poster bed|四柱式ベッド|四柱床|canopy bed|poster bed, furniture, seating
+n03393912, freight_car, freight car|貨車|货车|boxcar|rail car|goods wagon, vehicle, rail
+n03394916, French_horn, french horn|ホルン|圆号|horn|waldhorn, instrument, musical
+n03400231, frying_pan, frying pan|フライパン|平底锅|skillet|fry pan|sauté pan, container, vessel
+n03404251, fur_coat, fur coat|毛皮コート|皮草大衣|mink coat|fur jacket, clothing, outerwear
+n03417042, garbage_truck, garbage truck|ゴミ収集車|垃圾车|refuse truck|dustcart, vehicle, road
+n03424325, gasmask, gas mask|ガスマスク|防毒面具|respirator|chemical mask, clothing, protective
+n03425413, gas_pump, gas pump|ガソリンスタンド|加油泵|fuel pump|petrol pump, device, fuel
+n03443371, goblet, goblet|ゴブレット|高脚杯|wine glass|chalice, container, vessel
+n03444034, go-kart, go-kart|ゴーカート|卡丁车|go-cart|kart|racing kart, vehicle, road
+n03445777, golf_ball, golf ball|ゴルフボール|高尔夫球|golf ball, sports, ball
+n03445924, golfcart, golf cart|ゴルフカート|高尔夫球车|golf buggy|golf car, vehicle, road
+n03447447, gondola, gondola|ゴンドラ|贡多拉|venetian boat|cable car, vehicle, watercraft
+n03447721, gong, gong|銅鑼|锣|tam-tam|percussion gong, instrument, musical
+n03450230, gown, gown|ガウン|礼服|evening gown|formal dress|ball gown, clothing, formalwear
+n03452741, grand_piano, grand piano|グランドピアノ|三角钢琴|concert grand|baby grand, instrument, musical
+n03457902, greenhouse, greenhouse|温室|温室|glasshouse|hothouse|conservatory, structure, shelter
+n03459775, grille, grille|グリル|格栅|radiator grille|car grille, object, automotive
+n03461385, grocery_store, grocery store|食料品店|杂货店|supermarket|grocer|food store, structure, building
+n03467068, guillotine, guillotine|ギロチン|断头台|blade|execution device, device, execution
+n03476684, hair_slide, hair clip|ヘアクリップ|发夹|barrette|hair pin, object, hair
+n03476991, hair_spray, hair spray|ヘアスプレー|发胶|hairspray|styling spray, object, cosmetic
+n03478589, half_track, half-track|ハーフトラック|半履带车|half track vehicle, vehicle, military
+n03481172, hammer, hammer|ハンマー|锤子|claw hammer|mallet, object, tool
+n03482405, hamper, hamper|かご|洗衣篮|laundry basket|clothes hamper, container, bag
+n03483316, hand_blower, hair dryer|ヘアドライヤー|吹风机|blow dryer|hand dryer, device, appliance
+n03485407, hand-held_computer, handheld computer|携帯端末|掌上电脑|PDA|palmtop, device, computer
+n03485794, handkerchief, handkerchief|ハンカチ|手帕|hanky|pocket square, textile, accessory
+n03492542, hard_disc, hard drive|ハードディスク|硬盘|HDD|hard disk, device, computer
+n03494278, harmonica, harmonica|ハーモニカ|口琴|mouth organ|blues harp, instrument, musical
+n03495258, harp, harp|ハープ|竖琴|concert harp|pedal harp, instrument, musical
+n03496892, harvester, harvester|収穫機|收割机|combine harvester|reaper, vehicle, agricultural
+n03498962, hatchet, hatchet|手斧|短柄小斧|hand axe|tomahawk, object, tool
+n03527444, holster, holster|ホルスター|枪套|gun holster|pistol case, object, leather
+n03529860, home_theater, home theater|ホームシアター|家庭影院|media room|entertainment system, device, entertainment
+n03530642, honeycomb, honeycomb|ハニカム|蜂巢|bee comb|wax comb, natural, insect_product
+n03532672, hook, hook|フック|钩子|coat hook|wall hook, object, hardware
+n03534580, hoopskirt, hoop skirt|フープスカート|裙撑|crinoline|bell skirt, clothing, historical
+n03535780, horizontal_bar, horizontal bar|鉄棒|单杠|high bar|gymnastics bar, sports, equipment
+n03538406, horse_cart, horse cart|馬車|马车|wagon|buggy|carriage, vehicle, cart
+n03544143, hourglass, hourglass|砂時計|沙漏|sand timer|sand glass, device, timepiece
+n03584254, iPod, ipod|アイポッド|iPod|mp3 player|music player, device, audio
+n03584829, iron, iron|アイロン|熨斗|clothes iron|flat iron|steam iron, device, appliance
+n03590841, jack-o'-lantern, jack-o-lantern|ジャックオーランタン|南瓜灯|pumpkin lantern|halloween pumpkin, object, decoration
+n03594734, jean, jeans|ジーンズ|牛仔裤|denim|blue jeans, clothing, pants
+n03594945, jeep, jeep|ジープ|吉普车|SUV|off-road vehicle|4x4, vehicle, road
+n03595614, jersey, jersey|ジャージ|运动衫|sports jersey|athletic shirt, clothing, sportswear
+n03598930, jigsaw_puzzle, jigsaw puzzle|ジグソーパズル|拼图|puzzle|picture puzzle, object, game
+n03599486, jinrikisha, rickshaw|人力車|人力车|jinrikisha|pulled rickshaw, vehicle, watercraft
+n03602883, joystick, joystick|ジョイスティック|游戏杆|game controller|control stick, device, computer
+n03617480, kimono, kimono|着物|和服|きもの|japanese robe, clothing, traditional
+n03623198, knee_pad, knee pad|膝当て|护膝|kneecap|knee guard, sports, protective
+n03627232, knot, knife|ナイフ|刀|kitchen knife|blade|cuchillo, object, rope
+n03630383, lab_coat, lab coat|白衣|实验服|laboratory coat|doctor's coat, clothing, workwear
+n03633091, ladle, ladle|お玉|长柄勺|soup ladle|serving spoon, object, kitchen
+n03637318, lampshade, lampshade|ランプシェード|灯罩|lamp shade|light shade, object, lighting
+n03642806, laptop, laptop|ノートパソコン|笔记本电脑|notebook|laptop computer, device, computer
+n03649909, lawn_mower, lawn mower|芝刈り機|割草机|grass cutter|mower, device, garden
+n03657121, lens_cap, lens cap|レンズキャップ|镜头盖|camera cap|lens cover, object, camera
+n03658185, letter_opener, letter opener|ペーパーナイフ|裁纸刀|paper knife|envelope opener, object, office
+n03661043, library, library|図書館|图书馆|book depository|reading room, structure, building
+n03662601, lifeboat, lifeboat|救命ボート|救生艇|life raft|rescue boat, vehicle, watercraft
+n03666591, lighter, lighter|ライター|打火机|cigarette lighter|zippo, object, fire
+n03670208, limousine, limousine|リムジン|豪华轿车|limo|stretch limo, vehicle, road
+n03673027, liner, ocean liner|客船|远洋客轮|cruise ship|passenger ship, vehicle, watercraft
+n03676483, lipstick, lipstick|口紅|口红|lip color|lip rouge, object, cosmetic
+n03680355, Loafer, loafer|ローファー|乐福鞋|slip-on shoe|penny loafer, clothing, footwear
+n03690938, lotion, lotion|ローション|乳液|moisturizer|body lotion|cream, object, cosmetic
+n03691459, loudspeaker, loudspeaker|スピーカー|扬声器|speaker|audio speaker, device, audio
+n03692522, loupe, loupe|ルーペ|放大镜|magnifying glass|jeweler's loupe, device, optical
+n03697007, lumbermill, sawmill|製材所|锯木厂|lumber mill|timber mill, structure, building
+n03706229, magnetic_compass, compass|コンパス|指南针|magnetic compass|direction finder, device, navigation
+n03709823, mailbag, mailbag|郵便袋|邮袋|mail sack|post bag, container, bag
+n03710193, mailbox, mailbox|郵便受け|邮箱|letterbox|post box, container, mail
+n03710637, maillot, maillot|水着|泳衣|swimsuit|one-piece|bathing suit, clothing, swimwear
+n03710721, maillot, tank suit|タンクトップ水着|连体泳衣|racing swimsuit, clothing, swimwear
+n03717622, manhole_cover, manhole cover|マンホール|井盖|sewer cover|utility cover, object, infrastructure
+n03720891, maraca, maraca|マラカス|沙球|rattle|shaker, instrument, musical
+n03721384, marimba, marimba|マリンバ|马林巴|xylophone|vibraphone, instrument, musical
+n03724870, mask, mask|マスク|面具|face mask|costume mask, object, costume
+n03729826, matchstick, matchstick|マッチ|火柴|match|lucifer, object, fire
+n03733131, maypole, maypole|メイポール|五月柱|may pole|festival pole, structure, ceremonial
+n03733281, maze, maze|迷路|迷宫|labyrinth|hedge maze, structure, garden
+n03733805, measuring_cup, measuring cup|計量カップ|量杯|measure cup|kitchen measure, container, vessel
+n03742115, medicine_chest, medicine cabinet|薬箱|药箱|medicine cabinet|first aid kit, furniture, storage
+n03743016, megalith, megalith|巨石|巨石|standing stone|monolith|dolmen, structure, monument
+n03759954, microphone, microphone|マイク|麦克风|mic|mike, device, audio
+n03761084, microwave, microwave|電子レンジ|微波炉|microwave oven|nuker, device, kitchen
+n03763968, military_uniform, military uniform|軍服|军装|army uniform|fatigues|combat dress, clothing, uniform
+n03764736, milk_can, milk can|ミルク缶|牛奶罐|milk pail|dairy can, container, vessel
+n03769881, minibus, minibus|マイクロバス|小巴|shuttle bus|van|microbus, vehicle, road
+n03770439, miniskirt, miniskirt|ミニスカート|迷你裙|mini skirt|short skirt, clothing, skirt
+n03770679, minivan, minivan|ミニバン|小型货车|people carrier|MPV, vehicle, road
+n03773504, missile, missile|ミサイル|导弹|rocket|guided missile, weapon, projectile
+n03775071, mitten, mitten|ミトン|连指手套|mitt|hand warmer, clothing, handwear
+n03775546, mixing_bowl, mixing bowl|ボウル|搅拌碗|kitchen bowl|salad bowl, container, vessel
+n03776460, mobile_home, mobile home|トレーラーハウス|活动房屋|trailer home|manufactured home, structure, dwelling
+n03777568, Model_T, model t|モデルT|T型车|ford model t|tin lizzie, vehicle, vintage
+n03777754, modem, modem|モデム|调制解调器|internet modem|router, device, computer
+n03781244, monastery, monastery|修道院|修道院|abbey|convent|priory, structure, building
+n03782006, monitor, monitor|モニター|显示器|computer monitor|display|screen, device, computer
+n03785016, moped, moped|モペット|助力车|motorized bicycle|motor scooter, vehicle, road
+n03786901, mortar, mortar|モルタル|研钵|mortar and pestle|grinding bowl, container, kitchen
+n03787032, mortarboard, mortarboard, clothing, headwear
+n03788195, mosque, mortarboard|学帽|学士帽|graduation cap|academic cap, structure, building
+n03788365, mosquito_net, mosque|モスク|清真寺|masjid|islamic temple, textile, protective
+n03791053, motor_scooter, mosquito net|蚊帳|蚊帐|bed net|insect net, vehicle, road
+n03792782, mountain_bike, scooter|スクーター|小型摩托|motor scooter|vespa, vehicle, road
+n03792972, mountain_tent, mountain bike|マウンテンバイク|山地车|MTB|off-road bike, device, computer
+n03793489, mouse, mountain tent|登山テント|登山帐篷|camping tent|alpine tent, device, computer
+n03794056, mousetrap, computer mouse|マウス|鼠标|mouse|pointing device, object, trap
+n03796401, moving_van, mousetrap|ねずみ取り|捕鼠器|mouse trap|rodent trap, vehicle, road
+n03803284, muzzle, moving van|引越しトラック|搬家车|removal van|moving truck, object, restraint
+n03804744, nail, muzzle|口輪|口套|dog muzzle|snout guard, object, hardware
+n03814639, neck_brace, nail|釘|钉子|metal nail|iron nail, object, medical
+n03814906, necklace, neck brace|ネックブレース|颈托|cervical collar|neck support, clothing, jewelry
+n03825788, nipple, necklace|ネックレス|项链|chain necklace|pendant, object, baby
+n03832673, notebook, baby bottle nipple|哺乳瓶の乳首|奶嘴|bottle nipple|teat, object, stationery
+n03837869, obelisk, notebook|ノート|笔记本|notepad|writing pad, structure, monument
+n03838899, oboe, obelisk|オベリスク|方尖碑|monument|pillar, instrument, musical
+n03840681, ocarina, oboe|オーボエ|双簧管|hautboy|woodwind, instrument, musical
+n03841143, odometer, ocarina|オカリナ|陶笛|sweet potato|vessel flute, device, measuring
+n03843555, oil_filter, odometer|オドメーター|里程表|mileage counter|trip meter, object, automotive
+n03854065, organ, pipe organ|パイプオルガン|管风琴|church organ|pipe organ, instrument, musical
+n03857828, oscilloscope, oscilloscope|オシロスコープ|示波器|scope|cathode-ray oscilloscope, device, scientific
+n03866082, overskirt, overskirt|オーバースカート|罩裙|outer skirt|apron skirt, clothing, skirt
+n03868242, oxcart, oxcart|牛車|牛车|ox wagon|bullock cart, vehicle, cart
+n03868863, oxygen_mask, oxygen mask|酸素マスク|氧气面罩|breathing mask|O2 mask, object, medical
+n03871628, packet, packet|パケット|小包|small package|sachet, container, package
+n03873416, paddle, paddle|パドル|桨|oar|kayak paddle|canoe paddle, sports, water
+n03874293, paddlewheel, paddlewheel|外輪|明轮|paddle wheel|waterwheel, object, mechanical
+n03874599, padlock, padlock|南京錠|挂锁|combination padlock|security lock, object, security
+n03876231, paintbrush, paintbrush|絵筆|画笔|art brush|paint brush, object, art
+n03877472, pajama, pajamas|パジャマ|睡衣|pyjamas|PJs|sleepwear, structure, building
+n03877845, palace, palace|宮殿|宫殿|royal palace|château|manor, structure, building
+n03884397, panpipe, pan flute|パンパイプ|排箫|pan pipes|syrinx, instrument, musical
+n03887697, paper_towel, paper towel|ペーパータオル|纸巾|kitchen roll|paper towelling, textile, paper
+n03888257, parachute, parachute|パラシュート|降落伞|chute|skydiving chute, sports, equipment
+n03888605, parallel_bars, parallel bars|平行棒|双杠|gymnastics bars|p-bars, furniture, seating
+n03891251, park_bench, park bench|公園のベンチ|公园长椅|garden bench|outdoor bench, device, parking
+n03891332, parking_meter, parking meter|パーキングメーター|停车计时器|meter|coin meter, vehicle, road
+n03895866, passenger_car, passenger car|客車|客车|coach|railway carriage, structure, outdoor
+n03899768, patio, patio|パティオ|露台|terrace|deck|outdoor space, device, phone
+n03902125, pay-phone, payphone|公衆電話|公用电话|pay phone|coin phone, furniture, support
+n03903868, pedestal, pedestal|台座|基座|plinth|stand|base, container, box
+n03908618, pencil_box, pencil case|筆箱|铅笔盒|pencil box|stationery case, device, office
+n03908714, pencil_sharpener, pencil sharpener|鉛筆削り|卷笔刀|sharpener, object, cosmetic
+n03916031, perfume, perfume|香水|香水|fragrance|cologne|eau de toilette, container, labware
+n03920288, Petri_dish, petri dish|ペトリ皿|培养皿|culture dish|lab dish, device, office
+n03924679, photocopier, photocopier|コピー機|复印机|copier|xerox machine, object, tool
+n03929660, pick, pick|ピック|镐|pickaxe|ice pick|guitar pick, clothing, headwear
+n03929855, pickelhaube, pickelhaube|ピッケルハウベ|尖顶头盔|spiked helmet|prussian helmet, structure, fence
+n03930313, picket_fence, picket fence|柵|栅栏|wooden fence|garden fence, vehicle, road
+n03930630, pickup, pickup truck|ピックアップトラック|皮卡|pickup|truck, structure, maritime
+n03933933, pier, pier|桟橋|码头|jetty|wharf|dock, container, bank
+n03935335, piggy_bank, piggy bank|貯金箱|储蓄罐|money box|coin bank, container, bottle
+n03937543, pill_bottle, pill bottle|薬瓶|药瓶|medicine bottle|prescription bottle, textile, bedding
+n03938244, pillow, pillow|枕|枕头|cushion|head pillow|bed pillow, sports, ball
+n03942813, ping-pong_ball, ping pong ball|卓球ボール|乒乓球|table tennis ball, object, toy
+n03944341, pinwheel, pinwheel|風車|风车|windmill toy|paper windmill, vehicle, watercraft
+n03947888, pirate, pirate ship|海賊船|海盗船|pirate vessel|buccaneer ship, container, vessel
+n03950228, pitcher, pitcher|ピッチャー|水罐|water pitcher|jug|ewer, object, tool
+n03954731, plane, plane|かんな|刨子|hand plane|wood plane|carpenter's plane, structure, building
+n03956157, planetarium, planetarium|プラネタリウム|天文馆|star theater|dome theater, container, bag
+n03958227, plastic_bag, plastic bag|ビニール袋|塑料袋|poly bag|shopping bag, container, storage
+n03961711, plate_rack, plate rack|皿立て|碗架|dish rack|drying rack, object, tool
+n03967562, plow, plow|すき|犁|plough|farm plow, object, tool
+n03970156, plunger, plunger|プランジャー|皮搋子|toilet plunger|suction cup, device, camera
+n03976467, Polaroid_camera, polaroid camera|ポラロイドカメラ|拍立得|instant camera|polaroid, object, pole
+n03976657, pole, pole|ポール|杆|flag pole|utility pole|post, vehicle, road
+n03977966, police_van, police van|警察車|警车|paddy wagon|patrol wagon, clothing, outerwear
+n03980874, poncho, poncho|ポンチョ|斗篷|rain poncho|cape, furniture, table
+n03982430, pool_table, pool table|ビリヤード台|台球桌|billiard table|snooker table, container, bottle
+n03983396, pop_bottle, soda bottle|ソーダ瓶|汽水瓶|pop bottle|soft drink bottle, container, vessel
+n03991062, pot, pot|鍋|锅|cooking pot|saucepan, device, craft
+n03992509, potter's_wheel, potter's wheel|ろくろ|陶轮|pottery wheel|throwing wheel, object, tool
+n03995372, power_drill, power drill|電動ドリル|电钻|electric drill|cordless drill, textile, rug
+n03998194, prayer_rug, prayer rug|祈祷用敷物|祈祷毯|prayer mat|sajjada, device, office
+n04004767, printer, printer|プリンター|打印机|computer printer|laser printer, structure, building
+n04005630, prison, prison|刑務所|监狱|jail|penitentiary|correctional facility, weapon, projectile
+n04008634, projectile, projectile|発射体|抛射物|missile|shell|bullet, device, optical
+n04009552, projector, projector|プロジェクター|投影仪|movie projector|video projector, sports, ball
+n04019541, puck, hockey puck|パック|冰球|ice hockey puck, sports, equipment
+n04023962, punching_bag, punching bag|パンチングバッグ|沙袋|heavy bag|boxing bag, container, bag
+n04026417, purse, purse|財布|钱包|handbag|pocketbook|clutch, object, writing
+n04033901, quill, quill|羽ペン|羽毛笔|feather pen|quill pen, textile, bedding
+n04033995, quilt, quilt|キルト|被子|comforter|bedspread|coverlet, vehicle, road
+n04037443, racer, race car|レーシングカー|赛车|racing car|formula car, sports, racket
+n04039381, racket, racket|ラケット|球拍|tennis racket|badminton racket, device, heating
+n04040759, radiator, radiator|ラジエーター|散热器|heater|heat exchanger, device, audio
+n04041544, radio, radio|ラジオ|收音机|transistor radio|AM/FM radio, device, audio
+n04044716, radio_telescope, radio telescope|電波望遠鏡|射电望远镜|dish antenna|parabolic antenna, container, vessel
+n04049303, rain_barrel, rain barrel|雨水タンク|雨水桶|water butt|collection barrel, vehicle, road
+n04065272, recreational_vehicle, RV|キャンピングカー|房车|recreational vehicle|motorhome|camper, object, misc
+n04067472, reel, reel|リール|卷轴|fishing reel|film reel|spool, device, camera
+n04069434, reflex_camera, reflex camera|一眼レフ|单反相机|SLR|DSLR, device, appliance
+n04070727, refrigerator, refrigerator|冷蔵庫|冰箱|fridge|icebox|cooler, device, remote
+n04074963, remote_control, remote control|リモコン|遥控器|remote|TV remote|clicker, structure, building
+n04081281, restaurant, restaurant|レストラン|餐厅|eatery|dining establishment|diner, weapon, firearm
+n04086273, revolver, revolver|リボルバー|左轮手枪|handgun|pistol|six-shooter, weapon, firearm
+n04090263, rifle, rifle|ライフル|步枪|firearm|long gun, furniture, seating
+n04099969, rocking_chair, rocking chair|ロッキングチェア|摇椅|rocker|porch rocker, device, kitchen
+n04111531, rotisserie, rotisserie|ロティサリー|烤肉架|spit roast|roasting jack, object, office
+n04116512, rubber_eraser, eraser|消しゴム|橡皮擦|rubber|pencil eraser, sports, ball
+n04118538, rugby_ball, rugby ball|ラグビーボール|橄榄球|rugby football, object, measuring
+n04118776, rule, ruler|定規|尺子|measuring ruler|straightedge, clothing, footwear
+n04120489, running_shoe, running shoe|ランニングシューズ|跑鞋|sneaker|athletic shoe|trainer, container, safe
+n04125021, safe, safe|金庫|保险箱|strongbox|vault|security safe, object, fastener
+n04127249, safety_pin, safety pin|安全ピン|安全别针|nappy pin|diaper pin, container, kitchen
+n04131690, saltshaker, salt shaker|塩入れ|盐瓶|salt cellar|salt pot, clothing, footwear
+n04133789, sandal, sandal|サンダル|凉鞋|flip-flop|thong|open-toe shoe, clothing, skirt
+n04136333, sarong, sarong|サロン|纱笼|wrap skirt|pareo, object, misc
+n04141076, sax, saxophone|サックス|萨克斯|sax|alto sax|tenor sax, instrument, musical
+n04141327, scabbard, scabbard|鞘|剑鞘|sheath|sword case, device, measuring
+n04141975, scale, scale|はかり|秤|weighing scale|balance|bathroom scale, vehicle, road
+n04146614, school_bus, school bus|スクールバス|校车|yellow bus|student bus, vehicle, watercraft
+n04147183, schooner, schooner|スクーナー|双桅船|sailing ship|tall ship, device, display
+n04149813, scoreboard, scoreboard|スコアボード|记分牌|score display|game board, object, hardware
+n04152593, screen, screen|スクリーン|屏幕|projection screen|movie screen, object, tool
+n04153751, screw, screw|ねじ|螺丝|metal screw|wood screw|bolt, object, tool
+n04154565, screwdriver, screwdriver|ドライバー|螺丝刀|phillips|flathead, object, safety
+n04162706, seat_belt, seat belt|シートベルト|安全带|safety belt|car belt, device, sewing
+n04179913, sewing_machine, sewing machine|ミシン|缝纫机|sewing machine|singer, clothing, armor
+n04192698, shield, shield|盾|盾牌|defense shield|buckler, structure, building
+n04200800, shoe_shop, shoe store|靴屋|鞋店|shoe shop|footwear store, furniture, japanese
+n04201297, shoji, shoji|障子|日式拉门|japanese screen|paper door, container, bag
+n04204238, shopping_basket, shopping basket|買い物かご|购物篮|market basket|hand basket, container, bag
+n04204347, shopping_cart, shopping cart|ショッピングカート|购物车|trolley|grocery cart, object, tool
+n04208210, shovel, shovel|シャベル|铲子|spade|digging tool, clothing, headwear
+n04209133, shower_cap, shower cap|シャワーキャップ|浴帽|bath cap|hair cap, textile, bathroom
+n04209239, shower_curtain, shower curtain|シャワーカーテン|浴帘|bath curtain|tub curtain, sports, winter
+n04228054, ski, ski|スキー|滑雪板|snow ski|alpine ski, sports, winter
+n04229816, ski_mask, ski mask|スキーマスク|滑雪面罩|balaclava|face mask, textile, bedding
+n04235860, sleeping_bag, sleeping bag|寝袋|睡袋|mummy bag|camping bag, device, measuring
+n04238763, slide_rule, slide rule|計算尺|计算尺|slipstick|analog calculator, structure, door
+n04239074, sliding_door, sliding door|引き戸|推拉门|patio door|pocket door, device, vending
+n04243546, slot, slot machine|スロットマシン|老虎机|one-armed bandit|fruit machine, sports, winter
+n04251144, snorkel, snorkel|シュノーケル|呼吸管|diving snorkel|swim snorkel, vehicle, road
+n04252077, snowmobile, snowmobile|スノーモービル|雪地摩托|snow machine|sled, vehicle, road
+n04252225, snowplow, snowplow|除雪機|扫雪机|snow plow|snow blower, container, dispenser
+n04254120, soap_dispenser, soap dispenser|ソープディスペンサー|皂液器|hand soap dispenser|pump dispenser, sports, ball
+n04254680, soccer_ball, soccer ball|サッカーボール|足球|football|association football, clothing, sock
+n04254777, sock, sock|靴下|袜子|ankle sock|crew sock|hosiery, device, solar
+n04258138, solar_dish, solar dish|ソーラーディッシュ|碟形太阳能|solar concentrator|parabolic dish, clothing, headwear
+n04259630, sombrero, sombrero|ソンブレロ|墨西哥帽|mexican hat|wide-brim hat, container, vessel
+n04263257, soup_bowl, soup bowl|スープボウル|汤碗|soup dish|cereal bowl, device, computer
+n04264628, space_bar, space bar|スペースバー|空格键|spacebar key|keyboard space, device, heating
+n04265275, space_heater, space heater|電気ヒーター|电暖器|portable heater|room heater, vehicle, aircraft
+n04266014, space_shuttle, space shuttle|スペースシャトル|航天飞机|shuttle|orbiter, vehicle, aircraft
+n04270147, spatula, spatula|ヘラ|锅铲|turner|flipper|cooking spatula, vehicle, watercraft
+n04273569, speedboat, speedboat|スピードボート|快艇|powerboat|motorboat, natural, web
+n04275548, spider_web, spider web|蜘蛛の巣|蜘蛛网|cobweb|web, object, textile
+n04277352, spindle, spindle|紡錘|纺锤|spinning spindle|shaft, vehicle, road
+n04285008, sports_car, sports car|スポーツカー|跑车|sportscar|roadster|coupe, device, lighting
+n04286575, spotlight, spotlight|スポットライト|聚光灯|stage light|spot lamp, structure, theater
+n04296562, stage, stage|ステージ|舞台|theater stage|platform|performance area, vehicle, rail
+n04310018, steam_locomotive, steam locomotive|蒸気機関車|蒸汽火车|steam engine|steam train, structure, bridge
+n04311004, steel_arch_bridge, steel arch bridge|鉄橋|钢拱桥|metal bridge|arch bridge, instrument, percussion
+n04311174, steel_drum, steel drum|スチールドラム|钢鼓|pan drum|steelpan, instrument, musical
+n04317175, stethoscope, stethoscope|聴診器|听诊器|medical stethoscope|doctor's scope, device, medical
+n04325704, stole, stole|ストール|女用披肩|shawl|wrap|pashmina, clothing, accessory
+n04326547, stone_wall, stone wall|石垣|石墙|rock wall|dry stone wall, device, timepiece
+n04328186, stopwatch, stopwatch|ストップウォッチ|秒表|timer|chronograph, structure, wall
+n04330267, stove, stove|ストーブ|炉子|cooking stove|range|cooktop, container, vessel
+n04332243, strainer, strainer|漉し器|过滤器|colander|sieve|kitchen strainer, vehicle, road
+n04335435, streetcar, streetcar|路面電車|有轨电车|tram|trolley car, object, medical
+n04336792, stretcher, stretcher|担架|担架|medical stretcher|gurney|litter, furniture, seating
+n04344873, studio_couch, suit|スーツ|西装|business suit|formal suit|two-piece, structure, religious
+n04346328, stupa, sundial|日時計|日晷|sun clock|shadow clock, vehicle, watercraft
+n04347754, submarine, sunglasses|サングラス|太阳镜|shades|dark glasses, clothing, formalwear
+n04350905, suit, sunscreen|日焼け止め|防晒霜|sunblock|sun cream|SPF lotion, device, timepiece
+n04355338, sundial, suspension bridge|吊り橋|悬索桥|hanging bridge|cable bridge, clothing, eyewear
+n04355933, sunglass, swab|綿棒|棉签|cotton swab|Q-tip, clothing, eyewear
+n04356056, sunglasses, sweatshirt|スウェットシャツ|运动衫|hoodie|pullover|jumper, object, cosmetic
+n04357314, sunscreen, swim trunks|水泳パンツ|泳裤|swimming shorts|board shorts, structure, bridge
+n04366367, suspension_bridge, swing|ブランコ|秋千|playground swing|porch swing, object, medical
+n04367480, swab, switch|スイッチ|开关|light switch|toggle switch|electric switch, clothing, casual
+n04370456, sweatshirt, syringe|注射器|注射器|hypodermic needle|injection|shot, clothing, swimwear
+n04371430, swimming_trunks, table lamp|テーブルランプ|台灯|desk lamp|bedside lamp, furniture, outdoor
+n04371774, swing, tank|戦車|坦克|military tank|armored vehicle|panzer, device, electrical
+n04372370, switch, tape player|テープレコーダー|磁带播放器|cassette deck|tape deck, device, medical
+n04376876, syringe, teapot|ティーポット|茶壶|tea kettle|teakettle, device, lighting
+n04380533, table_lamp, teddy bear|テディベア|泰迪熊|stuffed bear|plush bear|cuddly toy, vehicle, road
+n04389033, tank, television|テレビ|电视|TV|television set|telly, device, audio
+n04392985, tape_player, tennis ball|テニスボール|网球|tennis ball, container, vessel
+n04398044, teapot, thatch|茅葺き|茅草|thatched roof|straw roof, object, toy
+n04399382, teddy, theater curtain|舞台幕|舞台幕|stage curtain|drape|grand drape, device, entertainment
+n04404412, television, thimble|指ぬき|顶针|sewing thimble|finger guard, sports, ball
+n04409515, tennis_ball, thresher|脱穀機|脱粒机|threshing machine|combine, structure, roof
+n04417672, thatch, throne|玉座|王座|royal throne|king's chair, textile, theater
+n04418357, theater_curtain, tile roof|瓦屋根|瓦屋顶|clay tile roof|terra cotta roof, object, sewing
+n04423845, thimble, toaster|トースター|烤面包机|bread toaster|pop-up toaster, vehicle, agricultural
+n04428191, thresher, tobacco shop|たばこ屋|烟草店|tobacconist|smoke shop|cigar store, furniture, seating
+n04429376, throne, toilet seat|便座|马桶座|toilet lid|commode seat, structure, roof
+n04435653, tile_roof, torch|たいまつ|火炬|flaming torch|olympic torch|tiki torch, device, kitchen
+n04442312, toaster, totem pole|トーテムポール|图腾柱|totem|carved pole, structure, building
+n04443257, tobacco_shop, tow truck|レッカー車|拖车|wrecker|breakdown truck|recovery vehicle, furniture, bathroom
+n04447861, toilet_seat, toy store|おもちゃ屋|玩具店|toy shop|toy store, object, lighting
+n04456115, torch, tractor|トラクター|拖拉机|farm tractor|agricultural tractor, object, lighting
+n04458633, totem_pole, semi truck|トレーラートラック|半挂车|18-wheeler|big rig|tractor-trailer, vehicle, road
+n04461696, tow_truck, tray|トレイ|托盘|serving tray|food tray|platter, structure, building
+n04462240, toyshop, trench coat|トレンチコート|风衣|raincoat|overcoat|mac, vehicle, road
+n04465501, tractor, tricycle|三輪車|三轮车|trike|three-wheeler, vehicle, road
+n04467665, trailer_truck, trimaran|トリマラン|三体船|triple-hull boat|sailing trimaran, container, tray
+n04476259, tray, tripod|三脚|三脚架|camera tripod|photography stand, clothing, outerwear
+n04479046, trench_coat, triumphal arch|凱旋門|凯旋门|victory arch|monument arch, vehicle, road
+n04482393, tricycle, trolleybus|トロリーバス|无轨电车|trackless trolley|electric bus, vehicle, road
+n04483307, trimaran, trombone|トロンボーン|长号|slide trombone|brass horn, object, photography
+n04485082, tripod, tub|たらい|浴盆|washtub|basin|bathtub, structure, arch
+n04486054, triumphal_arch, turnstile|回転式改札|旋转门|turnstile gate|entry gate, vehicle, road
+n04487081, trolleybus, typewriter keyboard|タイプライターキーボード|打字机键盘|typewriter|mechanical keyboard, object, misc
+n04487394, trombone, umbrella|傘|雨伞|brolly|parasol|sunshade, instrument, musical
+n04493381, tub, unicycle|一輪車|独轮车|monocycle|single wheel bike, structure, gate
+n04501370, turnstile, upright piano|アップライトピアノ|立式钢琴|vertical piano|studio piano, device, computer
+n04505470, typewriter_keyboard, vacuum cleaner|掃除機|吸尘器|hoover|vacuum cleaner, object, weather
+n04507155, umbrella, vase|花瓶|花瓶|flower vase|decorative vase|urn, vehicle, road
+n04509417, unicycle, vault|金庫室|保险库|bank vault|safe room|strongroom, instrument, keyboard
+n04515003, upright, velvet|ベルベット|天鹅绒|velour|plush fabric, instrument, musical
+n04517823, vacuum, vending machine|自動販売機|自动售货机|vending machine|coin machine, container, vessel
+n04522168, vase, vestment|祭服|祭服|religious robe|ceremonial garment|clerical robe, structure, vault
+n04523525, vault, viaduct|高架橋|高架桥|elevated bridge|railway viaduct, textile, fabric
+n04525038, velvet, violin|バイオリン|小提琴|fiddle|string instrument, device, vending
+n04525305, vending_machine, volleyball|バレーボール|排球|volley ball, clothing, religious
+n04532106, vestment, waffle iron|ワッフルメーカー|华夫饼机|waffle maker|waffle press, structure, bridge
+n04532670, viaduct, wall clock|壁掛け時計|挂钟|hanging clock|clock, object, misc
+n04536866, violin, wallet|財布|钱包|billfold|pocketbook|money clip, instrument, musical
+n04540053, volleyball, wardrobe|ワードローブ|衣柜|closet|armoire|clothes cabinet, device, kitchen
+n04542943, waffle_iron, warplane|軍用機|军用飞机|fighter jet|military aircraft|combat plane, device, timepiece
+n04548280, wall_clock, washbasin|洗面台|洗脸盆|sink|basin|lavatory, container, bag
+n04548362, wallet, washing machine|洗濯機|洗衣机|washer|laundry machine, furniture, storage
+n04550184, wardrobe, water bottle|水筒|水瓶|drink bottle|hydration bottle, vehicle, aircraft
+n04552348, warplane, water jug|水差し|水壶|pitcher|carafe|decanter, vehicle, aircraft
+n04553703, washbasin, water tower|給水塔|水塔|water tank|elevated tank, device, appliance
+n04554684, washer, whiskey jug|ウイスキーボトル|威士忌瓶|whisky bottle|liquor jug, container, vessel
+n04557648, water_bottle, whistle|笛|哨子|referee whistle|pea whistle, container, vessel
+n04560804, water_jug, wig|かつら|假发|hairpiece|toupee|peruke, container, vessel
+n04562935, water_tower, window screen|網戸|纱窗|insect screen|fly screen, container, vessel
+n04579145, whiskey_jug, window shade|ブラインド|窗帘|roller blind|window blind, device, sound
+n04579432, whistle, windsor tie|ウィンザータイ|温莎领带|necktie|cravat|tie, clothing, headwear
+n04584207, wig, wine bottle|ワインボトル|葡萄酒瓶|wine bottle|vino bottle, textile, window
+n04589890, window_screen, window screen, textile, window
+n04590129, window_shade, airplane wing|翼|机翼|aircraft wing|plane wing, clothing, neckwear
+n04591157, Windsor_tie, wok|中華鍋|炒锅|chinese wok|stir-fry pan, container, vessel
+n04591713, wine_bottle, wooden spoon|木べら|木勺|cooking spoon|stirring spoon, object, misc
+n04592741, wing, wool|ウール|羊毛|woolen fabric|fleece|merino, container, vessel
+n04596742, wok, worm fence|ジグザグ塀|蛇形篱笆|split-rail fence|zigzag fence, object, kitchen
+n04597913, wooden_spoon, wreck|難破船|残骸|shipwreck|car wreck|ruins, textile, fabric
+n04599235, wool, yawl|ヨール|双桅帆船|sailboat|sailing yacht, structure, fence
+n04604644, worm_fence, yurt|ユルト|蒙古包|ger|nomad tent|round tent, vehicle, wreck
+n04606251, wreck, website|ウェブサイト|网站|webpage|web page|internet site, vehicle, watercraft
+n04612504, yawl, zipper|ジッパー|拉链|zip|zip fastener|slide fastener, structure, dwelling
+n04613696, yurt, yurt, abstract, media
+n06359193, web_site, web site, abstract, media
+n06596364, comic_book, comic book, abstract, media
+n06785654, crossword_puzzle, crossword puzzle, abstract, media
+n06794110, street_sign, street sign, abstract, media
+n06874185, traffic_light, traffic light, object, book
+n07248320, book_jacket, book cover|ブックカバー|书皮|dust jacket|book sleeve, object, document
+n07565083, menu, menu|メニュー|菜单|food menu|restaurant menu, container, dish
+n07579787, plate, plate|皿|盘子|dinner plate|dish|platter, food, edible
+n07583066, guacamole, guacamole|ワカモレ|牛油果酱|guac|avocado dip, food, edible
+n07584110, consomme, consommé|コンソメ|清汤|clear soup|broth, food, edible
+n07590611, hot_pot, hot pot|火鍋|火锅|hotpot|shabu-shabu, food, edible
+n07613480, trifle, trifle|トライフル|乳脂松糕|english trifle|layered dessert, food, edible
+n07614500, ice_cream, ice cream|アイスクリーム|冰淇淋|gelato|frozen dessert|sundae, food, edible
+n07615774, ice_lolly, popsicle|アイスキャンディー|冰棒|ice pop|frozen pop|lolly, food, edible
+n07684084, French_loaf, french bread|フランスパン|法棍|baguette|french loaf, food, edible
+n07693725, bagel, bagel|ベーグル|百吉饼|bread ring|roll, food, edible
+n07695742, pretzel, pretzel|プレッツェル|椒盐卷饼|soft pretzel|hard pretzel, food, edible
+n07697313, cheeseburger, cheeseburger|チーズバーガー|芝士汉堡|burger|hamburger with cheese, food, edible
+n07697537, hotdog, hot dog|ホットドッグ|热狗|frankfurter|wiener|sausage sandwich, food, edible
+n07711569, mashed_potato, mashed potatoes|マッシュポテト|土豆泥|mash|creamed potatoes, food, edible
+n07714571, head_cabbage, cabbage|キャベツ|卷心菜|head cabbage|green cabbage, food, edible
+n07714990, broccoli, broccoli|ブロッコリー|西兰花|calabrese|green broccoli, food, edible
+n07715103, cauliflower, cauliflower|カリフラワー|花椰菜|white broccoli, food, edible
+n07716358, zucchini, zucchini|ズッキーニ|西葫芦|courgette|summer squash, food, edible
+n07716906, spaghetti_squash, spaghetti squash|そうめんカボチャ|金丝瓜|vegetable spaghetti, food, edible
+n07717410, acorn_squash, acorn squash|どんぐりカボチャ|橡果南瓜|pepper squash, food, edible
+n07717556, butternut_squash, butternut squash|バターナッツカボチャ|奶油南瓜|butternut|winter squash, food, edible
+n07718472, cucumber, cucumber|キュウリ|黄瓜|cuke|gherkin, food, edible
+n07718747, artichoke, artichoke|アーティチョーク|洋蓟|globe artichoke, food, edible
+n07720875, bell_pepper, bell pepper|ピーマン|甜椒|capsicum|sweet pepper, food, edible
+n07730033, cardoon, cardoon|カルドン|刺菜蓟|artichoke thistle, food, edible
+n07734744, mushroom, mushroom|キノコ|蘑菇|fungi|toadstool|champignon, food, edible
+n07742313, Granny_Smith, granny smith|グラニースミス|青苹果|green apple|tart apple, food, edible
+n07745940, strawberry, strawberry|イチゴ|草莓|berry|fraise, food, edible
+n07747607, orange, orange|オレンジ|橙子|citrus orange|navel orange, food, edible
+n07749582, lemon, lemon|レモン|柠檬|citrus lemon|yellow lemon, food, edible
+n07753113, fig, fig|イチジク|无花果|fresh fig|dried fig, food, edible
+n07753275, pineapple, pineapple|パイナップル|菠萝|ananas|tropical fruit, food, edible
+n07753592, banana, banana|バナナ|香蕉|yellow banana|plantain, food, edible
+n07754684, jackfruit, jackfruit|ジャックフルーツ|菠萝蜜|jak fruit, food, edible
+n07760859, custard_apple, custard apple|カスタードアップル|番荔枝|cherimoya|sugar apple, food, edible
+n07768694, pomegranate, pomegranate|ザクロ|石榴|granada|punica, food, edible
+n07802026, hay, hay|干し草|干草|straw|dried grass|hay bale, food, edible
+n07831146, carbonara, carbonara|カルボナーラ|培根蛋面|pasta carbonara|spaghetti carbonara, food, edible
+n07836838, chocolate_sauce, chocolate sauce|チョコレートソース|巧克力酱|hot fudge|chocolate syrup, food, edible
+n07860988, dough, dough|生地|面团|bread dough|pastry dough, food, edible
+n07871810, meat_loaf, meatloaf|ミートローフ|肉饼|meat loaf, food, edible
+n07873807, pizza, pizza|ピザ|披萨|pie|pizza pie|flatbread, food, edible
+n07875152, potpie, pot pie|ポットパイ|肉馅饼|meat pie|chicken pot pie, food, edible
+n07880968, burrito, burrito|ブリトー|墨西哥卷|wrap|mexican burrito, food, edible
+n07892512, red_wine, red wine|赤ワイン|红葡萄酒|vino rosso|burgundy|merlot, food, edible
+n07920052, espresso, espresso|エスプレッソ|浓缩咖啡|coffee shot|short black, food, edible
+n07930864, cup, cup|カップ|杯子|teacup|coffee cup|mug, food, edible
+n07932039, eggnog, eggnog|エッグノッグ|蛋奶酒|egg nog|holiday drink, food, edible
+n09193705, alp, alp|アルプス|阿尔卑斯山|alpine peak|mountain peak, natural, geological
+n09229709, bubble, bubble|泡|气泡|soap bubble|air bubble, natural, geological
+n09246464, cliff, cliff|崖|悬崖|precipice|bluff|rock face, natural, geological
+n09256479, coral_reef, coral reef|サンゴ礁|珊瑚礁|reef|coral formation, natural, geological
+n09288635, geyser, geyser|間欠泉|间歇泉|hot spring|thermal vent, natural, geological
+n09332890, lakeside, lakeside|湖畔|湖边|lakeshore|waterfront|lake edge, natural, geological
+n09399592, promontory, promontory|岬|海角|headland|cape|point, natural, geological
+n09421951, sandbar, sandbar|砂州|沙洲|sand spit|shoal, natural, geological
+n09428293, seashore, seashore|海岸|海滨|beach|seaside|coastline, natural, geological
+n09468604, valley, valley|谷|山谷|vale|glen|dale, natural, geological
+n09472597, volcano, volcano|火山|火山|volcanic mountain|crater, natural, geological
+n09835506, ballplayer, baseball player|野球選手|棒球运动员|ball player|batter, subject, person
+n10148035, groom, groom|新郎|新郎|bridegroom|husband-to-be, subject, person
+n10565667, scuba_diver, scuba diver|スキューバダイバー|潜水员|diver|underwater diver, subject, person
+n11879895, rapeseed, rapeseed|菜の花|油菜|canola|oilseed rape, plant, botanical
+n11939491, daisy, daisy|デイジー|雏菊|marguerite|oxeye daisy, plant, botanical
+n12057211, yellow_lady's_slipper, lady's slipper|アツモリソウ|杓兰|yellow orchid|moccasin flower, plant, botanical
+n12144580, corn, corn|トウモロコシ|玉米|maize|sweet corn|corn on cob, plant, botanical
+n12267677, acorn, acorn|どんぐり|橡果|oak nut|acorn nut, plant, botanical
+n12620546, hip, rose hip|ローズヒップ|野蔷薇果|rosehip|dog rose fruit, plant, botanical
+n12768682, buckeye, buckeye|トチノキ|七叶树果|horse chestnut|conker, plant, botanical
+n12985857, coral_fungus, coral fungus|サンゴタケ|珊瑚菌|coral mushroom|clavaria, plant, botanical
+n12998815, agaric, agaric|ハラタケ|伞菌|agaric mushroom|gill fungus, plant, fungus
+n13037406, gyromitra, gyromitra|シャグマアミガサタケ|鹿花菌|false morel|brain mushroom, plant, fungus
+n13040303, stinkhorn, stinkhorn|スッポンタケ|鬼笔|phallus mushroom|devil's dipstick, plant, fungus
+n13044778, earthstar, earthstar|ツチグリ|地星|geastrum|star fungus, plant, fungus
+n13052670, hen-of-the-woods, hen of the woods|マイタケ|灰树花|maitake|dancing mushroom, plant, fungus
+n13054560, bolete, bolete|イグチ|牛肝菌|porcini|cep|king bolete, plant, fungus
+n13133613, ear, ear of corn|トウモロコシの穂|玉米穗|corn cob|maize ear, plant, crop
+n15075141, toilet_tissue, toilet paper|トイレットペーパー|卫生纸|toilet roll|TP|bathroom tissue, object, paper
+
+n01787835, black_grouse, black grouse|クロライチョウ|黑琴鸡|blackcock|tetrao tetrix, deprecated, variant_10000
+n01791463, ptarmigan, ptarmigan|ライチョウ|雷鸟|lagopus|snow grouse, deprecated, variant_10001
+n02067162, killer_whale, killer whale|シャチ|虎鲸|orca|orcinus orca, deprecated, variant_10002
+n02068974, dugong, dugong|ジュゴン|儒艮|sea cow|dugong dugon, deprecated, variant_10003
+n02085374, tench, tench|テンチ|丁鱥|tinca tinca, deprecated, variant_10004
+n02099484, goldfish, goldfish|金魚|金鱼|carassius auratus, deprecated, variant_10005
+n03804744, muzzle_deprecated, muzzle|口輪|口套|dog muzzle|snout guard, deprecated, variant_10006
+n04339638, studio_couch, studio couch|ソファベッド|沙发床|daybed|sleeper sofa, deprecated, variant_10007
+n04340935, stupa, stupa|仏塔|佛塔|buddhist shrine|pagoda|chorten, deprecated, variant_10008
+n04341686, submarine, submarine|潜水艦|潜水艇|sub|U-boat|submersible, deprecated, variant_10009
