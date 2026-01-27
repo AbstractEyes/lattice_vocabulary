@@ -4652,6 +4652,19 @@ class BulkCaptions:
         "framing through space", "eye-contact capture", "non-eye-contact angle",
         "oblique human framing"
     ]
+
+    SIMPLE_CHARACTER_ANGLE = [
+        "front view", "side view", "back view", "three-quarters view",
+        "top view", "bottom view", "isometric view", "overhead view",
+        "close-up", "medium shot", "extreme close-up", "long shot",
+        "full body shot", "half body shot", "portrait orientation", "landscape orientation",
+        "high angle", "low angle", "dutch angle", "candid shot",
+        "action shot", "posed shot", "dynamic angle", "static angle",
+        "tilted angle", "straight on", "angled shot", "profile view",
+        "over-the-shoulder", "looking up at character", "looking down on character",
+        "rear three-quarters", "corner shot", "reflected angle", "mirror view",
+    ]
+
     
     
     EMOTION_TYPES = [

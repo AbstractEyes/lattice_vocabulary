@@ -116,6 +116,15 @@ class CleanRelationGenerator:
         rel = self._sample_relation()
         return f"{obj_a} {rel.phrase} {obj_b}"
 
+    def object_related_object(self) -> str:
+        """object {rel} object"""
+        obj_a = self._sample(self.objects)
+        obj_b = self._sample(self.objects)
+        while obj_b == obj_a:
+            obj_b = self._sample(self.objects)
+        rel = self._sample_relation()
+        return f"{obj_a} {rel.phrase} {obj_b}"
+
     def colored_objects(self) -> str:
         """{color} object {rel} {color} object"""
         obj_a = self._sample(self.objects)
@@ -169,12 +178,13 @@ class CleanRelationGenerator:
     def triple_objects(self) -> str:
         """obj, obj, and obj on surface"""
         objs = []
+        rels = []
         while len(objs) < 3:
             obj = self._sample(self.objects)
             if obj not in objs:
                 objs.append(obj)
-        surface = self._sample(self.surfaces)
-        return f"{objs[0]}, {objs[1]}, and {objs[2]} on {surface}"
+                rels.append(self._sample_relation())
+        return f"{objs[0]} {rels[0].phrase} {objs[1]} {rels[1].phrase} {objs[2]}"
 
     # === PRODUCE GENERATORS ===
 

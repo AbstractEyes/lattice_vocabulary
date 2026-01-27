@@ -60,6 +60,7 @@ class CleanCharacterGenerator:
         self.lighting = self.bc.LIGHTING_TYPES
         self.styles = self.bc.STYLE_TYPES
         self.angles = self.bc.SUBJECT_PHOTOGRAPH_ANGLE
+        self.simple_angles = self.bc.SIMPLE_CHARACTER_ANGLE
 
         # Descriptors
         self.colors = self.bc.COLORS
@@ -140,17 +141,30 @@ class CleanCharacterGenerator:
         hair_length = self._maybe(self.hair_lengths, 0.7)
         hair = self._build_hair(hair_length, color=hair_color)
 
+        upper_body_clothes = self._maybe(self.upper_clothing, 1.0)
+        upper_body_color = self._maybe(self.colors, 0.5)
+
+        angle = self._maybe(self.simple_angles, 0.4)
+        if angle:
+            subject = f"{subject} {angle}"
+
         parts = []
         if hair:
             parts.append(f"{subject} with {hair}")
         else:
             parts.append(subject)
 
+        if upper_body_clothes:
+            if upper_body_color:
+                subject += f" wearing {upper_body_color} {upper_body_clothes}"
+            else:
+                subject += f" wearing {upper_body_clothes}"
+
         suffix = self._build_suffix()
         if suffix:
             parts.append(suffix)
 
-        return ', '.join(parts)
+        return ', '.join(parts).replace(',,', ',').strip()
 
     def character_with_clothing(self) -> str:
         gender = self._sample(self.genders)
