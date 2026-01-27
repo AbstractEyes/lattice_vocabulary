@@ -100,7 +100,7 @@ class CleanCharacterGenerator:
 
     def _build_subject(self, gender: str, ethnicity: str = None) -> str:
         if ethnicity and self.include_ethnicity:
-            return f"{ethnicity} {gender}"
+            return f"{ethnicity} {gender}".replace(',,', ',').strip()
         return gender
 
     def _build_hair(self, length: str = None, style: str = None, color: str = None) -> str:
@@ -160,6 +160,7 @@ class CleanCharacterGenerator:
         upper = self._sample(self.upper_clothing)
         lower = self._maybe(self.lower_clothing, 0.6)
         color = self._maybe(self.colors, 0.5)
+        lower_color = self._maybe(self.colors, 0.4)
 
         parts = [subject]
 
@@ -169,7 +170,10 @@ class CleanCharacterGenerator:
         else:
             clothing_parts.append(upper)
         if lower:
-            clothing_parts.append(lower)
+            if lower_color:
+                clothing_parts.append(f"{lower_color} {lower}")
+            else:
+                clothing_parts.append(lower)
 
         if len(clothing_parts) > 1:
             parts.append(f"wearing {clothing_parts[0]} and {clothing_parts[1]}")
@@ -242,6 +246,8 @@ class CleanCharacterGenerator:
         lower = self._maybe(self.lower_clothing, 0.7)
         footwear = self._maybe(self.footwear, 0.4)
         color = self._maybe(self.colors, 0.5)
+        lower_color = self._maybe(self.colors, 0.5)
+        shoe_color = self._maybe(self.colors, 0.5)
 
         parts = [subject]
         if hair:
@@ -253,9 +259,15 @@ class CleanCharacterGenerator:
         else:
             clothing_parts.append(upper)
         if lower:
-            clothing_parts.append(lower)
+            if lower_color:
+                clothing_parts.append(f"{lower_color} {lower}")
+            else:
+                clothing_parts.append(lower)
         if footwear:
-            clothing_parts.append(footwear)
+            if shoe_color:
+                clothing_parts.append(f"{shoe_color} {footwear}")
+            else:
+                clothing_parts.append(footwear)
 
         if len(clothing_parts) > 1:
             parts.append(f"wearing {', '.join(clothing_parts[:-1])} and {clothing_parts[-1]}")
@@ -263,7 +275,7 @@ class CleanCharacterGenerator:
             parts.append(f"wearing {clothing_parts[0]}")
 
         # Higher fashion prob for outfit-focused generator
-        suffix = self._build_suffix(fashion_prob=0.7, photo_prob=0.4)
+        suffix = self._build_suffix(fashion_prob=0.6, photo_prob=0.5)
         if suffix:
             parts.append(suffix)
 
@@ -425,8 +437,11 @@ class CleanCharacterGenerator:
         upper = self._sample(self.upper_clothing)
         lower = self._maybe(self.lower_clothing, 0.6)
         color = self._maybe(self.colors, 0.5)
+        lower_color = self._maybe(self.colors, 0.4)
 
         accessory = self._maybe(self.accessories, 0.3)
+        accessory_material = self._maybe(self.materials, 0.3)
+
         background = self._maybe(self.backgrounds, 0.5)
         lighting = self._maybe(self.lighting, 0.4)
 
@@ -452,13 +467,19 @@ class CleanCharacterGenerator:
         else:
             clothing_parts.append(upper)
         if lower:
-            clothing_parts.append(lower)
+            if lower_color:
+                clothing_parts.append(f"{lower_color} {lower}")
+            else:
+                clothing_parts.append(lower)
 
         if clothing_parts:
             parts.append(f"wearing {' and '.join(clothing_parts)}")
 
         if accessory:
-            parts.append(f"with {accessory}")
+            if accessory_material:
+                parts.append(f"with {accessory_material} {accessory}")
+            else:
+                parts.append(f"with {accessory}")
 
         if background:
             parts.append(f"in {background}")
