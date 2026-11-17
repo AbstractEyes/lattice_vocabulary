@@ -277,6 +277,23 @@ class FractalSimplexInitializer(FormulaBase):
 # FLOW ALIGNMENT LOSS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def _volumes_per_position(simplex_sequence: Tensor, seq_len: int) -> Tensor:
+    """Cayley-Menger volume of simplex_sequence[:, t] for t < seq_len, stacked on dim 1.
+
+    For speed, all positions go through one batched call instead of one call per position;
+    the values are unchanged. Other shapes keep the per-position path.
+    """
+    if simplex_sequence.ndim >= 4 and 0 < seq_len == simplex_sequence.shape[1]:
+        return CayleyMengerFromSimplex().forward(simplex_sequence)['volume']
+
+    volume_calc = CayleyMengerFromSimplex()
+    volumes = []
+    for t in range(seq_len):
+        vol_result = volume_calc.forward(simplex_sequence[:, t])
+        volumes.append(vol_result['volume'])
+    return torch.stack(volumes, dim=1)
+
+
 class FlowAlignmentLoss(FormulaBase):
     """
     Align gradients of Cantor measure with geometric simplex deformation.
@@ -312,20 +329,20 @@ class FlowAlignmentLoss(FormulaBase):
             shape_grad_loss: Shape gradient component
             mean_volume_change: Average volume change rate
         """
+        return self._forward_with_volumes(cantor_sequence, simplex_sequence, pe_features_sequence)[0]
+
+    def _forward_with_volumes(self,
+                              cantor_sequence: Tensor,
+                              simplex_sequence: Tensor,
+                              pe_features_sequence: Tensor) -> Tuple[Dict[str, Tensor], Tensor]:
+        """forward(), also returning the per-position volumes [batch, seq_len] so a caller can reuse them."""
         batch_size, seq_len = cantor_sequence.shape[:2]
 
         # Compute Cantor measure gradients (finite differences)
         cantor_grad = cantor_sequence[:, 1:] - cantor_sequence[:, :-1]  # [B, T-1]
 
         # Compute simplex volume changes
-        volume_calc = CayleyMengerFromSimplex()
-
-        volumes = []
-        for t in range(seq_len):
-            vol_result = volume_calc.forward(simplex_sequence[:, t])
-            volumes.append(vol_result['volume'])
-
-        volumes = torch.stack(volumes, dim=1)  # [B, T]
+        volumes = _volumes_per_position(simplex_sequence, seq_len)  # [B, T]
         volume_grad = volumes[:, 1:] - volumes[:, :-1]  # [B, T-1]
 
         # Normalize gradients
@@ -355,7 +372,7 @@ class FlowAlignmentLoss(FormulaBase):
             'shape_grad_loss': shape_grad_loss,
             'mean_volume_change': volume_grad.abs().mean(),
             'cantor_grad_magnitude': cantor_grad.abs().mean()
-        }
+        }, volumes
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -590,8 +607,8 @@ class BeatrixIntegratedLoss(FormulaBase):
             component_losses: Individual loss values
             metrics: Diagnostic metrics
         """
-        # Flow alignment
-        flow_result = self.flow_loss.forward(
+        # Flow alignment (its per-position volumes are kept for the volume term below)
+        flow_result, flow_volumes = self.flow_loss._forward_with_volumes(
             cantor_sequence, simplex_sequence, pe_features_sequence
         )
 
@@ -608,14 +625,12 @@ class BeatrixIntegratedLoss(FormulaBase):
         )
 
         # Volume regularization
-        volume_calc = CayleyMengerFromSimplex()
-
-        volumes = []
-        for t in range(simplex_sequence.shape[1]):
-            vol_result = volume_calc.forward(simplex_sequence[:, t])
-            volumes.append(vol_result['volume'])
-
-        volumes = torch.stack(volumes, dim=1)  # [batch, seq_len]
+        # For speed, the volumes computed by the flow term are reused when they cover the same
+        # positions, instead of being computed a second time; the result is unchanged.
+        if cantor_sequence.shape[1] == simplex_sequence.shape[1]:
+            volumes = flow_volumes  # [batch, seq_len]
+        else:
+            volumes = _volumes_per_position(simplex_sequence, simplex_sequence.shape[1])
         volume_loss = ((volumes - target_volume) ** 2).mean()
 
         # Total loss
